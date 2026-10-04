@@ -6,7 +6,7 @@ import { groupJobs, prefs, titleOf } from "../util";
 export interface SidebarProps {
   sites: Site[]; site?: Site; jobs: JobSummary[]; jobId: string; titles: Record<string, string>; pinned: string[]; model: string;
   hostingerOk?: boolean;
-  onSelectSite: (id: string) => void; onAddSite: () => void; onToken: () => void; onIntegrations: () => void;
+  onSelectSite: (id: string) => void; onAddSite: () => void; onManageSites: () => void; onToken: () => void; onIntegrations: () => void;
   onSelectJob: (id: string) => void; onNewChat: () => void; onTogglePin: (id: string) => void; onHide: () => void;
 }
 
@@ -43,7 +43,7 @@ export function Sidebar(p: SidebarProps) {
 
       <nav className="nav">
         <button className="nav-item on"><Icon.Chat size={17} /> Chat</button>
-        <button className="nav-item" onClick={p.onAddSite}><Icon.Globe size={17} /> Sites <span className="count">{p.sites.length}</span></button>
+        <button className="nav-item" onClick={p.onManageSites}><Icon.Globe size={17} /> Sites <span className="count">{p.sites.length}</span></button>
         <button className="nav-item" onClick={p.onIntegrations}><Icon.Plug size={17} /> Integrations <span className={`conn-dot ${p.hostingerOk ? "ok" : ""}`} title={p.hostingerOk ? "Hostinger connected" : "Hostinger not connected"} /></button>
       </nav>
       <div className="divider" />
@@ -86,12 +86,13 @@ export function Sidebar(p: SidebarProps) {
             <div className="menu-label">Sites</div>
             {p.sites.map((s) => (
               <button key={s.id} className="menu-item" onClick={() => { p.onSelectSite(s.id); setMenu(false); }}>
-                <span className="site-dot" /> <span className="grow">{s.name}</span>{s.id === p.site?.id && <Icon.Check size={15} />}
+                <span className="site-dot" /> <span className="grow site-two"><span>{s.name}</span><small>{s.username} · {s.url.replace(/^https?:\/\//, "")}</small></span>{s.id === p.site?.id && <Icon.Check size={15} />}
               </button>
             ))}
+            <button className="menu-item" onClick={() => { setMenu(false); p.onManageSites(); }}><Icon.Settings size={15} /> Manage sites</button>
             <button className="menu-item" onClick={() => { setMenu(false); p.onAddSite(); }}><Icon.Plus size={15} /> Connect a site</button>
             <div className="menu-sep" />
-            <button className="menu-item" onClick={() => { setMenu(false); p.onIntegrations(); }}><Icon.Plug size={15} /> Integrations (Hostinger)</button>
+            <button className="menu-item" onClick={() => { setMenu(false); p.onIntegrations(); }}><Icon.Plug size={15} /> Integrations (AI models, Hostinger)</button>
             <button className="menu-item" onClick={() => { setMenu(false); p.onToken(); }}><Icon.Key size={15} /> Access token</button>
             <div className="menu-foot">Model: {p.model}</div>
           </div>

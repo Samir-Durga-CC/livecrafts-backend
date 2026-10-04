@@ -1,4 +1,4 @@
-import type { ChangeRecord, HostingerHealth, JobEvent, JobSummary, Site, TimelineItem, UploadedFile } from "./types";
+import type { ApprovalMode, AssistantInfo, ChangeRecord, DiffData, HostingerHealth, ProviderInfo, SiteStatus, JobEvent, JobSummary, Site, TimelineItem, UploadedFile } from "./types";
 
 const TOKEN_KEY = "lc_token";
 export const getToken = () => localStorage.getItem(TOKEN_KEY) ?? "";
@@ -24,13 +24,23 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return data as T;
 }
 
-export interface SendArgs { prompt: string; fileIds: string[]; pageUrl?: string; selectedTarget?: string }
+export interface SendArgs { prompt: string; fileIds: string[]; pageUrl?: string; selectedTarget?: string; approvalMode?: ApprovalMode; model?: string; extraContext?: string }
 
 export const api = {
   health: () => request<{ ok: boolean; model: string; authRequired: boolean }>("GET", "/health"),
   sites: () => request<Site[]>("GET", "/sites"),
-  addSite: (b: { name: string; url: string; username: string; appPassword: string }) => request<Site & { plugin?: any }>("POST", "/sites", b),
+  addSite: (b: { name: string; url: string; username: string; appPassword: string }) => request<Site & { plugin?: any; reconnected?: boolean; hostingNote?: string | null }>("POST", "/sites", b),
   deleteSite: (id: string) => request("DELETE", `/sites/${id}`),
+  updateSite: (id: string, b: { name?: string; username?: string; appPassword?: string }) => request<Site>("PUT", `/sites/${id}`, b),
+  siteStatus: (id: string) => request<SiteStatus>("GET", `/sites/${id}/status`),
+  assistant: (id: string, fresh = false) => request<AssistantInfo>("GET", `/sites/${id}/assistant${fresh ? "?fresh=1" : ""}`),
+  deleteJob: (id: string) => request("DELETE", `/jobs/${id}`),
+  setApprovalMode: (jobId: string, mode: ApprovalMode) => request<JobSummary>("PUT", `/jobs/${jobId}/approval-mode`, { mode }),
+  revertRequest: (jobId: string, requestId: number) => request<{ ok: boolean; reverted: number }>("POST", `/jobs/${jobId}/requests/${requestId}/revert`),
+  changeDiff: (jobId: string, changeId: string) => request<DiffData>("GET", `/jobs/${jobId}/changes/${changeId}/diff`),
+  saveProvider: (id: string, b: { apiKey?: string; baseUrl?: string; testModel?: string }) => request<{ ok: boolean; models: ProviderInfo[]; test?: { ok: boolean; reply?: string; ms: number } }>("PUT", `/integrations/models/${id}`, b),
+  removeProvider: (id: string) => request<{ ok: boolean; models: ProviderInfo[] }>("DELETE", `/integrations/models/${id}`),
+  testModel: (model: string) => request<{ ok: boolean; reply?: string; error?: string; ms: number }>("POST", "/integrations/models/test", { model }),
   jobs: () => request<JobSummary[]>("GET", "/jobs"),
   job: (id: string) => request<JobSummary>("GET", `/jobs/${id}`),
   createJob: (siteId: string, a: SendArgs) => request<JobSummary>("POST", "/jobs", { siteId, ...a }),
@@ -40,7 +50,7 @@ export const api = {
   revertChange: (jobId: string, changeId: string) => request<Record<string, unknown>>("POST", `/jobs/${jobId}/changes/${changeId}/revert`),
   linkHosting: (siteId: string) => request<Site>("POST", `/sites/${siteId}/link-hosting`),
 
-  integrations: () => request<{ hostinger: HostingerHealth }>("GET", "/integrations"),
+  integrations: () => request<{ hostinger: HostingerHealth; models: ProviderInfo[]; defaultModel: string }>("GET", "/integrations"),
   testHostinger: () => request<HostingerHealth>("POST", "/integrations/hostinger/test"),
   saveHostinger: (token: string) => request<HostingerHealth>("PUT", "/integrations/hostinger", { token }),
   removeHostinger: () => request<HostingerHealth>("DELETE", "/integrations/hostinger"),
@@ -112,7 +122,7 @@ export function buildTimeline(events: JobEvent[]): TimelineItem[] {
   for (const e of events) {
     const d = e.data;
     switch (e.type) {
-      case "user": items.push({ kind: "user", seq: e.seq, text: String(d.text ?? ""), fileIds: Array.isArray(d.fileIds) ? d.fileIds : [] }); break;
+      case "user": items.push({ kind: "user", seq: e.seq, text: String(d.text ?? ""), fileIds: Array.isArray(d.fileIds) ? d.fileIds : [], requestId: typeof d.requestId === "number" ? d.requestId : undefined }); break;
       case "text_delta": {
         const lastItem = items[items.length - 1];
         if (lastItem && lastItem.kind === "assistant" && lastItem.streaming) lastItem.text += String(d.text ?? "");

@@ -16,7 +16,7 @@ const DOING: Record<string, string> = {
   edit_post_content: "Editing the page content", set_post_status: "Changing the page status", get_menus: "Reading the menus",
   create_menu: "Creating the menu", add_menu_item: "Adding the menu link", upload_media_from_url: "Importing the image",
   view_image: "Looking at the image", create_file: "Creating a theme file", load_skill: "Reading WordPress guidelines",
-  list_changes: "Checking the changes", revert_change: "Reverting a change",
+  list_changes: "Checking the changes", revert_change: "Reverting a change", propose_plan: "Preparing the plan",
 };
 const DONE: Record<string, string> = {
   get_page_map: "Read the page", read_target: "Checked a stored value", find_text: "Searched the database",
@@ -29,7 +29,7 @@ const DONE: Record<string, string> = {
   edit_post_content: "Edited the page content", set_post_status: "Changed the page status", get_menus: "Read the menus",
   create_menu: "Created the menu", add_menu_item: "Added the menu link", upload_media_from_url: "Imported the image",
   view_image: "Looked at the image", create_file: "Created a theme file", load_skill: "Read WordPress guidelines",
-  list_changes: "Checked the changes", revert_change: "Reverted a change",
+  list_changes: "Checked the changes", revert_change: "Reverted a change", propose_plan: "Plan approved",
 };
 
 export function Thumb({ id, size = 56 }: { id: string; size?: number }) {
@@ -133,6 +133,7 @@ function Approval({ item, onAnswer, busy }: { item: Extract<TimelineItem, { kind
     create_page: "Create a new page", create_post: "Create a new blog post", edit_post_content: "Change page content",
     set_post_status: "Change page status", create_menu: "Create a navigation menu", add_menu_item: "Add a menu link",
     upload_media_from_url: "Import an image to the Media Library", revert_change: "Revert a change",
+    propose_plan: "Plan for this request",
   };
   const title = TITLES[item.tool] ?? item.tool;
   const backup = item.current as { path?: string; editedAt?: string } | null | undefined;
@@ -166,6 +167,13 @@ function Approval({ item, onAnswer, busy }: { item: Extract<TimelineItem, { kind
           <div className="ap-row before"><span className="ap-label">Before</span><Collapsible code={String(i.find ?? "")} /></div>
           <div className="ap-row after"><span className="ap-label">After</span><Collapsible code={String(i.replace ?? "")} /></div>
           <div className="ap-row"><span className="ap-label">Safety</span><span className="ap-target">A backup is kept. If the page breaks after saving, the original file is put back automatically.</span></div>
+        </div>
+      )}
+      {item.tool === "propose_plan" && (
+        <div className="ap-body ap-plan">
+          <div className="ap-plan-sum">{i.summary}</div>
+          <ol>{(i.steps ?? []).map((st: string, n: number) => <li key={n}>{st}</li>)}</ol>
+          <div className="ap-plan-note">One approval runs all steps. Every change is checked afterwards and the whole request can be reverted.</div>
         </div>
       )}
       {(item.tool === "create_page" || item.tool === "create_post") && (
@@ -224,7 +232,7 @@ function Approval({ item, onAnswer, busy }: { item: Extract<TimelineItem, { kind
             ? <input className="ap-note" autoFocus placeholder="Why not? (optional)" value={note} onChange={(e) => setNote(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") onAnswer(false, note || undefined); }} />
             : <span className="ap-hint">Nothing changes on your site until you approve.</span>}
           <button className="btn ghost" disabled={busy} onClick={() => (denying ? onAnswer(false, note || undefined) : setDenying(true))}>{denying ? "Confirm deny" : "Deny"}</button>
-          <button className="btn primary" disabled={busy} onClick={() => onAnswer(true)}><Icon.Check size={15} /> Approve</button>
+          <button className="btn primary" disabled={busy} onClick={() => onAnswer(true)}><Icon.Check size={15} /> {item.tool === "propose_plan" ? "Approve & run" : "Approve"}</button>
         </div>
       ) : a.reason && <div className="ap-reason">“{a.reason}”</div>}
     </div>
@@ -246,12 +254,23 @@ export function Transcript({ items, model, busy, working, welcome, onAnswer, onC
   const thinking = working && !toolRunning && last?.kind !== "assistant";
   const size = items.reduce((n, i) => n + (i.kind === "assistant" ? i.text.length : 1), 0);
 
-  useEffect(() => { const el = scroller.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [size, thinking]);
+  // Jump instantly: with smooth scrolling the scroll events fired mid-animation look like "the reader scrolled up".
+  const toBottom = (el: HTMLElement) => el.scrollTo({ top: el.scrollHeight, behavior: "instant" as ScrollBehavior });
+  useEffect(() => { const el = scroller.current; if (el && stick.current) toBottom(el); }, [size, thinking]);
+  // Content can grow after render (screenshots, images loading) - keep the newest message in view.
+  const inner = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = scroller.current, box = inner.current;
+    if (!el || !box || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => { if (stick.current) toBottom(el); });
+    ro.observe(box);
+    return () => ro.disconnect();
+  }, [items.length > 0]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!items.length) return <div className="transcript empty">{welcome}</div>;
   return (
     <div className="transcript" ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
-      <div className="transcript-inner">
+      <div className="transcript-inner" ref={inner}>
         {blocks.map((b, idx) => {
           switch (b.kind) {
             case "user":

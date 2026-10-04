@@ -5,9 +5,11 @@ import { Composer, type Context } from "./components/Composer";
 import { IntegrationsDialog, SiteDialog, TokenDialog } from "./components/Dialogs";
 import { Transcript } from "./components/Messages";
 import { Sidebar } from "./components/Sidebar";
+import { SitesDialog } from "./components/SitesDialog";
+import { ApprovalModePicker } from "./components/RequestChanges";
 import { Icon } from "./icons";
-import type { ChangeRecord, JobEvent, JobSummary, Site } from "./types";
-import { WRITE_TOOLS, changesFrom, prefs, titleOf, writeCount } from "./util";
+import type { ApprovalMode, ChangeRecord, JobEvent, JobSummary, Site } from "./types";
+import { WRITE_TOOLS, groupRequests, prefs, titleOf, writeCount, type RequestGroup } from "./util";
 
 const params = new URLSearchParams(location.search);
 const wide = () => window.innerWidth > 800;
@@ -24,7 +26,8 @@ export default function App() {
   const [jobId, setJobId] = useState<string>(params.get("job") ?? "");
   const [events, setEvents] = useState<JobEvent[]>([]);
   const [live, setLive] = useState(true);
-  const [dialog, setDialog] = useState<"" | "site" | "token" | "integrations">("");
+  const [dialog, setDialog] = useState<"" | "site" | "sites" | "token" | "integrations">("");
+  const [mode, setMode] = useState<ApprovalMode>(() => (localStorage.getItem("lc_mode") as ApprovalMode) || "request");
   const [panelTab, setPanelTab] = useState<PanelTab>(() => (localStorage.getItem("lc_tab") as PanelTab) || "preview");
   const [hostingerOk, setHostingerOk] = useState(false);
   const [baseLedger, setBaseLedger] = useState<ChangeRecord[]>([]);
@@ -68,7 +71,7 @@ export default function App() {
   useEffect(() => {
     setEvents([]); setBaseLedger([]);
     if (!jobId) return;
-    api.job(jobId).then((j) => setBaseLedger(j.changes ?? [])).catch(() => {});
+    api.job(jobId).then((j) => { setBaseLedger(j.changes ?? []); if (j.approvalMode) setMode(j.approvalMode); }).catch(() => {});
     return followJob(jobId, (e) => {
       setEvents((cur) => [...cur, e]);
       if (e.type === "status") refreshJobs();
@@ -94,7 +97,8 @@ export default function App() {
   const status = jobId ? lastStatus(events) : "idle";
   const timeline = useMemo(() => buildTimeline(events), [events]);
   const ledger = useMemo(() => ledgerFrom(baseLedger, events), [baseLedger, events]);
-  const changes = useMemo(() => changesFrom(timeline, ledger), [timeline, ledger]);
+  const groups = useMemo(() => groupRequests(timeline, ledger, status === "queued" || status === "running"), [timeline, ledger, status]);
+  const changeCount = groups.filter((g) => g.changes.length).length;
   const reloadKey = useMemo(() => writeCount(timeline) + events.filter((e) => e.type === "change_update").length, [timeline, events]);
   const togglePanel = (t: PanelTab) => { if (panelOpen && panelTab === t) setPanelOpen(false); else { setPanelTab(t); setPanelOpen(true); } };
   const working = status === "queued" || status === "running";
@@ -106,7 +110,7 @@ export default function App() {
     setProblem("");
     if (!siteId) { setDialog("site"); return; }
     try {
-      const args = { prompt, fileIds, pageUrl: ctx.pageUrl, selectedTarget: ctx.selectedTarget };
+      const args = { prompt, fileIds, pageUrl: ctx.pageUrl, selectedTarget: ctx.selectedTarget, approvalMode: mode };
       if (jobId && (status === "completed" || status === "failed")) await api.message(jobId, args);
       else { const j = await api.createJob(siteId, args); setJobId(j.id); }
       refreshJobs();
@@ -116,11 +120,16 @@ export default function App() {
     setAnswering(true); setProblem("");
     try { await api.approve(jobId, approvalId, approved, reason); } catch (e) { guard(e); } finally { setAnswering(false); }
   }
-  async function revert(changeId: string, what: string) {
-    if (!window.confirm(`Revert this change?\n\n${what}\n\nIt will be undone on the live site.`)) return;
-    setProblem("");
-    try { await api.revertChange(jobId, changeId); say("Reverted"); setPanelTab("preview"); }
+  async function revert(g: RequestGroup) {
+    setProblem(""); // confirmed inline in the Changes card
+    try { const r = await api.revertRequest(jobId, g.requestId); say(`Reverted ${r.reverted} change${r.reverted === 1 ? "" : "s"}`); setPanelTab("preview"); }
     catch (e) { guard(e); }
+  }
+  async function changeMode(m: ApprovalMode) {
+    setMode(m);
+    try { localStorage.setItem("lc_mode", m); } catch { /* ignore */ }
+    if (jobId) await api.setApprovalMode(jobId, m).catch(guard);
+    say(m === "auto" ? "Auto: changes run without asking" : m === "every" ? "Approve every change" : "One approval per request");
   }
   const openInPreview = (url: string) => { setPanelTab("preview"); setPanelOpen(true); setNavigate({ url, n: Date.now() }); };
   const copy = (t: string) => { navigator.clipboard?.writeText(t).then(() => say("Copied"), () => say("Copy failed")); };
@@ -148,7 +157,7 @@ export default function App() {
         {navOpen && !wide() && <div className="scrim" onClick={() => setNavOpen(false)} />}
         {navOpen && (
           <Sidebar sites={sites} site={site} jobs={siteJobs} jobId={jobId} titles={titles} pinned={pinned} model={model}
-            onSelectSite={(id) => { setSiteId(id); setJobId(""); }} onAddSite={() => setDialog("site")} onToken={() => { setTokenReason(undefined); setDialog("token"); }} hostingerOk={hostingerOk} onIntegrations={() => setDialog("integrations")}
+            onSelectSite={(id) => { setSiteId(id); setJobId(""); }} onAddSite={() => setDialog("site")} onManageSites={() => setDialog("sites")} onToken={() => { setTokenReason(undefined); setDialog("token"); }} hostingerOk={hostingerOk} onIntegrations={() => setDialog("integrations")}
             onSelectJob={openJob} onNewChat={newChat} onTogglePin={(id) => setPinned(prefs.togglePin(id))} onHide={() => setNavOpen(false)} />
         )}
 
@@ -162,7 +171,7 @@ export default function App() {
             <span className="grow" />
             <button className={`pillbtn ${panelOpen && panelTab === "preview" ? "on" : ""}`} disabled={!site} onClick={() => togglePanel("preview")} title="Live preview of the site"><Icon.Eye size={15} /> <span className="lbl">Preview</span></button>
             <button className="pillbtn" disabled={!jobId} onClick={() => { copy(`${location.origin}${location.pathname}?site=${siteId}&job=${jobId}`); }}><Icon.Share size={15} /> <span className="lbl">Share</span></button>
-            <button className={`pillbtn ${panelOpen && panelTab === "changes" ? "on" : ""}`} onClick={() => togglePanel("changes")} title="Changes made in this chat"><Icon.List size={15} /> <span className="lbl">Changes</span>{changes.length > 0 && <span className="count">{changes.length}</span>}</button>
+            <button className={`pillbtn ${panelOpen && panelTab === "changes" ? "on" : ""}`} onClick={() => togglePanel("changes")} title="Changes made in this chat"><Icon.List size={15} /> <span className="lbl">Changes</span>{changeCount > 0 && <span className="count">{changeCount}</span>}</button>
             <div className="kebab-wrap" ref={kebabRef}>
               <button className="ghost-icon" onClick={() => setKebab(!kebab)} aria-label="More" disabled={!jobId}><Icon.More size={18} /></button>
               {kebab && job && (
@@ -183,16 +192,19 @@ export default function App() {
               onRetry={(t) => { if (t && (status === "completed" || status === "failed")) void send(t, []); }} />
             <Composer disabled={!siteId || working || waiting} model={model} context={ctx} draft={draft}
               placeholder={waiting ? "Waiting for your approval above…" : working ? "Working…" : site ? "Ask Livecrafts to change anything on your site…" : "Connect a site first"}
-              onClearContext={(k) => setCtx((c) => ({ ...c, [k]: undefined }))} onSend={send} />
+              onClearContext={(k) => setCtx((c) => ({ ...c, [k]: undefined }))} onSend={send}
+              extra={<><ApprovalModePicker mode={mode} onChange={(m) => void changeMode(m)} /><span className="model-pill" title="Default model (LC_MODEL). A site can choose its own in WordPress → Settings → Livecrafts Assistant."><Icon.Sparkle size={13} /> {model}</span></>} />
           </section>
         </main>
 
-        {panelOpen && <ChangesPanel tab={panelTab} onTab={setPanelTab} changes={changes} context={ctx} siteUrl={site?.url} reloadKey={reloadKey} navigate={navigate} busy={working}
+        {panelOpen && <ChangesPanel tab={panelTab} onTab={setPanelTab} jobId={jobId} groups={groups} context={ctx} siteUrl={site?.url} reloadKey={reloadKey} navigate={navigate} busy={working}
           onRevert={revert} onOpen={openInPreview} onClose={() => setPanelOpen(false)} />}
       </div>
 
       {toast && <div className="toast">{toast}</div>}
-      {dialog === "site" && <SiteDialog onClose={() => setDialog("")} onAdded={(s) => { setSites((x) => [...x, s]); setSiteId(s.id); setJobId(""); }} />}
+      {dialog === "site" && <SiteDialog onClose={() => setDialog("")} onAdded={(s) => { refreshSites(); setSiteId(s.id); setJobId(""); say((s as any).reconnected ? "Site reconnected" : "Site connected"); }} />}
+      {dialog === "sites" && <SitesDialog sites={sites} currentId={siteId} onClose={() => setDialog("")} onChanged={refreshSites}
+        onSelect={(id) => { setSiteId(id); setJobId(""); }} onAdd={() => setDialog("site")} />}
       {dialog === "integrations" && <IntegrationsDialog sites={sites} onClose={() => { setDialog(""); refreshSites(); }} onSites={refreshSites} />}
       {dialog === "token" && <TokenDialog reason={tokenReason} onClose={() => setDialog("")} />}
     </div>

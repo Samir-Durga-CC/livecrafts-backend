@@ -17,13 +17,21 @@ export type RevertSpec =
   | { kind: "menu"; id: number }                                           // create_menu -> delete that menu
   | { kind: "menu-item"; id: number };                                     // add_menu_item -> delete that item
 
+/** What a "view diff" shows: inline before/after, or a pointer to a stored backup (file / page content). */
+export interface DiffSource { label: string; language?: string; before?: string; after?: string; fileBackupId?: string; postBackupId?: string }
+
 export interface ChangeRecord {
   id: string; tool: string; title: string;
   key: string;              // what was touched; a newer change to the same key must be reverted first
   at: string; link?: string;
   revert: RevertSpec | null; note?: string;
   revertedAt?: string; revertError?: string;
+  requestId?: number;       // which person request (message) it belongs to - the Changes panel groups by this
+  request?: string;
+  diff?: DiffSource;
 }
+
+const langOf = (p: string) => (p.match(/\.(\w+)$/)?.[1] ?? "text").toLowerCase();
 
 export interface PostBackup { id: string; siteId: string; type: PostType; postId: number; before: string; after: string; createdAt: string }
 let postBackupStore: JsonStore<PostBackup> | null = null;
@@ -41,22 +49,29 @@ export function recordFor(tool: string, input: any, out: any): ChangeRecord | nu
     case "set_content": {
       const revertable = typeof out.previous === "string";
       return { ...base, title: why("Change content"), key: `target:${input.target}`, revert: revertable ? { kind: "content", target: input.target, previous: out.previous } : null,
-        note: revertable ? undefined : "The old value could not be captured; use “undo the last change” in the chat." };
+        note: revertable ? undefined : "The old value could not be captured; use “undo the last change” in the chat.",
+        diff: { label: String(input.target), before: revertable ? out.previous : undefined, after: String(input.value ?? "") } };
     }
     case "edit_file": case "create_file":
-      return { ...base, title: why(tool === "create_file" ? `Create ${input.path}` : `Edit ${input.path}`), key: `file:${out.path ?? input.path}`, revert: out.backupId ? { kind: "file", backupId: out.backupId } : null };
+      return { ...base, title: why(tool === "create_file" ? `Create ${input.path}` : `Edit ${input.path}`), key: `file:${out.path ?? input.path}`, revert: out.backupId ? { kind: "file", backupId: out.backupId } : null,
+        diff: { label: String(out.path ?? input.path), language: langOf(String(input.path)), fileBackupId: out.backupId } };
     case "edit_post_content":
-      return { ...base, title: why("Edit page content"), key: `post:${input.type}:${input.id}`, link: out.link, revert: { kind: "post-content", type: input.type, id: input.id, backupId: out.backupId } };
+      return { ...base, title: why("Edit page content"), key: `post:${input.type}:${input.id}`, link: out.link, revert: { kind: "post-content", type: input.type, id: input.id, backupId: out.backupId },
+        diff: { label: `${input.type === "posts" ? "Post" : "Page"} #${input.id} content`, language: "html", postBackupId: out.backupId } };
     case "set_post_status":
-      return { ...base, title: why(`Set status to ${input.status}`), key: `post:${input.type}:${input.id}`, link: out.link, revert: { kind: "post-status", type: input.type, id: input.id, previous: out.previousStatus } };
+      return { ...base, title: why(`Set status to ${input.status}`), key: `post:${input.type}:${input.id}`, link: out.link, revert: { kind: "post-status", type: input.type, id: input.id, previous: out.previousStatus },
+        diff: { label: `${input.type === "posts" ? "Post" : "Page"} #${input.id} status`, before: String(out.previousStatus ?? ""), after: String(input.status) } };
     case "create_page": case "create_post": {
       const type: PostType = tool === "create_page" ? "pages" : "posts";
-      return { ...base, title: why(`Create ${tool === "create_page" ? "page" : "post"} “${input.title}”`), key: `post:${type}:${out.id}`, link: out.link, revert: { kind: "trash", type, id: out.id } };
+      return { ...base, title: why(`Create ${tool === "create_page" ? "page" : "post"} “${input.title}”`), key: `post:${type}:${out.id}`, link: out.link, revert: { kind: "trash", type, id: out.id },
+        diff: { label: `New ${tool === "create_page" ? "page" : "post"}: ${input.title}`, language: "html", before: "", after: String(input.content ?? "") } };
     }
     case "create_menu":
-      return { ...base, title: why(`Create menu “${input.name}”`), key: `menu:${out.menuId}`, revert: { kind: "menu", id: out.menuId } };
+      return { ...base, title: why(`Create menu “${input.name}”`), key: `menu:${out.menuId}`, revert: { kind: "menu", id: out.menuId },
+        diff: { label: `Menu “${input.name}” (${input.location})`, before: "", after: (input.items ?? []).map((i: any) => `${i.title} → ${i.url ?? "page #" + i.pageId}`).join("\n") } };
     case "add_menu_item":
-      return { ...base, title: why(`Add “${input.title}” to the menu`), key: `menu-item:${out.itemId}`, revert: { kind: "menu-item", id: out.itemId } };
+      return { ...base, title: why(`Add “${input.title}” to the menu`), key: `menu-item:${out.itemId}`, revert: { kind: "menu-item", id: out.itemId },
+        diff: { label: `Menu #${input.menuId}`, before: "", after: `${input.title} → ${input.url ?? "page #" + input.pageId}` } };
     case "upload_media_from_chat": case "upload_media_from_url":
       return { ...base, title: why(`Upload image “${out.title ?? input.title ?? "image"}”`), key: `media:${out.id}`, link: out.url, revert: null, note: "Uploaded images stay in the Media Library (delete them there if not needed)." };
     case "undo_last_change": case "restore_file": case "revert_change":
@@ -111,4 +126,21 @@ export async function revertChange(c: ChangeRecord, d: RevertDeps): Promise<Reco
     case "menu": await d.bridge.deleteMenu(r.id); return { ok: true };
     case "menu-item": await d.bridge.deleteMenuItem(r.id); return { ok: true };
   }
+}
+
+/** Resolve a change's diff into before/after text (reads the stored backups). */
+export function diffOf(c: ChangeRecord, files: { getBackup(id: string): { before: string; after: string; path: string } | undefined } | null): { label: string; language: string; before: string; after: string } | null {
+  const d = c.diff;
+  if (!d) return null;
+  if (d.fileBackupId) {
+    const b = files?.getBackup(d.fileBackupId);
+    if (!b) return null;
+    return { label: d.label, language: d.language ?? "text", before: b.before, after: b.after };
+  }
+  if (d.postBackupId) {
+    const b = postBackups().get(d.postBackupId);
+    if (!b) return null;
+    return { label: d.label, language: d.language ?? "html", before: b.before, after: b.after };
+  }
+  return { label: d.label, language: d.language ?? "text", before: d.before ?? "", after: d.after ?? "" };
 }

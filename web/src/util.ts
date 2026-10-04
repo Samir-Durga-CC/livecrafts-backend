@@ -118,3 +118,56 @@ export function ago(iso: string) {
   if (s < 86400) return `${Math.round(s / 3600)}h`;
   return `${Math.round(s / 86400)}d`;
 }
+
+// ---------------------------------------------------------------- Changes panel: ONE card per request
+export type RequestState = "pending" | "working" | "applied" | "partial" | "reverted" | "denied" | "failed";
+export interface RequestGroup {
+  requestId: number; text: string; at?: string;
+  changes: ChangeRecord[];                 // applied writes of this request (from the ledger)
+  pending: number; denied: number;         // approval cards waiting / refused in this request
+  failures: { title: string; error?: string }[];
+  state: RequestState;
+}
+
+/** Walk the chat: every person message starts a request; collect what that request changed. */
+export function groupRequests(items: TimelineItem[], ledger: Map<string, ChangeRecord>, working: boolean): RequestGroup[] {
+  const groups: RequestGroup[] = [];
+  const all = [...ledger.values()];
+  let cur: RequestGroup | null = null;
+  let n = 0;
+  for (const it of items) {
+    if (it.kind === "user") {
+      n += 1;
+      const id = it.requestId ?? n;
+      cur = { requestId: id, text: it.text, changes: all.filter((c) => (c.requestId ?? 1) === id), pending: 0, denied: 0, failures: [], state: "applied" };
+      groups.push(cur);
+      continue;
+    }
+    if (!cur) continue;
+    if (it.kind === "approval" && WRITE_TOOLS.concat("propose_plan").includes(it.tool)) {
+      if (!it.answer) cur.pending++;
+      else if (!it.answer.approved) cur.denied++;
+    }
+    if (it.kind === "tool" && WRITE_TOOLS.includes(it.tool) && it.state === "failed") cur.failures.push({ title: it.tool.replace(/_/g, " "), error: it.error });
+  }
+  const last = groups[groups.length - 1];
+  for (const g of groups) {
+    g.at = g.changes[0]?.at;
+    const active = g.changes.filter((c) => !c.revertedAt).length;
+    g.state = g.pending ? "pending"
+      : working && g === last ? "working"
+      : g.changes.length && active === 0 ? "reverted"
+      : g.changes.length && active < g.changes.length ? "partial"
+      : g.changes.length ? "applied"
+      : g.denied ? "denied" : g.failures.length ? "failed" : "applied";
+  }
+  return groups.filter((g) => g.changes.length || g.pending || g.denied || g.failures.length || (working && g === last));
+}
+
+/** Short name for a change chip: the file name, page or field it touched. */
+export function chipLabel(c: ChangeRecord): string {
+  const k = c.key ?? "";
+  if (k.startsWith("file:")) return k.slice(5).split("/").pop() || k.slice(5);
+  if (c.diff?.label) return c.diff.label.length > 34 ? c.diff.label.slice(0, 33) + "…" : c.diff.label;
+  return c.title.length > 34 ? c.title.slice(0, 33) + "…" : c.title;
+}

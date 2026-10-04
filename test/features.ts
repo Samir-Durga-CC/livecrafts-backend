@@ -281,6 +281,74 @@ console.log("\n7) official WordPress skills are available to the assistant");
   assert.match(sk.catalogue(), /wp-rest-api/); ok("the catalogue goes into the assistant's instructions");
 }
 
+// ------------------------------------------------------------------ 8) approval modes, per-request grouping, diffs, revert a whole request
+console.log("\n8) approval modes: one approval per request / auto; changes grouped per request; GitHub-style diffs; revert a request");
+{
+  const css0 = wp.files.get(`${THEME}/style.css`)!;
+  wp.hero = "Old Title";
+  const steps = () => [
+    () => call("propose_plan", { summary: "Restyle footer and rename hero", steps: ["Darken the footer background in style.css", "Change the hero title to Hello"] }),
+    () => call("edit_file", { path: `${THEME}/style.css`, find: css0.split("\n")[0], replace: css0.split("\n")[0].replace(/background: [^;]+;/, "background: #000;"), reason: "Darker footer" }),
+    () => call("set_content", { target: "acf:field_hero_title:5", value: "Hello", reason: "New hero title" }),
+    () => say("Done - both steps applied and verified."),
+  ];
+  const runner = runnerFor(scripted(steps()));
+  const job = runner.create(site.id, "make the footer darker and the hero say Hello", undefined, [], { approvalMode: "request" });
+  const paused = await runner.waitUntilSettled(job.id);
+  assert.equal(paused.status, "waiting_approval"); assert.equal(paused.pending[0].toolName, "propose_plan"); assert.equal(wp.files.get(`${THEME}/style.css`), css0);
+  ok("'once per request': the plan is shown first, nothing changed yet");
+  runner.respond(job.id, paused.pending[0].approvalId, true);
+  const done = await runner.waitUntilSettled(job.id);
+  assert.equal(done.status, "completed"); assert.match(wp.files.get(`${THEME}/style.css`)!, /#000/); assert.equal(wp.hero, "Hello");
+  ok("after ONE approval both changes ran without more questions");
+  assert.ok(done.changes!.every((c: any) => c.requestId === 1 && /footer darker/.test(c.request))); ok("both changes are grouped under request #1 with its text");
+
+  const app = createApp(runner, sites, files);
+  await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
+  const api = `http://127.0.0.1:${(app.address() as any).port}`;
+  const fileChg = done.changes!.find((c: any) => c.tool === "edit_file")!;
+  const d: any = await fetch(`${api}/jobs/${job.id}/changes/${fileChg.id}/diff`).then((r) => r.json());
+  assert.equal(d.before, css0); assert.match(d.after, /#000/); assert.equal(d.language, "css"); ok("diff of the file change: exact before/after (css)");
+  const textChg = done.changes!.find((c: any) => c.tool === "set_content")!;
+  const d2: any = await fetch(`${api}/jobs/${job.id}/changes/${textChg.id}/diff`).then((r) => r.json());
+  assert.equal(d2.before, "Old Title"); assert.equal(d2.after, "Hello"); ok("diff of the content change: old → new value");
+  const rr = await fetch(`${api}/jobs/${job.id}/requests/1/revert`, { method: "POST" }).then(async (r) => ({ status: r.status, body: await r.json() as any }));
+  assert.equal(rr.status, 200); assert.equal(rr.body.reverted, 2); assert.equal(wp.files.get(`${THEME}/style.css`), css0); assert.equal(wp.hero, "Old Title");
+  ok("“Revert request” undid both changes (newest first)");
+
+  const auto = runnerFor(scripted([() => call("set_content", { target: "acf:field_hero_title:5", value: "Auto", reason: "x" }), () => say("Done.")]));
+  const aj = auto.create(site.id, "hero Auto", undefined, [], { approvalMode: "auto" });
+  const ad = await auto.waitUntilSettled(aj.id);
+  assert.equal(ad.status, "completed"); assert.equal(wp.hero, "Auto"); assert.equal(ad.changes!.length, 1); ok("'auto': no approval card, change applied, still in the ledger (revertable)");
+
+  const every = runnerFor(scripted([() => call("set_content", { target: "acf:field_hero_title:5", value: "A", reason: "x" }), () => call("set_content", { target: "acf:field_hero_title:5", value: "B", reason: "y" }), () => say("ok")]));
+  const ej = every.create(site.id, "two edits", undefined, [], { approvalMode: "every" });
+  let s1 = await every.waitUntilSettled(ej.id); every.respond(ej.id, s1.pending[0].approvalId, true);
+  const s2 = await every.waitUntilSettled(ej.id);
+  assert.equal(s2.status, "waiting_approval"); ok("'every change': the second write asks again");
+  every.respond(ej.id, s2.pending[0].approvalId, true); await every.waitUntilSettled(ej.id);
+
+  const del = await fetch(`${api}/jobs/${ej.id}`, { method: "DELETE" }); assert.equal(del.status, 200); assert.equal(every.get(ej.id), undefined); ok("a chat can be deleted (clear history)");
+  app.close();
+}
+
+// ------------------------------------------------------------------ 9) AI providers
+console.log("\n9) models: provider:model names, clear errors when a key is missing");
+{
+  const { parseModelSpec, resolveModel, testModel } = await import("../src/models.js");
+  assert.deepEqual(parseModelSpec("gpt-5.5"), { provider: "openai", model: "gpt-5.5" });
+  assert.deepEqual(parseModelSpec("anthropic:claude-sonnet-5-5"), { provider: "anthropic", model: "claude-sonnet-5-5" });
+  assert.deepEqual(parseModelSpec("openrouter:google/gemini-3-pro"), { provider: "openrouter", model: "google/gemini-3-pro" });
+  assert.deepEqual(parseModelSpec("groq:openai/gpt-oss-120b"), { provider: "groq", model: "openai/gpt-oss-120b" });
+  assert.deepEqual(parseModelSpec("anthropic/claude-sonnet-5-5"), { provider: "gateway", model: "anthropic/claude-sonnet-5-5" });
+  ok("model names: openai (plain), anthropic:, openrouter:, groq:, and vendor/model = AI Gateway");
+  const saved = process.env.GROQ_API_KEY; delete process.env.GROQ_API_KEY;
+  assert.throws(() => resolveModel("groq:llama-3.3-70b-versatile"), /No API key for Groq/); ok("a missing key gives a clear message (not a crash)");
+  assert.throws(() => resolveModel("custom:my-model"), /no address/); ok("the custom provider asks for its address first");
+  const t = await testModel("groq:x"); assert.equal(t.ok, false); ok("'Save & test' reports failures as a result");
+  if (saved) process.env.GROQ_API_KEY = saved;
+}
+
 console.log(`\nALL GOOD: ${passed} checks passed.\n`);
 fakeWp.close();
 process.exit(0);

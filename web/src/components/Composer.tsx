@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
 import { Icon } from "../icons";
 import type { UploadedFile } from "../types";
@@ -7,8 +7,9 @@ interface Attachment { key: string; name: string; preview: string; state: "uploa
 
 export interface Context { pageUrl?: string; selectedTarget?: string }
 
-export function Composer({ disabled, placeholder, model, context, draft, onClearContext, onSend }: {
+export function Composer({ disabled, placeholder, model, context, draft, onClearContext, onSend, extra, chips, compact }: {
   disabled: boolean; placeholder: string; model: string; context: Context; draft?: { text: string; n: number };
+  extra?: ReactNode; chips?: ReactNode; compact?: boolean;
   onClearContext: (k: keyof Context) => void; onSend: (text: string, fileIds: string[]) => Promise<void>;
 }) {
   const [text, setText] = useState("");
@@ -45,11 +46,12 @@ export function Composer({ disabled, placeholder, model, context, draft, onClear
   }
 
   return (
-    <div className={`composer ${drag ? "drag" : ""} ${disabled ? "off" : ""}`}
+    <div className={`composer ${drag ? "drag" : ""} ${disabled ? "off" : ""} ${compact ? "compact" : ""}`}
       onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
       onDrop={(e) => { e.preventDefault(); setDrag(false); add(e.dataTransfer.files); }}>
-      {(context.pageUrl || context.selectedTarget) && (
+      {(context.pageUrl || context.selectedTarget || chips) && (
         <div className="chips">
+          {chips}
           {context.pageUrl && <span className="chip"><Icon.Globe size={13} /> {context.pageUrl.replace(/^https?:\/\//, "")}<button aria-label="remove" onClick={() => onClearContext("pageUrl")}><Icon.Close size={12} /></button></span>}
           {context.selectedTarget && <span className="chip"><Icon.Pin size={13} /> <code>{context.selectedTarget}</code><button aria-label="remove" onClick={() => onClearContext("selectedTarget")}><Icon.Close size={12} /></button></span>}
         </div>
@@ -79,7 +81,7 @@ export function Composer({ disabled, placeholder, model, context, draft, onClear
         <input ref={picker} type="file" accept="image/*" multiple hidden onChange={(e) => { if (e.target.files) add(e.target.files); e.target.value = ""; }} />
         <span className="c-hint">Enter to send · Shift+Enter for a new line</span>
         <span className="grow" />
-        <span className="model-pill" title="Change the model with LC_MODEL in the backend .env"><Icon.Sparkle size={13} /> {model}</span>
+        {extra ?? <span className="model-pill" title="Change the model with LC_MODEL in the backend .env"><Icon.Sparkle size={13} /> {model}</span>}
         <button className="send" onClick={() => void submit()} disabled={!canSend} aria-label="Send"><Icon.Send size={19} /></button>
       </div>
     </div>

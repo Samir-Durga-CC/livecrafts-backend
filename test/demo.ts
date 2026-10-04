@@ -34,14 +34,23 @@ const remoteFiles = () => ({
 
 // ------------------------------------------------------------------ fake WordPress
 const wp = { title: "Delivering Reliable Process Solutions.", cta: "Request Consultation", imageId: 7, imageUrl: "https://placehold.co/600x300/png?text=Current+hero", nextId: 100, pages: new Map<number, any>() };
-const pageHtml = (body: string) => `<!doctype html><html><head><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/${CSS_PATH}?ver=1"></head><body>${body}</body></html>`;
+// The REAL plugin widget (livecrafts/assets/widget.js + .css) is loaded on every demo page, exactly like WordPress does it.
+const PLUGIN_ASSETS = path.resolve(process.cwd(), "..", "livecrafts", "livecrafts", "assets");
+const DEMO_PORT = Number(process.env.DEMO_PORT ?? 8791);
+const widgetTags = () => `<link rel="stylesheet" href="/wp-content/plugins/livecrafts/assets/widget.css">
+<script>window.LIVECRAFTS_WIDGET=${JSON.stringify({ backend: `http://127.0.0.1:${DEMO_PORT}`, token: "", botName: "Aero Assistant", welcome: "Hi! I'm the Aeromatic site assistant. Tell me what to change, or pick an element on the page.", accent: "#e8590c", position: "right", approvalMode: "request", siteUrl: wpUrl, user: "admin" })}; window.LIVECRAFTS_WIDGET.pageUrl = location.href;</script>
+<script src="/wp-content/plugins/livecrafts/assets/widget.js" defer></script>`;
+const pageHtml = (body: string) => `<!doctype html><html><head><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/${CSS_PATH}?ver=1"></head><body>${body}${widgetTags()}</body></html>`;
 const fakeWp = http.createServer(async (req, res) => {
   const u = new URL(req.url!, "http://x");
   const chunks: Buffer[] = []; for await (const c of req) chunks.push(c as Buffer);
   const raw = Buffer.concat(chunks);
   const json = (code: number, o: unknown) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); };
   const route = u.pathname.replace("/wp-json/livecrafts/v1/", "");
-  if (route === "ping") return json(200, { ok: true, plugin: "livecrafts", version: "0.6.0", capabilities: { acf: true, elementor: false } });
+  if (route === "ping") return json(200, { ok: true, plugin: "livecrafts", version: "0.8.0", site: { wp: "6.8", php: "8.3" }, user: { login: "admin", can_edit_pages: true, can_edit_themes: true }, capabilities: { acf: true, elementor: false, theme_files: false, theme: "aeromatic" } });
+  if (route === "assistant") return json(200, { ok: true, botName: "Aero Assistant", welcome: "Hi! I'm the Aeromatic site assistant. Tell me what to change, or pick an element on the page.", instructions: "Brand colours: #e8590c and #111827.", model: "", approvalMode: "request", accent: "#e8590c" });
+  const asset = u.pathname.match(/^\/wp-content\/plugins\/livecrafts\/assets\/(widget\.(js|css))$/);
+  if (asset) { res.writeHead(200, { "Content-Type": asset[2] === "js" ? "text/javascript" : "text/css", "Cache-Control": "no-store" }); return res.end(fs.readFileSync(path.join(PLUGIN_ASSETS, asset[1]))); }
   if (route === "map") return json(200, {
     ok: true, post: { id: 5, title: "Home", url: wpUrl + "/" }, builders: { acf_fields: 3 }, elementor: [],
     acf: [
@@ -71,7 +80,7 @@ const fakeWp = http.createServer(async (req, res) => {
   const created = [...wp.pages.values()].find((p) => u.pathname === `/${p.slug}/` && p.status === "publish");
   if (created) { res.writeHead(200, { "Content-Type": "text/html" }); return res.end(pageHtml(`<main class="hero"><h1 class="hero__title">${created.title}</h1>${String(created.content).replace(/<!--[\s\S]*?-->/g, "")}</main>`)); }
   if ([...wp.pages.values()].some((p) => u.pathname === `/${p.slug}/`)) { res.writeHead(404, { "Content-Type": "text/html" }); return res.end(pageHtml("<main class='hero'><h1>Page not found</h1><p>This page is in the Trash.</p></main>")); }
-  if (u.pathname === "/" || u.pathname.endsWith("/")) { res.writeHead(200, { "Content-Type": "text/html" }); return res.end(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/${CSS_PATH}?ver=1"></head><body><section class="hero"><h1 class="hero__title">${wp.title}</h1><a class="hero__cta" href="#">${wp.cta}</a><img src="${wp.imageUrl}"></section></body></html>`); }
+  if (u.pathname === "/" || u.pathname.endsWith("/")) { res.writeHead(200, { "Content-Type": "text/html" }); return res.end(pageHtml(`<section class="hero"><h1 class="hero__title">${wp.title}</h1><a class="hero__cta" href="#">${wp.cta}</a><img src="${wp.imageUrl}"></section>`)); }
   json(404, { code: "rest_no_route", message: "No route" });
 });
 await new Promise<void>((r) => fakeWp.listen(0, "127.0.0.1", r));
@@ -97,7 +106,8 @@ const model = mockModel(async ({ prompt }: any) => {
   const tool = lastTool(prompt);
   const wanted = user.match(/\bto\s+["“]?(.+?)["”]?\s*$/im)?.[1];
   const fileId = user.match(/file_[a-f0-9]+/)?.[0];
-  const colour = user.match(/\b(blue|red|green|purple|orange|black|#[0-9a-f]{3,6})\b/i)?.[1]?.toLowerCase();
+  // a Quick-actions style request says "color: #old → #new" - use the new one
+  const colour = (user.match(/color: [^\n]*?→\s*(#[0-9a-f]{3,6})\b/i)?.[1] ?? user.match(/\b(blue|red|green|purple|orange|black|#[0-9a-f]{3,6})\b/i)?.[1])?.toLowerCase();
   const HEX: Record<string, string> = { blue: "#1d4ed8", red: "#b91c1c", green: "#15803d", purple: "#7e22ce", orange: "#c2410c", black: "#111827" };
   const styleAsk = !!colour && /title|heading/i.test(user);
   const revertAsk = /\b(revert|restore|undo)\b/i.test(user) && !!lastBackup;

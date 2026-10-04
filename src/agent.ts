@@ -1,6 +1,6 @@
 import { ToolLoopAgent, isStepCount } from "ai";
-import { openai } from "@ai-sdk/openai";
 import type { LanguageModel } from "ai";
+import { resolveModel as resolveSpec } from "./models.js";
 import { config } from "./config.js";
 import { Bridge } from "./bridge.js";
 import { FileStore } from "./files.js";
@@ -12,15 +12,23 @@ import { APPROVAL_REQUIRED, makeTools, type ToolExtras } from "./tools.js";
 import { Skills } from "./skills.js";
 import { hydrateMessages } from "./vision.js";
 import type { ChangeRecord } from "./changes.js";
-import type { Site } from "./types.js";
+import type { ApprovalMode, Site } from "./types.js";
 
 /** Minimal shape the job runner needs (the SDK agent streams), so tests can plug in a mock. */
 export interface AgentLike {
   stream(args: any): Promise<any>;
 }
 export interface AgentBundle { agent: AgentLike; bridge: Bridge; siteFiles?: SiteFiles | null }
-/** What a running job lends the agent: its change ledger (for list_changes / revert_change). */
-export interface JobContext { changes: { list(): ChangeRecord[]; revert(id: string): Promise<Record<string, unknown>> } }
+/** Assistant settings that come from WordPress (Settings → Livecrafts): name, extra instructions, model. */
+export interface Persona { botName?: string; instructions?: string; model?: string }
+
+/** What a running job lends the agent. */
+export interface JobContext {
+  changes: { list(): ChangeRecord[]; revert(id: string): Promise<Record<string, unknown>> };
+  approval?: { mode: ApprovalMode; planApproved: boolean };
+  model?: string;
+  persona?: Persona | null;
+}
 export type AgentFactory = (site: Site, job?: JobContext) => AgentBundle;
 
 /**
@@ -28,10 +36,16 @@ export type AgentFactory = (site: Site, job?: JobContext) => AgentBundle;
  * is a Vercel AI Gateway id, so switching GPT <-> Claude <-> Gemini is a one-line config change.
  */
 export function resolveModel(id: string): LanguageModel {
-  return (id.includes("/") ? id : openai(id)) as LanguageModel;
+  return resolveSpec(id);
 }
 
-export interface Capabilities { files: boolean; browser: boolean; hostinger: boolean; skills: string }
+export interface Capabilities { files: boolean; browser: boolean; hostinger: boolean; skills: string; mode?: ApprovalMode; persona?: Persona | null }
+
+const MODE_TEXT: Record<ApprovalMode, string> = {
+  every: "APPROVAL: every change needs the person's approval; each write tool call shows them an approval card - wait for it.",
+  request: "APPROVAL: ONE approval per request. Before the FIRST change of a request, call propose_plan with a short summary and the concrete steps (which page/file/menu, what changes). After the person approves the plan, carry out ALL the steps without asking again. Stay within the approved plan; if something outside it is needed, propose a new plan.",
+  auto: "APPROVAL: auto mode - changes run without asking. Be extra careful: inspect first, keep changes minimal, verify every change, and tell the person exactly what changed (they can revert any request in the Changes panel).",
+};
 
 export function systemPrompt(site: Site, caps: Capabilities = { files: false, browser: false, hostinger: false, skills: "" }): string {
   const can = [
@@ -47,8 +61,10 @@ export function systemPrompt(site: Site, caps: Capabilities = { files: false, br
     "- UNDO: list_changes → revert_change undoes any change of this chat (the person also has a Revert button per change).",
   ].filter(Boolean).join("\n");
 
-  return `You are Livecrafts, a senior WordPress front-end developer and careful editor working on the live site "${site.name}" (${site.url}).
+  const name = caps.persona?.botName?.trim() || "Livecrafts";
+  return `You are ${name}, a senior WordPress front-end developer and careful editor working on the live site "${site.name}" (${site.url}).
 You build what the person asks for - new pages, new sections, navigation links, footers, restyles - to a professional standard, and you never pretend.
+${MODE_TEXT[caps.mode ?? "every"]}
 
 WHAT YOU CAN DO
 ${can}
@@ -76,6 +92,9 @@ PROFESSIONAL FRONT-END STANDARD (always)
 - PHP templates: escape every output (esc_html, esc_url, esc_attr), translate-ready strings where the theme does so, keep wp_head() / wp_body_open() / wp_footer() and the theme's existing structure. Never edit functions.php, wp-config.php, plugins or WordPress core.
 - Blocks: valid block markup (<!-- wp:... --> comments with matching attributes), core blocks only, wp:group with layout for sections, wp:columns for grids, wp:query or wp:latest-posts for blog lists.
 - Performance: no heavy libraries; animations with transform/opacity only.
+${caps.persona?.instructions?.trim() ? `
+INSTRUCTIONS FROM THE SITE OWNER (set in WordPress; follow them unless they conflict with the safety rules above):
+${caps.persona.instructions.trim().slice(0, 4000)}` : ""}
 ${caps.skills ? `
 OFFICIAL WORDPRESS SKILLS (load with load_skill BEFORE working in that area; they are written for developer machines, so ignore steps that need WP-CLI, npm or a terminal):
 ${caps.skills}` : ""}`;
@@ -104,14 +123,18 @@ export function buildAgent(files: FileStore, opts: BuildOptions = {}): AgentFact
       screenshot: (a: any) => screenshotPage(site.url, a),
     };
 
-    const approval: Record<string, "user-approval"> = {};
-    for (const name of APPROVAL_REQUIRED) approval[name] = "user-approval";
+    // Approval per mode: every write asks / one plan per request / nothing asks (still verified + revertable).
+    const mode: ApprovalMode = job?.approval?.mode ?? "every";
+    const writeStatus = mode === "auto" || (mode === "request" && job?.approval?.planApproved) ? "approved" : "user-approval";
+    const approval: Record<string, "user-approval" | "approved"> = {};
+    for (const name of APPROVAL_REQUIRED) approval[name] = writeStatus;
+    if (mode === "request") approval.propose_plan = job?.approval?.planApproved ? "approved" : "user-approval";
 
     const agent = new ToolLoopAgent({
-      model: opts.model ?? resolveModel(config.model),
-      instructions: systemPrompt(site, { files: !!siteFiles, browser: !!browser, hostinger: !!hg, skills: skills?.catalogue() ?? "" }),
+      model: opts.model ?? resolveModel(job?.model || job?.persona?.model || config.model),
+      instructions: systemPrompt(site, { files: !!siteFiles, browser: !!browser, hostinger: !!hg, skills: skills?.catalogue() ?? "", mode, persona: job?.persona }),
       tools: makeTools(bridge, files, {
-        siteFiles, hostinger: hg, browser, skills, changes: job?.changes ?? null,
+        siteFiles, hostinger: hg, browser, skills, changes: job?.changes ?? null, planTool: mode === "request",
         fetchImpl: opts.fetchImpl, allowPrivateImageHosts: opts.allowPrivateImageHosts,
       }),
       toolApproval: approval,

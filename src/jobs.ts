@@ -4,7 +4,12 @@ import { JsonStore, newId } from "./store.js";
 import type { AgentFactory, JobContext } from "./agent.js";
 import { blockingChange, recordFor, revertChange, type ChangeRecord } from "./changes.js";
 import { imageMarker } from "./vision.js";
-import type { Job, JobEvent, JobStatus, PendingApproval, Site } from "./types.js";
+import { assistantSettings } from "./persona.js";
+import type { ApprovalMode, Job, JobEvent, JobStatus, PendingApproval, Site } from "./types.js";
+import { APPROVAL_MODES } from "./types.js";
+
+export interface RequestOptions { approvalMode?: ApprovalMode; model?: string }
+const cleanMode = (m: unknown): ApprovalMode | undefined => (APPROVAL_MODES.includes(m as ApprovalMode) ? (m as ApprovalMode) : undefined);
 
 type Listener = (e: JobEvent) => void;
 
@@ -40,25 +45,29 @@ export class JobRunner {
   get(id: string) { return this.jobs.get(id); }
   list() { return this.jobs.list().sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
 
-  create(siteId: string, prompt: string, context?: string, fileIds: string[] = []): Job {
+  create(siteId: string, prompt: string, context?: string, fileIds: string[] = [], opts: RequestOptions = {}): Job {
     if (!this.sites.get(siteId)) throw new Error("Unknown site.");
     const now = new Date().toISOString();
     const text = context ? `${context}\n\n${prompt}` : prompt;
-    const job: Job = { id: newId("job"), siteId, prompt, status: "queued", messages: [userMessage(text, fileIds)], pending: [], events: [], changes: [], createdAt: now, updatedAt: now };
+    const job: Job = { id: newId("job"), siteId, prompt, status: "queued", messages: [userMessage(text, fileIds)], pending: [], events: [], changes: [], createdAt: now, updatedAt: now,
+      approvalMode: cleanMode(opts.approvalMode) ?? "request", requestSeq: 1, model: opts.model || undefined };
     this.jobs.put(job);
-    this.emit(job, "user", { text: prompt, fileIds });
+    this.emit(job, "user", { text: prompt, fileIds, requestId: 1, approvalMode: job.approvalMode });
     this.emit(job, "status", { status: "queued" });
     this.kick(job.id);
     return job;
   }
 
   /** Follow-up message in the same conversation (the model keeps the earlier context). Only when the job is idle. */
-  continue(jobId: string, prompt: string, context?: string, fileIds: string[] = []): Job {
+  continue(jobId: string, prompt: string, context?: string, fileIds: string[] = [], opts: RequestOptions = {}): Job {
     const job = this.mustGet(jobId);
     if (job.status !== "completed" && job.status !== "failed") throw new Error(`Job is ${job.status}; wait for it to finish (or answer the approval) before sending another message.`);
     job.messages.push(userMessage(context ? context + "\n\n" + prompt : prompt, fileIds));
     job.error = undefined;
-    this.emit(job, "user", { text: prompt, fileIds });
+    job.requestSeq = (job.requestSeq ?? 1) + 1;
+    if (cleanMode(opts.approvalMode)) job.approvalMode = cleanMode(opts.approvalMode);
+    if (opts.model !== undefined) job.model = opts.model || undefined;
+    this.emit(job, "user", { text: prompt, fileIds, requestId: job.requestSeq, approvalMode: job.approvalMode });
     this.setStatus(job, "queued");
     this.kick(job.id);
     return job;
@@ -73,6 +82,8 @@ export class JobRunner {
     if (p.approved !== undefined) throw new Error("This approval was already answered.");
     p.approved = approved;
     p.reason = reason;
+    // "Once per request": one yes covers the rest of this request.
+    if (approved && (job.approvalMode ?? "every") === "request") job.planApprovedFor = job.requestSeq ?? 1;
     this.emit(job, "approval_response", { approvalId, toolName: p.toolName, approved, reason });
 
     if (job.pending.every((x) => x.approved !== undefined)) {
@@ -130,6 +141,38 @@ export class JobRunner {
       mark({ revertError: (e as Error).message }, {});
       throw e;
     }
+  }
+
+  /** The site's file access (for diffs of file changes). */
+  siteFilesFor(site: Site) { return this.factory(site).siteFiles ?? null; }
+
+  /** Revert every still-active change of one request, newest first. Stops at the first one that cannot be undone. */
+  async revertRequest(jobId: string, requestId: number): Promise<Record<string, unknown>> {
+    const list = (this.current(jobId).changes ?? []).filter((c) => (c.requestId ?? 0) === requestId && !c.revertedAt && c.revert).reverse();
+    if (!list.length) throw new Error("Nothing to revert in this request.");
+    const done: string[] = [];
+    for (const c of list) {
+      try { await this.revertChange(jobId, c.id, "button"); done.push(c.title); }
+      catch (e) { throw new Error(`Reverted ${done.length} of ${list.length}. Stopped at “${c.title}”: ${(e as Error).message}`); }
+    }
+    return { ok: true, reverted: done.length };
+  }
+
+  /** Change how this chat asks for approval (takes effect on the next step). */
+  setApprovalMode(jobId: string, mode: ApprovalMode): Job {
+    const job = this.current(jobId);
+    if (!cleanMode(mode)) throw new Error("Unknown approval mode.");
+    job.approvalMode = mode;
+    this.emit(job, "status", { status: job.status, approvalMode: mode });
+    return job;
+  }
+
+  /** Delete a chat (not while it is working). Changes already made on the site stay. */
+  delete(jobId: string) {
+    const job = this.mustGet(jobId);
+    if (this.active.has(jobId) || job.status === "running" || job.status === "queued") throw new Error("This chat is still working. Wait until it finishes.");
+    this.jobs.delete(jobId);
+    this.listeners.delete(jobId);
   }
 
   /** Follow a job: replays stored events after `afterSeq`, then streams new ones. Returns an unsubscribe function. */
@@ -208,7 +251,12 @@ export class JobRunner {
 
     this.setStatus(job, "running");
     try {
+      const mode = job.approvalMode ?? "every";
+      const persona = await assistantSettings(site);
       const ctx: JobContext = {
+        persona,
+        approval: { mode, planApproved: mode === "request" && job.planApprovedFor === (job.requestSeq ?? 1) },
+        model: job.model,
         changes: {
           list: () => job.changes ?? [],
           revert: (id) => this.revertChange(jobId, id, "chat"),
@@ -226,7 +274,11 @@ export class JobRunner {
           const value = out?.output;
           const toolName = e.toolCall?.toolName;
           const rec = threw ? null : recordFor(toolName, e.toolCall?.input, value);
-          if (rec) job.changes = [...(job.changes ?? []), rec];
+          if (rec) {
+            rec.requestId = job.requestSeq ?? 1;
+            rec.request = lastRequestText(job);
+            job.changes = [...(job.changes ?? []), rec];
+          }
           this.emit(job, "tool_end", {
             tool: toolName,
             ok: !threw && value?.ok !== false,
@@ -320,4 +372,10 @@ function uiSummary(tool: string | undefined, v: any): Record<string, unknown> | 
 function userMessage(text: string, fileIds: string[]): ModelMessage {
   if (!fileIds.length) return { role: "user", content: text };
   return { role: "user", content: [{ type: "text", text }, ...fileIds.map((id) => ({ type: "text" as const, text: imageMarker(id) }))] };
+}
+
+/** The text of the person's latest message (for grouping changes per request). */
+function lastRequestText(job: Job): string {
+  for (let i = job.events.length - 1; i >= 0; i--) if (job.events[i].type === "user") return String(job.events[i].data.text ?? "").slice(0, 200);
+  return job.prompt.slice(0, 200);
 }

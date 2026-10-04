@@ -127,7 +127,9 @@ console.log("\n4) HTTP API: register a site (validated), start a job, answer the
   const bad = await post("/sites", { url: "http://127.0.0.1:1", username: "a", appPassword: "b" });
   assert.equal(bad.status, 400); ok("site with unreachable URL is rejected with a clear error");
   const reg = await post("/sites", { name: "Fake", url: wpUrl, username: "admin", appPassword: "abcd efgh" });
-  assert.equal(reg.status, 201); assert.ok(!JSON.stringify(reg.body).includes("abcd")); ok("site registered after a live ping; password never echoed back");
+  assert.equal(reg.status, 200); assert.equal(reg.body.reconnected, true); assert.equal(reg.body.id, site.id); assert.ok(!JSON.stringify(reg.body).includes("abcd"));
+  ok("adding the same site again reconnects it (no duplicate); password never echoed back");
+  assert.equal(sites.list().filter((x: any) => x.url === wpUrl).length, 1); ok("still exactly one connection for this site");
 
   const created = await post("/jobs", { siteId: reg.body.id, prompt: "change it to Via HTTP" });
   assert.equal(created.status, 201);

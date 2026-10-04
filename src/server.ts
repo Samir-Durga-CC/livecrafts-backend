@@ -9,7 +9,10 @@ import { buildAgent } from "./agent.js";
 import { JobRunner } from "./jobs.js";
 import type { Job, Site } from "./types.js";
 import { hostinger, type HostingerHealth } from "./hostinger.js";
-import { secrets } from "./secrets.js";
+import { secrets, type ProviderId } from "./secrets.js";
+import { PROVIDERS, providerStatus, testModel } from "./models.js";
+import { diffOf } from "./changes.js";
+import { assistantSettings, forgetAssistantSettings } from "./persona.js";
 import { closeBrowser, screenshotPath } from "./browser.js";
 
 export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: FileStore) {
@@ -27,7 +30,10 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       return null;
     } catch (e) { return (e as Error).message; }
   };
-  const publicJob = (j: Job) => ({ id: j.id, siteId: j.siteId, prompt: j.prompt, status: j.status, pending: j.pending, result: j.result, error: j.error, createdAt: j.createdAt, updatedAt: j.updatedAt, lastEventSeq: j.events.at(-1)?.seq ?? 0, changes: j.changes ?? [] });
+  const publicJob = (j: Job) => ({ id: j.id, siteId: j.siteId, prompt: j.prompt, status: j.status, pending: j.pending, result: j.result, error: j.error, createdAt: j.createdAt, updatedAt: j.updatedAt, lastEventSeq: j.events.at(-1)?.seq ?? 0, changes: j.changes ?? [],
+    approvalMode: j.approvalMode ?? "every", model: j.model ?? null, requestSeq: j.requestSeq ?? 1 });
+  const sameSite = (a: string, b: string) => a.replace(/^https?:\/\/(www\.)?/i, "").replace(/\/+$/, "").toLowerCase() === b.replace(/^https?:\/\/(www\.)?/i, "").replace(/\/+$/, "").toLowerCase();
+  const requestOpts = (b: any) => ({ approvalMode: b.approvalMode, model: typeof b.model === "string" ? b.model.trim() : undefined });
 
   async function readBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
     const chunks: Buffer[] = []; let size = 0;
@@ -42,6 +48,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     const ctx: string[] = [];
     if (b.pageUrl) ctx.push(`The user is looking at: ${b.pageUrl}`);
     if (b.selectedTarget) ctx.push(`The user selected this element (target id): ${b.selectedTarget}`);
+    if (typeof b.extraContext === "string" && b.extraContext.trim()) ctx.push(b.extraContext.trim().slice(0, 6000)); // e.g. the element picked in the widget
     if (Array.isArray(b.fileIds) && b.fileIds.length) {
       const names = b.fileIds.map((id: string) => { try { return `${id} (${files.read(String(id)).meta.filename})`; } catch { return String(id); } });
       ctx.push(`The user attached image file(s): ${names.join(", ")}. You can see them below. To put one on the site, upload it with upload_media_from_chat.`);
@@ -68,7 +75,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     const url = new URL(req.url ?? "/", "http://x");
     const route = `${req.method} ${url.pathname}`;
     try {
-      const isApi = /^\/(health|sites|jobs|files|integrations|screens)(\/|$)/.test(url.pathname);
+      const isApi = /^\/(health|sites|jobs|files|integrations|screens|models)(\/|$)/.test(url.pathname);
       if (!isApi && req.method === "GET" && serveStatic(url.pathname, res)) return; // UI files are public; the API below is protected
       if (config.apiToken && route !== "GET /health" && req.headers.authorization !== `Bearer ${config.apiToken}`) return send(res, 401, { error: "Unauthorized" });
 
@@ -80,15 +87,46 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         const b = await readJson(req);
         const siteUrl = String(b.url ?? "").trim().replace(/\/+$/, "");
         if (!/^https?:\/\//.test(siteUrl) || !b.username || !b.appPassword) return send(res, 400, { error: "url (http/https), username and appPassword are required." });
-        const site: Site = { id: newId("site"), name: String(b.name || new URL(siteUrl).host), url: siteUrl, username: String(b.username), appPassword: String(b.appPassword), createdAt: new Date().toISOString() };
+        // The same site added again = reconnect it (new login) instead of creating a duplicate.
+        const existing = sites.list().find((x) => sameSite(x.url, siteUrl));
+        const site: Site = existing
+          ? { ...existing, url: siteUrl, username: String(b.username), appPassword: String(b.appPassword), name: String(b.name || existing.name) }
+          : { id: newId("site"), name: String(b.name || new URL(siteUrl).host), url: siteUrl, username: String(b.username), appPassword: String(b.appPassword), createdAt: new Date().toISOString() };
         let info: any = null;
         try { info = await new Bridge(site).ping(); } catch (e) { return send(res, 400, { error: `Could not connect: ${(e as Error).message}` }); } // validate credentials BEFORE saving
         sites.put(site);
+        forgetAssistantSettings(site.id);
         const hostingNote = await linkSite(site); // automatic, best effort
-        return send(res, 201, { ...publicSite(site), plugin: info, hostingNote });
+        return send(res, existing ? 200 : 201, { ...publicSite(site), plugin: info, hostingNote, reconnected: !!existing });
       }
       let m = url.pathname.match(/^\/sites\/([\w-]+)$/);
-      if (m && req.method === "DELETE") { sites.delete(m[1]); return send(res, 200, { ok: true }); }
+      if (m && req.method === "DELETE") { sites.delete(m[1]); forgetAssistantSettings(m[1]); return send(res, 200, { ok: true }); }
+      if (m && req.method === "PUT") { // rename / reconnect with a new Application Password (checked before saving)
+        const cur = sites.get(m[1]);
+        if (!cur) return send(res, 404, { error: "Unknown site" });
+        const b = await readJson(req);
+        const next: Site = { ...cur, name: b.name ? String(b.name).slice(0, 80) : cur.name, username: b.username ? String(b.username) : cur.username, appPassword: b.appPassword ? String(b.appPassword) : cur.appPassword };
+        let info: any = null;
+        try { info = await new Bridge(next).ping(); } catch (e) { return send(res, 400, { error: `Could not connect with these details: ${(e as Error).message}` }); }
+        sites.put(next); forgetAssistantSettings(next.id);
+        return send(res, 200, { ...publicSite(next), plugin: info });
+      }
+      m = url.pathname.match(/^\/sites\/([\w-]+)\/status$/);
+      if (m && req.method === "GET") { // connection check for the Sites screen
+        const s = sites.get(m[1]);
+        if (!s) return send(res, 404, { error: "Unknown site" });
+        const t = Date.now();
+        try {
+          const info: any = await new Bridge(s).ping();
+          return send(res, 200, { ok: true, ms: Date.now() - t, plugin: info?.version ?? null, wp: info?.site?.wp ?? null, php: info?.site?.php ?? null, user: info?.user ?? null, themeFiles: !!info?.capabilities?.theme_files, theme: info?.capabilities?.theme ?? null, acf: !!info?.capabilities?.acf, elementor: !!info?.capabilities?.elementor, checkedAt: new Date().toISOString() });
+        } catch (e) { return send(res, 200, { ok: false, ms: Date.now() - t, error: (e as Error).message, checkedAt: new Date().toISOString() }); }
+      }
+      m = url.pathname.match(/^\/sites\/([\w-]+)\/assistant$/);
+      if (m && req.method === "GET") { // bot name / welcome text / defaults set in WordPress
+        const s = sites.get(m[1]);
+        if (!s) return send(res, 404, { error: "Unknown site" });
+        return send(res, 200, (await assistantSettings(s, { fresh: url.searchParams.has("fresh") })) ?? {});
+      }
       m = url.pathname.match(/^\/sites\/([\w-]+)\/link-hosting$/);
       if (m && req.method === "POST") {
         const s = sites.get(m[1]);
@@ -98,7 +136,35 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       }
 
       // ---- integrations: Hostinger (token + health check). The token is never sent back to the browser.
-      if (route === "GET /integrations") return send(res, 200, { hostinger: lastHealth ?? (await checkHostinger()) });
+      if (route === "GET /integrations") return send(res, 200, { hostinger: lastHealth ?? (await checkHostinger()), models: providerStatus(), defaultModel: config.model });
+
+      // ---- AI providers: keys are stored on the backend only, never sent back
+      m = url.pathname.match(/^\/integrations\/models\/(openai|anthropic|openrouter|groq|custom)$/);
+      if (m && req.method === "PUT") {
+        const id = m[1] as ProviderId;
+        const b = await readJson(req);
+        const apiKey = typeof b.apiKey === "string" ? b.apiKey.trim() : undefined;
+        const baseUrl = typeof b.baseUrl === "string" ? b.baseUrl.trim().replace(/\/+$/, "") : undefined;
+        if (baseUrl && !/^https?:\/\//.test(baseUrl)) return send(res, 400, { error: "The address must start with http:// or https://" });
+        if (apiKey && secrets.providerSource(id) === "env") return send(res, 409, { error: "This provider's key is set in the backend .env, which always wins. Change it there." });
+        const before = providerStatus().find((x) => x.id === id);
+        secrets.setProvider(id, { ...(apiKey ? { apiKey } : {}), ...(baseUrl !== undefined ? { baseUrl } : {}) });
+        const testWith = typeof b.testModel === "string" && b.testModel.trim() ? `${id}:${b.testModel.trim()}` : null;
+        if (testWith) {
+          const t = await testModel(testWith);
+          if (!t.ok && apiKey && before?.keySource !== "saved") secrets.setProvider(id, null); // do not keep a key that does not work
+          if (!t.ok) return send(res, 400, { error: t.error, test: t });
+          return send(res, 200, { ok: true, test: t, models: providerStatus() });
+        }
+        return send(res, 200, { ok: true, models: providerStatus() });
+      }
+      if (m && req.method === "DELETE") { secrets.setProvider(m[1] as ProviderId, null); return send(res, 200, { ok: true, models: providerStatus() }); }
+      if (route === "POST /integrations/models/test") {
+        const b = await readJson(req);
+        if (!b.model) return send(res, 400, { error: "model is required (provider:model)." });
+        return send(res, 200, await testModel(String(b.model)));
+      }
+      if (route === "GET /models") return send(res, 200, { defaultModel: config.model, providers: PROVIDERS.map((p) => ({ ...p, configured: providerStatus().find((x) => x.id === p.id)?.configured })) });
       if (route === "POST /integrations/hostinger/test") return send(res, 200, await checkHostinger());
       if (route === "PUT /integrations/hostinger") {
         const b = await readJson(req);
@@ -148,21 +214,38 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       if (route === "POST /jobs") {
         const b = await readJson(req);
         if (!b.siteId || !b.prompt) return send(res, 400, { error: "siteId and prompt are required." });
-        return send(res, 201, publicJob(runner.create(String(b.siteId), String(b.prompt), contextFor(b), fileIdsOf(b))));
+        return send(res, 201, publicJob(runner.create(String(b.siteId), String(b.prompt), contextFor(b), fileIdsOf(b), requestOpts(b))));
       }
       m = url.pathname.match(/^\/jobs\/([\w-]+)\/messages$/);
       if (m && req.method === "POST") { // follow-up message in the same conversation
         const b = await readJson(req);
         if (!b.prompt) return send(res, 400, { error: "prompt is required." });
-        return send(res, 200, publicJob(runner.continue(m[1], String(b.prompt), contextFor(b), fileIdsOf(b))));
+        return send(res, 200, publicJob(runner.continue(m[1], String(b.prompt), contextFor(b), fileIdsOf(b), requestOpts(b))));
       }
       m = url.pathname.match(/^\/jobs\/([\w-]+)$/);
+      if (m && req.method === "DELETE") { try { runner.delete(m[1]); return send(res, 200, { ok: true }); } catch (e) { return send(res, 409, { error: (e as Error).message }); } }
       if (m && req.method === "GET") { const j = runner.get(m[1]); return j ? send(res, 200, { ...publicJob(j), events: j.events }) : send(res, 404, { error: "Unknown job" }); }
       m = url.pathname.match(/^\/jobs\/([\w-]+)\/approvals$/);
       if (m && req.method === "POST") {
         const b = await readJson(req);
         if (!b.approvalId || typeof b.approved !== "boolean") return send(res, 400, { error: "approvalId and approved (true/false) are required." });
         return send(res, 200, publicJob(runner.respond(m[1], String(b.approvalId), b.approved, b.reason ? String(b.reason) : undefined)));
+      }
+      m = url.pathname.match(/^\/jobs\/([\w-]+)\/approval-mode$/);
+      if (m && req.method === "PUT") { const b = await readJson(req); return send(res, 200, publicJob(runner.setApprovalMode(m[1], b.mode))); }
+      m = url.pathname.match(/^\/jobs\/([\w-]+)\/requests\/(\d+)\/revert$/);
+      if (m && req.method === "POST") { // revert everything one request changed
+        try { return send(res, 200, await runner.revertRequest(m[1], Number(m[2]))); }
+        catch (e) { return send(res, 409, { error: (e as Error).message }); }
+      }
+      m = url.pathname.match(/^\/jobs\/([\w-]+)\/changes\/(chg_[a-f0-9]+)\/diff$/);
+      if (m && req.method === "GET") { // GitHub-style diff of one change
+        const j = runner.get(m[1]);
+        const c = j?.changes?.find((x) => x.id === m![2]);
+        const s = j ? sites.get(j.siteId) : undefined;
+        if (!j || !c || !s) return send(res, 404, { error: "Unknown change" });
+        const d = diffOf(c, runner.siteFilesFor(s));
+        return d ? send(res, 200, d) : send(res, 404, { error: "No diff stored for this change." });
       }
       m = url.pathname.match(/^\/jobs\/([\w-]+)\/changes\/(chg_[a-f0-9]+)\/revert$/);
       if (m && req.method === "POST") { // the Revert button on a change

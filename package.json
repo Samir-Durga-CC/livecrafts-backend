@@ -14,8 +14,11 @@
     "build:web": "cd web && npm install && npm run build"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.71",
+    "@ai-sdk/groq": "^4.0.54",
     "@ai-sdk/mcp": "^2.0.66",
     "@ai-sdk/openai": "^4.0.83",
+    "@ai-sdk/openai-compatible": "^3.0.62",
     "@hostinger/mcp": "^2.7.0",
     "@modelcontextprotocol/sdk": "^1.32.0",
     "ai": "^7.0.127",

@@ -13,6 +13,15 @@ export interface Site {
   hosting?: { provider: "hostinger"; username: string; domain: string; dir: string };
 }
 
+/**
+ * How changes get approved:
+ *  every   - each write waits for a yes (most careful)
+ *  request - the assistant shows its plan once per request; after one yes it carries out all steps
+ *  auto    - no approval; every change is still verified and can be reverted
+ */
+export type ApprovalMode = "every" | "request" | "auto";
+export const APPROVAL_MODES: ApprovalMode[] = ["every", "request", "auto"];
+
 export type JobStatus = "queued" | "running" | "waiting_approval" | "completed" | "failed" | "interrupted";
 
 export interface PendingApproval {
@@ -43,6 +52,13 @@ export interface Job {
   events: JobEvent[];
   /** Every successful write of this chat, with what is needed to revert it. */
   changes?: ChangeRecord[];
+  approvalMode?: ApprovalMode;
+  /** Number of the current person request (each new message is a new request). */
+  requestSeq?: number;
+  /** In "request" mode: the request whose plan the person approved (its writes no longer ask). */
+  planApprovedFor?: number;
+  /** Model for this chat ("provider:model"); empty = the site's / server's default. */
+  model?: string;
   result?: string;
   error?: string;
   createdAt: string;

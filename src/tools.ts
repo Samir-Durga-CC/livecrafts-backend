@@ -42,6 +42,7 @@ export interface ToolExtras {
   } | null;
   skills?: Skills | null;
   changes?: { list(): ChangeRecord[]; revert(id: string): Promise<Record<string, unknown>> } | null;
+  planTool?: boolean;                   // "once per request" approval mode: offer propose_plan
   fetchImpl?: typeof fetch;             // tests: fake the internet for image downloads
   allowPrivateImageHosts?: boolean;     // tests/demo only
 }
@@ -375,7 +376,17 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     }),
   } : {};
 
-  return { ...content, ...pages, ...media, ...browser, ...fileTools, ...apiTools, ...skillTools, ...changeTools };
+  const planTools = extras.planTool ? {
+    propose_plan: tool({
+      description:
+        "Show the person your plan for THIS request before the first change: one-line summary + the concrete steps (what page/file/menu, what changes). " +
+        "They approve it once; after that the steps run without more questions.",
+      inputSchema: z.object({ summary: z.string().min(3).max(300), steps: z.array(z.string().min(3).max(300)).min(1).max(15) }),
+      execute: async ({ steps }) => ({ ok: true, approved: true, steps: steps.length, note: "Plan approved. Carry out every step now, verify each one, then report." }),
+    }),
+  } : {};
+
+  return { ...content, ...pages, ...media, ...browser, ...fileTools, ...apiTools, ...skillTools, ...changeTools, ...planTools };
 }
 
 /** Tools that must never run without a human saying yes. */
