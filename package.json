@@ -1,0 +1,33 @@
+{
+  "name": "livecrafts-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Central agent backend for Livecrafts: AI SDK agent loop + WordPress Site Bridge tools + jobs + approvals.",
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env --import tsx --watch src/server.ts",
+    "start": "node --env-file-if-exists=.env --import tsx src/server.ts",
+    "chat": "node --env-file-if-exists=.env --import tsx src/cli.ts",
+    "test": "node --import tsx test/smoke.ts && node --import tsx test/features.ts",
+    "typecheck": "tsc --noEmit && cd web && tsc --noEmit",
+    "demo": "node --import tsx test/demo.ts",
+    "build:web": "cd web && npm install && npm run build"
+  },
+  "dependencies": {
+    "@ai-sdk/mcp": "^2.0.66",
+    "@ai-sdk/openai": "^4.0.83",
+    "@hostinger/mcp": "^2.7.0",
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "ai": "^7.0.127",
+    "playwright-core": "^1.63.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
