@@ -8,7 +8,7 @@ import { assistantSettings } from "./persona.js";
 import type { ApprovalMode, Job, JobEvent, JobStatus, PendingApproval, Site } from "./types.js";
 import { APPROVAL_MODES } from "./types.js";
 
-export interface RequestOptions { approvalMode?: ApprovalMode; model?: string }
+export interface RequestOptions { approvalMode?: ApprovalMode; model?: string; /** "note" / "edit" = said while paused: same request continues */ kind?: "new" | "note" | "edit" }
 const cleanMode = (m: unknown): ApprovalMode | undefined => (APPROVAL_MODES.includes(m as ApprovalMode) ? (m as ApprovalMode) : undefined);
 
 type Listener = (e: JobEvent) => void;
@@ -28,6 +28,9 @@ export class JobRunner {
   private again = new Set<string>();
   /** The job object a run is working on (the store returns copies; everything during a run must use this one). */
   private live = new Map<string, Job>();
+  /** Per running job: Stop flag, abort switch, and how many tools are executing right now. */
+  private control = new Map<string, { abort: AbortController; stop: boolean; toolsRunning: number }>();
+  private stopRequested = new Set<string>();
   private current(id: string): Job { return this.live.get(id) ?? this.mustGet(id); }
 
   constructor(private jobs: JsonStore<Job>, private sites: JsonStore<Site>, private factory: AgentFactory) {}
@@ -61,13 +64,24 @@ export class JobRunner {
   /** Follow-up message in the same conversation (the model keeps the earlier context). Only when the job is idle. */
   continue(jobId: string, prompt: string, context?: string, fileIds: string[] = [], opts: RequestOptions = {}): Job {
     const job = this.mustGet(jobId);
-    if (job.status !== "completed" && job.status !== "failed") throw new Error(`Job is ${job.status}; wait for it to finish (or answer the approval) before sending another message.`);
-    job.messages.push(userMessage(context ? context + "\n\n" + prompt : prompt, fileIds));
+    if (job.status !== "completed" && job.status !== "failed" && job.status !== "paused") throw new Error(`Job is ${job.status}; wait for it to finish (or answer the approval) before sending another message.`);
+    const paused = job.status === "paused";
+    const unanswered = job.pending.filter((x) => x.approved === undefined);
+    if (unanswered.length) {
+      // the person changed course while a change waited for approval: that change is declined, nothing is written
+      for (const p of unanswered) { p.approved = false; p.reason = "Paused - the person changed the request instead."; this.emit(job, "approval_response", { approvalId: p.approvalId, toolName: p.toolName, approved: false, reason: p.reason }); }
+      job.messages.push({ role: "tool", content: job.pending.map((x) => ({ type: "tool-approval-response", approvalId: x.approvalId, approved: !!x.approved, reason: x.reason })) } as ModelMessage);
+      job.pending = [];
+    }
+    const kind = paused ? (opts.kind === "edit" ? "edit" : opts.kind === "new" ? "new" : "note") : "new";
+    const said = kind === "edit" ? `[I paused you and CORRECTED my request - follow this instead; keep changes already made unless they conflict, then revert those]\n${prompt}`
+      : kind === "note" ? `[I paused you. Additional instruction for the same request - take it into account and continue]\n${prompt}` : prompt;
+    job.messages.push(userMessage(context ? context + "\n\n" + said : said, fileIds));
     job.error = undefined;
-    job.requestSeq = (job.requestSeq ?? 1) + 1;
+    if (kind === "new") job.requestSeq = (job.requestSeq ?? 1) + 1;
     if (cleanMode(opts.approvalMode)) job.approvalMode = cleanMode(opts.approvalMode);
     if (opts.model !== undefined) job.model = opts.model || undefined;
-    this.emit(job, "user", { text: prompt, fileIds, requestId: job.requestSeq, approvalMode: job.approvalMode });
+    this.emit(job, "user", { text: prompt, fileIds, requestId: job.requestSeq, approvalMode: job.approvalMode, ...(kind !== "new" ? { kind } : {}) });
     this.setStatus(job, "queued");
     this.kick(job.id);
     return job;
@@ -103,7 +117,14 @@ export class JobRunner {
   /** Continue an interrupted or failed job from its saved conversation. */
   resume(jobId: string): Job {
     const job = this.mustGet(jobId);
-    if (job.status !== "interrupted" && job.status !== "failed") throw new Error(`Job is ${job.status}; only interrupted or failed jobs can be resumed.`);
+    if (job.status === "paused") {
+      if (job.pending.some((x) => x.approved === undefined)) { this.setStatus(job, "waiting_approval", { count: job.pending.length }); return job; }
+      job.messages.push({ role: "user", content: "[Continue where you stopped.]" });
+      this.setStatus(job, "queued");
+      this.kick(job.id);
+      return job;
+    }
+    if (job.status !== "interrupted" && job.status !== "failed") throw new Error(`Job is ${job.status}; only interrupted, failed or paused jobs can be resumed.`);
     job.error = undefined;
     this.setStatus(job, "queued");
     this.kick(job.id);
@@ -185,6 +206,25 @@ export class JobRunner {
     return job;
   }
 
+  /**
+   * The Stop button. Text being written stops at once; a site change that is already running always finishes first
+   * (never half-done), then the loop ends. Everything finished is saved. Status becomes "paused".
+   */
+  stop(jobId: string): Job {
+    const job = this.current(jobId);
+    if (job.status === "waiting_approval") { this.setStatus(job, "paused", { note: "Stopped while waiting for approval." }); return job; }
+    const c = this.control.get(jobId);
+    if (!c) {
+      if (job.status === "queued") { this.stopRequested.add(jobId); this.again.delete(jobId); if (!this.active.has(jobId)) this.setStatus(job, "paused"); return job; }
+      throw new Error(`Job is ${job.status}; there is nothing to stop.`);
+    }
+    c.stop = true;
+    this.again.delete(jobId);
+    if (c.toolsRunning === 0) c.abort.abort(new Error("Stopped by the person"));
+    this.emit(job, "status", { status: job.status, stopping: true, waitingFor: c.toolsRunning ? "the running change to finish" : undefined });
+    return job;
+  }
+
   /** Change how this chat asks for approval (takes effect on the next step). */
   setApprovalMode(jobId: string, mode: ApprovalMode): Job {
     const job = this.current(jobId);
@@ -217,7 +257,7 @@ export class JobRunner {
     return new Promise((resolve) => {
       const check = () => {
         const j = this.mustGet(jobId);
-        if (["completed", "failed", "waiting_approval", "interrupted"].includes(j.status)) { off(); resolve(j); }
+        if (["completed", "failed", "waiting_approval", "interrupted", "paused"].includes(j.status)) { off(); resolve(j); }
       };
       const off = this.subscribe(jobId, check, Number.MAX_SAFE_INTEGER);
       check();
@@ -265,6 +305,7 @@ export class JobRunner {
         .finally(() => {
           this.active.delete(jobId);
           this.live.delete(jobId);
+          this.control.delete(jobId);
           if (this.again.delete(jobId)) this.kick(jobId);
         });
     });
@@ -276,6 +317,12 @@ export class JobRunner {
     const site = this.sites.get(job.siteId);
     if (!site) { job.error = "Site was deleted."; this.setStatus(job, "failed", { error: job.error }); return; }
 
+    const ctl = { abort: new AbortController(), stop: this.stopRequested.delete(jobId), toolsRunning: 0 };
+    this.control.set(jobId, ctl);
+    if (ctl.stop) { this.setStatus(job, "paused"); return; }
+    const stepMessages: ModelMessage[] = [];                                  // finished steps of this run
+    const toolResults: { toolCallId: string; toolName: string; output: any; error?: string }[] = [];
+    let block = "";
     this.setStatus(job, "running");
     try {
       const mode = job.approvalMode ?? "every";
@@ -284,6 +331,7 @@ export class JobRunner {
         persona,
         approval: { mode, planApproved: mode === "request" && job.planApprovedFor === (job.requestSeq ?? 1) },
         model: job.model,
+        shouldStop: () => ctl.stop,
         changes: {
           list: () => job.changes ?? [],
           revert: (id) => this.revertChange(jobId, id, "chat"),
@@ -292,13 +340,16 @@ export class JobRunner {
       const { agent, bridge, siteFiles } = this.factory(site, ctx);
       const result = await agent.stream({
         messages: job.messages,
-        abortSignal: AbortSignal.timeout(config.jobTimeoutMs),
-        onToolExecutionStart: (e: any) => this.emit(job, "tool_start", { tool: e.toolCall?.toolName, input: e.toolCall?.input }),
+        abortSignal: AbortSignal.any([AbortSignal.timeout(config.jobTimeoutMs), ctl.abort.signal]),
+        onStepEnd: (s: any) => { stepMessages.push(...((s?.response?.messages ?? []) as ModelMessage[])); },
+        onToolExecutionStart: (e: any) => { ctl.toolsRunning++; this.emit(job, "tool_start", { tool: e.toolCall?.toolName, input: e.toolCall?.input }); },
         onToolExecutionEnd: (e: any) => {
+          ctl.toolsRunning = Math.max(0, ctl.toolsRunning - 1);
           // toolOutput.type is "tool-result" or "tool-error". Our tools also return {ok:false,error} for expected failures.
           const out = e.toolOutput;
           const threw = out?.type === "tool-error";
           const value = out?.output;
+          toolResults.push({ toolCallId: e.toolCall?.toolCallId, toolName: e.toolCall?.toolName, output: value, error: threw ? String(out?.error?.message ?? out?.error) : undefined });
           const toolName = e.toolCall?.toolName;
           const rec = threw ? null : recordFor(toolName, e.toolCall?.input, value);
           if (rec) {
@@ -318,7 +369,7 @@ export class JobRunner {
       });
 
       // Stream the answer: small text pieces go live to the browser (not saved); the full text is saved once per block.
-      let block = "", pending = "";
+      let pending = "";
       let timer: NodeJS.Timeout | null = null;
       const flush = () => { if (timer) { clearTimeout(timer); timer = null; } if (pending) { this.broadcast(job, "text_delta", { text: pending }); pending = ""; } };
       for await (const part of result.fullStream as AsyncIterable<any>) {
@@ -364,14 +415,31 @@ export class JobRunner {
           this.emit(job, "approval_request", { approvalId: entry.approvalId, tool: entry.toolName, input, current: entry.current });
         }
         job.pending = pending;
+        if (ctl.stop) { this.setStatus(job, "paused", { note: "Stopped. The next change is waiting for your approval when you continue." }); return; }
         this.setStatus(job, "waiting_approval", { count: pending.length });
         return;
       }
 
       job.result = (await result.text) ?? "";
+      if (ctl.stop) { this.setStatus(job, "paused"); return; }
       this.emit(job, "done", { text: job.result });
       this.setStatus(job, "completed");
     } catch (e) {
+      if (ctl.stop) {
+        // Stopped while the model was writing. Keep every finished step, plus results of changes that ran outside a
+        // finished step (an approved change runs before the first step) - otherwise it could run again on Continue.
+        const done = new Set<string>();
+        for (const m of stepMessages) if (m.role === "tool" && Array.isArray(m.content)) for (const p of m.content as any[]) if (p.type === "tool-result") done.add(p.toolCallId);
+        const orphans = toolResults.filter((t) => t.toolCallId && !done.has(t.toolCallId));
+        if (orphans.length) {
+          job.messages.push({ role: "tool", content: orphans.map((t) => ({ type: "tool-result", toolCallId: t.toolCallId, toolName: t.toolName,
+            output: t.error ? { type: "error-text", value: t.error } : { type: "json", value: t.output ?? null } })) } as ModelMessage);
+        }
+        job.messages.push(...stepMessages);
+        if (block.trim()) this.emit(job, "text", { text: block.trim() + " …" });
+        this.setStatus(job, "paused", { note: "Stopped." });
+        return;
+      }
       job.error = (e as Error).message;
       this.emit(job, "error", { error: job.error });
       this.setStatus(job, "failed", { error: job.error });

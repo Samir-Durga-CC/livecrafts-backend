@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { PausedBar, type PauseKind } from "./components/PausedBar";
 import { ApiError, api, buildTimeline, followJob, lastStatus, ledgerFrom } from "./api";
 import { ChangesPanel, type PanelTab } from "./components/ChangesPanel";
 import { Composer, type Context } from "./components/Composer";
@@ -14,7 +15,7 @@ import { WRITE_TOOLS, groupRequests, prefs, titleOf, writeCount, type RequestGro
 const params = new URLSearchParams(location.search);
 const wide = () => window.innerWidth > 800;
 const STATUS_TEXT: Record<string, string> = {
-  idle: "Ready", queued: "Starting…", running: "Working…", waiting_approval: "Waiting for your approval",
+  idle: "Ready", queued: "Starting…", running: "Working…", waiting_approval: "Waiting for your approval", paused: "Paused",
   completed: "Done", failed: "Failed", interrupted: "Interrupted",
 };
 
@@ -103,6 +104,12 @@ export default function App() {
   const togglePanel = (t: PanelTab) => { if (panelOpen && panelTab === t) setPanelOpen(false); else { setPanelTab(t); setPanelOpen(true); } };
   const working = status === "queued" || status === "running";
   const waiting = status === "waiting_approval";
+  const paused = status === "paused";
+  const [pauseKind, setPauseKind] = useState<PauseKind>("note");
+  const [stopping, setStopping] = useState(false);
+  useEffect(() => { if (!working) setStopping(false); if (paused) setPauseKind("note"); }, [working, paused]);
+  const stop = () => { setStopping(true); api.stop(jobId).catch((e) => { setStopping(false); guard(e); }); };
+  const cont = () => api.resume(jobId).catch(guard);
   const model = health?.model ?? "model";
   const title = job ? titleOf(job, titles) : "New chat";
 
@@ -111,7 +118,8 @@ export default function App() {
     if (!siteId) { setDialog("site"); return; }
     try {
       const args = { prompt, fileIds, pageUrl: ctx.pageUrl, selectedTarget: ctx.selectedTarget, approvalMode: mode };
-      if (jobId && (status === "completed" || status === "failed")) await api.message(jobId, args);
+      if (jobId && paused) await api.message(jobId, { ...args, kind: pauseKind });
+      else if (jobId && (status === "completed" || status === "failed")) await api.message(jobId, args);
       else { const j = await api.createJob(siteId, args); setJobId(j.id); }
       refreshJobs();
     } catch (e) { guard(e); throw e; }
@@ -191,7 +199,9 @@ export default function App() {
               onEdit={(t) => setDraft({ text: t, n: Date.now() })}
               onRetry={(t) => { if (t && (status === "completed" || status === "failed")) void send(t, []); }} />
             <Composer disabled={!siteId || working || waiting} model={model} context={ctx} draft={draft}
-              placeholder={waiting ? "Waiting for your approval above…" : working ? "Working…" : site ? "Ask Livecrafts to change anything on your site…" : "Connect a site first"}
+              onStop={working && jobId ? stop : undefined} stopping={stopping}
+              notice={paused ? <PausedBar kind={pauseKind} onKind={setPauseKind} onContinue={() => void cont()} /> : undefined}
+              placeholder={waiting ? "Waiting for your approval above…" : working ? (stopping ? "Stopping…" : "Working… (press Stop to pause)") : paused ? (pauseKind === "edit" ? "Type your corrected request…" : "Type a note for the assistant…") : site ? "Ask Livecrafts to change anything on your site…" : "Connect a site first"}
               onClearContext={(k) => setCtx((c) => ({ ...c, [k]: undefined }))} onSend={send}
               extra={<><ApprovalModePicker mode={mode} onChange={(m) => void changeMode(m)} /><span className="model-pill" title="Default model (LC_MODEL). A site can choose its own in WordPress → Settings → Livecrafts Assistant."><Icon.Sparkle size={13} /> {model}</span></>} />
           </section>

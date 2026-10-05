@@ -27,6 +27,7 @@ const ok = (name: string) => { passed++; console.log("  ✓ " + name); };
 const sha1 = (s: string) => crypto.createHash("sha1").update(s, "utf8").digest("hex");
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea7d6a5d10000000049454e44ae426082", "hex");
 
+let heroWrites = 0;
 // ------------------------------------------------------------------ fake WordPress (core REST + Livecrafts 0.7)
 const THEME = "wp-content/themes/aero";
 const wp = {
@@ -61,7 +62,7 @@ const fakeWp = http.createServer(async (req, res) => {
   if (lc === "target" && req.method === "POST") {
     if (String(body.targetId).startsWith("el:5:abc123")) wp.elTitle = body.value;
     else if (String(body.targetId).startsWith("el:5:img1")) wp.elImage = { id: Number(body.value), url: `${wpUrl}/wp-content/uploads/${body.value}.png` };
-    else wp.hero = body.value;
+    else { wp.hero = body.value; heroWrites++; }
     return json(200, { ok: true, value: body.value });
   }
   if (lc === "map") return json(200, { ok: true, post: { id: 5 }, acf: [{ kind: "acf", tid: "acf:field_hero_title:5", label: "Hero title", ftype: "text", value: wp.hero }],
@@ -472,6 +473,123 @@ console.log("\n11) page fields list + direct field edits; Elementor text even wh
   const j2 = r2.create(site.id, "hello");
   await r2.waitUntilSettled(j2.id);
   assert.equal(seen?.openai?.store, false); ok("OpenAI requests use store:false (fixes \"Item with id 'rs_…' not found\")");
+}
+
+// ------------------------------------------------------------------ 12) Stop / pause / continue
+console.log("\n12) Stop button: pauses safely, keeps finished work, never repeats a change; continue with a note or a correction");
+{
+  const long = Array.from({ length: 200 }, (_, i) => `word${i}`).join(" ");
+  const until = async (runner: any, id: string, pred: (j: any) => boolean) => { for (let i = 0; i < 200; i++) { const j = runner.get(id); if (pred(j)) return j; await new Promise((r) => setTimeout(r, 20)); } throw new Error("timeout"); };
+
+  // a) stop while the model is writing
+  let turn = 0;
+  const r1 = runnerFor(mockModel(async () => (turn++ === 0 ? say(long) : say("Continuing with the note.")), { delayMs: 15 }));
+  const j1 = r1.create(site.id, "write a long answer", undefined, [], { approvalMode: "auto" });
+  await until(r1, j1.id, (j) => j.status === "running");
+  await new Promise((r) => setTimeout(r, 150));
+  r1.stop(j1.id);
+  const p1 = await r1.waitUntilSettled(j1.id);
+  assert.equal(p1.status, "paused"); ok("Stop while writing → paused at once");
+  r1.continue(j1.id, "make it shorter", undefined, [], { kind: "note" });
+  const c1 = await r1.waitUntilSettled(j1.id);
+  assert.equal(c1.status, "completed"); assert.equal(c1.requestSeq, 1); assert.match(String(c1.messages.at(-2)?.content ?? JSON.stringify(c1.messages)), /paused you/i);
+  ok("a note while paused continues the SAME request (no new request in Changes)");
+
+  // b) stop right after an approved change: it ran once and never runs again
+  wp.hero = "Old Title"; heroWrites = 0; let t2 = 0;
+  const r2 = runnerFor(mockModel(async () => { t2++; return t2 === 1 ? call("set_content", { target: "acf:field_hero_title:5", value: "Approved", reason: "x" }) : t2 === 2 ? say(long) : say("ok, done"); }, { delayMs: 15 }));
+  const j2 = r2.create(site.id, "change the title", undefined, [], { approvalMode: "every" });
+  const w2 = await r2.waitUntilSettled(j2.id);
+  r2.respond(j2.id, w2.pending[0].approvalId, true);
+  await until(r2, j2.id, (j) => j.status === "running");
+  await until(r2, j2.id, () => heroWrites === 1);
+  await new Promise((r) => setTimeout(r, 120));
+  r2.stop(j2.id);
+  const p2 = await r2.waitUntilSettled(j2.id);
+  assert.equal(p2.status, "paused"); assert.equal(wp.hero, "Approved"); assert.equal(heroWrites, 1);
+  assert.ok(p2.messages.some((m: any) => m.role === "tool" && JSON.stringify(m.content).includes("tool-result")));
+  ok("approved change ran once and its result is saved even though Stop came mid-answer");
+  r2.resume(j2.id);
+  const c2 = await r2.waitUntilSettled(j2.id);
+  assert.equal(c2.status, "completed"); assert.equal(heroWrites, 1); ok("Continue → finishes without running the change again");
+
+  // c) stop while waiting for approval, then correct the request: the pending change is declined, nothing written
+  heroWrites = 0; let t3 = 0;
+  const r3 = runnerFor(mockModel(async () => { t3++; return t3 === 1 ? call("set_content", { target: "acf:field_hero_title:5", value: "Wrong", reason: "x" }) : say("Understood, using the corrected request."); }));
+  const j3 = r3.create(site.id, "title Wrong", undefined, [], { approvalMode: "every" });
+  await r3.waitUntilSettled(j3.id);
+  r3.stop(j3.id);
+  assert.equal(r3.get(j3.id)!.status, "paused"); ok("Stop while an approval card waits → paused");
+  r3.continue(j3.id, "actually keep the title, change nothing", undefined, [], { kind: "edit" });
+  const c3 = await r3.waitUntilSettled(j3.id);
+  assert.equal(c3.status, "completed"); assert.equal(heroWrites, 0); assert.ok(c3.events.some((e: any) => e.type === "approval_response" && e.data.approved === false));
+  ok("editing the request declines the waiting change - nothing was written");
+}
+
+// ------------------------------------------------------------------ 13) eyes: the person's browser looks for the assistant
+console.log("\n13) eyes: tools look through the person's browser when the widget is open; honest about bot-check pages");
+{
+  const { eyes } = await import("../src/eyes.js");
+  const { readPage, closeBrowser } = await import("../src/browser.js");
+  const app = createApp(runnerFor(scripted([() => say("ok")])), sites, files);
+  await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
+  const api = `http://127.0.0.1:${(app.address() as any).port}`;
+
+  // a pretend widget: opens the live line and answers requests like widget.js would
+  const seenRequests: any[] = [];
+  const ctrl = new AbortController();
+  const widget = (async () => {
+    const res = await fetch(`${api}/sites/${site.id}/eyes?pageUrl=${encodeURIComponent(wpUrl + "/")}&viewport=1366`, { signal: ctrl.signal });
+    const reader = res.body!.getReader(); const dec = new TextDecoder(); let buf = "";
+    try {
+      for (;;) {
+        const { value, done } = await reader.read(); if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i: number;
+        while ((i = buf.indexOf("\n\n")) >= 0) {
+          const block = buf.slice(0, i); buf = buf.slice(i + 2);
+          if (!/^event: request/m.test(block)) continue;
+          const req = JSON.parse(block.split("\n").find((l) => l.startsWith("data: "))!.slice(6));
+          seenRequests.push(req);
+          const shot = req.action === "screenshot" ? files.save(PNG, "page.jpg", "image/png").id : undefined;
+          const result = req.action === "read" ? { ok: true, url: wpUrl + "/", title: "Aero", headings: [{ tag: "h1", text: "Hello from the real browser" }], text: "Footer: © Aero 2026 · Instagram · LinkedIn" }
+            : { ok: true, screenshotId: shot, device: "desktop", target: "page", url: wpUrl + "/" };
+          await fetch(`${api}/sites/${site.id}/eyes/${req.id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ok: true, result }) });
+        }
+      }
+    } catch { /* closed */ }
+  })();
+  for (let i = 0; i < 50 && !eyes.available(site.id); i++) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(eyes.available(site.id)); ok("the widget's live line is registered for this site");
+
+  let modelSaw: any[] = [];
+  const runner = new JobRunner(jobs, sites, buildAgent(files, {
+    hostinger: null, allowPrivateImageHosts: true,
+    model: mockModel(async ({ prompt }: any) => { modelSaw = prompt; const n = prompt.filter((m: any) => m.role === "tool").length; return n === 0 ? call("read_page", {}) : n === 1 ? call("screenshot_page", { text: "footer" }) : say("The footer shows Instagram and LinkedIn."); }),
+  }));
+  const job = runner.create(site.id, "check the footer", undefined, [], { approvalMode: "auto" });
+  const done = await runner.waitUntilSettled(job.id);
+  assert.equal(done.status, "completed"); assert.deepEqual(seenRequests.map((r) => r.action), ["read", "screenshot"]);
+  const readResult = JSON.stringify(done.messages.find((m: any) => m.role === "tool"));
+  assert.match(readResult, /Hello from the real browser/); assert.match(readResult, /person's browser/);
+  ok("read_page went to the person's browser (not the server's), and says so");
+  assert.ok(modelSaw.some((m: any) => m.role === "user" && Array.isArray(m.content) && m.content.some((p: any) => p.type === "file" && /^image\//.test(p.mediaType))));
+  ok("the screenshot taken in the person's browser reached the AI as an image (no public URL needed)");
+
+  ctrl.abort(); await widget;
+  for (let i = 0; i < 50 && eyes.available(site.id); i++) await new Promise((r) => setTimeout(r, 20));
+  assert.equal(eyes.available(site.id), false); ok("closing the widget removes it - tools fall back to the server browser");
+  app.close();
+
+  // the server browser recognises a "checking your browser" page instead of reading it as the site
+  const guard = http.createServer((_q, res) => { res.writeHead(200, { "Content-Type": "text/html" }); res.end("<html><head><title>Just a moment...</title></head><body>Checking your browser before accessing the site.</body></html>"); });
+  await new Promise<void>((r) => guard.listen(0, "127.0.0.1", r));
+  try {
+    await assert.rejects(() => readPage(`http://127.0.0.1:${(guard.address() as any).port}`, {}), /BOT_CHECK/);
+    ok("bot-check page detected → clear BOT_CHECK message, never a made-up answer");
+  } catch (e) {
+    if (/No browser available/.test(String((e as Error).message))) console.log("  - skipped: no Edge/Chrome on this machine"); else throw e;
+  } finally { guard.close(); await closeBrowser(); }
 }
 
 console.log(`\nALL GOOD: ${passed} checks passed.\n`);

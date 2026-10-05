@@ -7,9 +7,13 @@ interface Attachment { key: string; name: string; preview: string; state: "uploa
 
 export interface Context { pageUrl?: string; selectedTarget?: string }
 
-export function Composer({ disabled, placeholder, model, context, draft, onClearContext, onSend, extra, chips, compact }: {
+export function Composer({ disabled, placeholder, model, context, draft, onClearContext, onSend, extra, chips, compact, onStop, stopping, notice }: {
   disabled: boolean; placeholder: string; model: string; context: Context; draft?: { text: string; n: number };
   extra?: ReactNode; chips?: ReactNode; compact?: boolean;
+  /** While the assistant works: the send button becomes Stop. */
+  onStop?: () => void; stopping?: boolean;
+  /** A bar above the input (e.g. "Paused - Continue / note / correction"). */
+  notice?: ReactNode;
   onClearContext: (k: keyof Context) => void; onSend: (text: string, fileIds: string[]) => Promise<void>;
 }) {
   const [text, setText] = useState("");
@@ -49,6 +53,7 @@ export function Composer({ disabled, placeholder, model, context, draft, onClear
     <div className={`composer ${drag ? "drag" : ""} ${disabled ? "off" : ""} ${compact ? "compact" : ""}`}
       onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
       onDrop={(e) => { e.preventDefault(); setDrag(false); add(e.dataTransfer.files); }}>
+      {notice}
       {(context.pageUrl || context.selectedTarget || chips) && (
         <div className="chips">
           {chips}
@@ -82,7 +87,9 @@ export function Composer({ disabled, placeholder, model, context, draft, onClear
         <span className="c-hint">Enter to send · Shift+Enter for a new line</span>
         <span className="grow" />
         {extra ?? <span className="model-pill" title="Change the model with LC_MODEL in the backend .env"><Icon.Sparkle size={13} /> {model}</span>}
-        <button className="send" onClick={() => void submit()} disabled={!canSend} aria-label="Send"><Icon.Send size={19} /></button>
+        {onStop
+          ? <button className="send stop" onClick={onStop} disabled={stopping} aria-label="Stop" title={stopping ? "Stopping after the current step…" : "Stop (you can continue, add a note or correct the request)"}>{stopping ? <span className="spin" /> : <Icon.Stop size={17} />}</button>
+          : <button className="send" onClick={() => void submit()} disabled={!canSend} aria-label="Send"><Icon.Send size={19} /></button>}
       </div>
     </div>
   );

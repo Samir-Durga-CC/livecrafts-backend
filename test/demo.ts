@@ -38,7 +38,7 @@ const wp = { title: "Delivering Reliable Process Solutions.", cta: "Request Cons
 const PLUGIN_ASSETS = path.resolve(process.cwd(), "..", "livecrafts", "livecrafts", "assets");
 const DEMO_PORT = Number(process.env.DEMO_PORT ?? 8791);
 const widgetTags = (pageKey = "p5") => `<link rel="stylesheet" href="/wp-content/plugins/livecrafts/assets/widget.css">
-<script>window.LIVECRAFTS_WIDGET=${JSON.stringify({ backend: `http://127.0.0.1:${DEMO_PORT}`, token: "", botName: "Aero Assistant", welcome: "Hi! I'm the Aeromatic site assistant. Tell me what to change, or pick an element on the page.", accent: "#e8590c", position: "right", approvalMode: "request", siteUrl: wpUrl, user: "admin", pageKey })}; window.LIVECRAFTS_WIDGET.pageUrl = location.href;</script>
+<script>window.LIVECRAFTS_WIDGET=${JSON.stringify({ backend: `http://127.0.0.1:${DEMO_PORT}`, token: "", botName: "Aero Assistant", welcome: "Hi! I'm the Aeromatic site assistant. Tell me what to change, or pick an element on the page.", accent: "#e8590c", position: "right", approvalMode: "request", siteUrl: wpUrl, user: "admin", pageKey, version: "0.9.2", assets: `${wpUrl}/wp-content/plugins/livecrafts/assets/` })}; window.LIVECRAFTS_WIDGET.pageUrl = location.href;</script>
 <script src="/wp-content/plugins/livecrafts/assets/widget.js" defer></script>`;
 // Livecrafts style overlay (the plugin prints this in <head>; same format: all screens, tablet ≤1024px, mobile ≤767px)
 const patches: Record<string, Record<string, any>> = {};
@@ -57,7 +57,7 @@ const textScript = (key: string) => {
   for (const k of ["site", key]) for (const [sel, pt] of Object.entries(patches[k] ?? {})) if (pt.text) t[sel] = pt.text;
   return Object.keys(t).length ? `<script>(function(){var m=${JSON.stringify(t)};Object.keys(m).forEach(function(s){var e=document.querySelector(s);if(e)e.textContent=m[s];});})();</script>` : "";
 };
-const pageHtml = (body: string, key = "p5") => `<!doctype html><html><head><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/${CSS_PATH}?ver=1"><style id="livecrafts-patches">${overlayCss(key)}</style></head><body>${body}${textScript(key)}${widgetTags(key)}</body></html>`;
+const pageHtml = (body: string, key = "p5") => `<!doctype html><html><head><title>Aeromatic - Process Solutions</title><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/${CSS_PATH}?ver=1"><style id="livecrafts-patches">${overlayCss(key)}</style></head><body>${body}${textScript(key)}${widgetTags(key)}</body></html>`;
 const fakeWp = http.createServer(async (req, res) => {
   const u = new URL(req.url!, "http://x");
   const chunks: Buffer[] = []; for await (const c of req) chunks.push(c as Buffer);
@@ -74,7 +74,7 @@ const fakeWp = http.createServer(async (req, res) => {
     return json(200, { ok: true });
   }
   if (route === "assistant") return json(200, { ok: true, botName: "Aero Assistant", welcome: "Hi! I'm the Aeromatic site assistant. Tell me what to change, or pick an element on the page.", instructions: "Brand colours: #e8590c and #111827.", model: "", approvalMode: "request", accent: "#e8590c" });
-  const asset = u.pathname.match(/^\/wp-content\/plugins\/livecrafts\/assets\/(widget\.(js|css))$/);
+  const asset = u.pathname.match(/^\/wp-content\/plugins\/livecrafts\/assets\/((?:vendor\/)?[\w.-]+\.(js|css))$/);
   if (asset) { res.writeHead(200, { "Content-Type": asset[2] === "js" ? "text/javascript" : "text/css", "Cache-Control": "no-store" }); return res.end(fs.readFileSync(path.join(PLUGIN_ASSETS, asset[1]))); }
   if (route === "map") return json(200, {
     ok: true, post: { id: 5, title: "Home", url: wpUrl + "/" }, builders: { acf_fields: 3 }, elementor: [],
@@ -125,10 +125,17 @@ const lastTool = (prompt0: any[]) => {
 };
 
 let lastBackup = "";
+const prev = { title: "", h1: "", color: "", size: "" };
 const model = mockModel(async ({ prompt }: any) => {
   await new Promise((r) => setTimeout(r, 450));
   const user = lastUserText(prompt);
   const tool = lastTool(prompt);
+  // remember what earlier look-tools returned (for the demo summary)
+  for (const m of prompt) if (m.role === "tool") for (const c of m.content ?? []) if (c.type === "tool-result") {
+    const v = c.output?.value ?? c.output;
+    if (c.toolName === "read_page" && v?.title) { prev.title = v.title; prev.h1 = v.headings?.[0]?.text ?? ""; }
+    if (c.toolName === "inspect_element" && v?.elements?.[0]) { prev.color = v.elements[0].computed?.color ?? ""; prev.size = v.elements[0].computed?.["font-size"] ?? ""; }
+  }
   const wanted = user.match(/\bto\s+["“]?(.+?)["”]?\s*$/im)?.[1];
   const fileId = user.match(/file_[a-f0-9]+/)?.[0];
   // a Quick-actions style request says "color: #old → #new" - use the new one
@@ -137,10 +144,12 @@ const model = mockModel(async ({ prompt }: any) => {
   const styleAsk = !!colour && /title|heading/i.test(user);
   const revertAsk = /\b(revert|restore|undo)\b/i.test(user) && !!lastBackup;
   const pageAsk = /\b(blog|new page|create (a )?page)\b/i.test(user);
+  const lookAsk = /\b(read|look at|check) (this|the) (page|title|hero)\b/i.test(user);
 
   if (!tool) {
     if (revertAsk) return call("restore_file", { backupId: lastBackup, reason: "Put the theme stylesheet back the way it was" });
     if (styleAsk) return call("inspect_element", { text: wp.title.slice(0, 20) });
+    if (lookAsk) return call("read_page", /mobile/i.test(user) ? { device: "mobile" } : {});
     if (pageAsk) return call("create_page", {
       title: "Blog", status: "publish", reason: "Create a Blog page with an intro and the latest articles",
       content: [
@@ -164,7 +173,7 @@ const model = mockModel(async ({ prompt }: any) => {
   if (tool.name === "screenshot_page" && pageAsk) {
     return say("Created the **Blog** page and checked it on a phone-size screen (screenshot above):\n\n- Intro line + a **3-column grid of the latest 6 posts** (stacks to one column on mobile)\n- It is live and shown in the Preview panel\n\nDon't like it? Press **Revert** on this change in the *Changes* panel — the page goes to the Trash.");
   }
-  if (tool.name === "screenshot_page") {
+  if (tool.name === "screenshot_page" && !lookAsk) {
     return say(revertAsk
       ? "Reverted. The theme stylesheet is back to its original version — the screenshot above shows the live hero title again."
       : `Done. I changed one line in \`${CSS_PATH}\`:
@@ -174,6 +183,11 @@ const model = mockModel(async ({ prompt }: any) => {
 - **Checked:** the live stylesheet has the new value and the page still loads ✓
 
 The screenshot above is the live page. Say *“revert it”* to put it back.`);
+  }
+  if (tool.name === "read_page" && lookAsk) return tool.out?.ok === false ? say(`I could not read the page: ${tool.out?.error}`) : call("inspect_element", { text: (tool.out?.headings?.[0]?.text ?? "").slice(0, 20) || "Delivering", ...(/mobile/i.test(user) ? { device: "mobile" } : {}) });
+  if (tool.name === "inspect_element" && lookAsk) return tool.out?.ok === false ? say(`I could not inspect it: ${tool.out?.error}`) : call("screenshot_page", { selector: "h1", ...(/mobile/i.test(user) ? { device: "mobile" } : {}) });
+  if (tool.name === "screenshot_page" && lookAsk) {
+    return say(`I looked through **${String(tool.out?.seenBy ?? "a browser")}** (${tool.out?.device ?? "desktop"}). The page title is "${prev.title}", the main heading is "${prev.h1}" in ${prev.color}, ${prev.size}. Screenshot: ${tool.out?.ok === false ? "failed - " + tool.out?.error : "taken (" + (tool.out?.screenshotId ?? "") + ")"}.`);
   }
   if (tool.name === "list_pages") return say("This site has **3 published pages**:\n\n1. **Home** — the landing page with the hero section\n2. **About us**\n3. **Contact**\n\nTell me which one to work on and what to change.");
   if (tool.name === "get_page_map") {

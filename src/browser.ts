@@ -51,6 +51,12 @@ async function openPage(siteUrl: string, url: string | undefined, device: Device
   const page = await ctx.newPage();
   const target = sameOrigin(siteUrl, url);
   await page.goto(target, { waitUntil: "networkidle", timeout: 30_000 }).catch(() => page.goto(target, { waitUntil: "load", timeout: 30_000 }));
+  // Hosting/CDN bot protection shows a "checking your browser" page to automated browsers - say so, never pretend
+  const check = await page.evaluate(() => ({ title: document.title, text: (document.body?.innerText ?? "").slice(0, 600), size: document.body?.innerText.length ?? 0 })).catch(() => null);
+  if (check && /just a moment|checking (your|the) browser|verify(ing)? (that )?you are (a )?human|attention required|ddos protection|security check|enable javascript and cookies/i.test(check.title + " " + check.text) && check.size < 3000) {
+    await ctx.close();
+    throw new Error("BOT_CHECK: the site's bot protection showed a 'checking your browser' page to the server's browser, so it cannot see the page. Ask the person to open the Livecrafts widget on this page (then you look through their own browser), or to allow this computer in their hosting security settings.");
+  }
   return { ctx, page };
 }
 
@@ -157,6 +163,21 @@ export async function analyzeDesign(siteUrl: string, a: { url?: string; device?:
       };
     });
     return { ok: true, url: page.url().replace(/[?&]lcv=\d+/, ""), ...data, howToUse: "Reuse these fonts, sizes, colours (prefer the CSS variables), radii, spacing and breakpoints so new work looks native to this site." };
+  } finally { await ctx.close(); }
+}
+
+/** The visible content of a page: title, headings, text, images, links - what a visitor actually reads. */
+export async function readPage(siteUrl: string, a: { url?: string; device?: Device }) {
+  const { ctx, page } = await openPage(siteUrl, a.url, a.device ?? "desktop");
+  try {
+    const data = await page.evaluate(() => ({
+      title: document.title,
+      headings: Array.from(document.querySelectorAll("h1,h2,h3")).slice(0, 40).map((h) => ({ tag: h.tagName.toLowerCase(), text: (h.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 160) })),
+      text: (document.body?.innerText ?? "").replace(/\n{3,}/g, "\n\n").slice(0, 15000),
+      images: Array.from(document.images).slice(0, 30).map((i) => ({ src: i.currentSrc || i.src, alt: i.alt, width: i.naturalWidth, height: i.naturalHeight })),
+      links: Array.from(document.querySelectorAll("a[href]")).slice(0, 50).map((l) => ({ text: (l.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 60), href: (l as HTMLAnchorElement).href })),
+    }));
+    return { ok: true, url: page.url().replace(/[?&]lcv=\d+/, ""), ...data };
   } finally { await ctx.close(); }
 }
 

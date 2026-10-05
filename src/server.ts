@@ -13,6 +13,7 @@ import { secrets, type ProviderId } from "./secrets.js";
 import { PROVIDERS, providerStatus, testModel } from "./models.js";
 import { diffOf } from "./changes.js";
 import { applyManual, listFields } from "./manual.js";
+import { eyes } from "./eyes.js";
 import { assistantSettings, forgetAssistantSettings } from "./persona.js";
 import { closeBrowser, screenshotPath } from "./browser.js";
 
@@ -34,7 +35,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
   const publicJob = (j: Job) => ({ id: j.id, siteId: j.siteId, prompt: j.prompt, status: j.status, pending: j.pending, result: j.result, error: j.error, createdAt: j.createdAt, updatedAt: j.updatedAt, lastEventSeq: j.events.at(-1)?.seq ?? 0, changes: j.changes ?? [],
     approvalMode: j.approvalMode ?? "every", model: j.model ?? null, requestSeq: j.requestSeq ?? 1 });
   const sameSite = (a: string, b: string) => a.replace(/^https?:\/\/(www\.)?/i, "").replace(/\/+$/, "").toLowerCase() === b.replace(/^https?:\/\/(www\.)?/i, "").replace(/\/+$/, "").toLowerCase();
-  const requestOpts = (b: any) => ({ approvalMode: b.approvalMode, model: typeof b.model === "string" ? b.model.trim() : undefined });
+  const requestOpts = (b: any) => ({ approvalMode: b.approvalMode, model: typeof b.model === "string" ? b.model.trim() : undefined, kind: ["new", "note", "edit"].includes(b.kind) ? b.kind : undefined });
 
   async function readBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
     const chunks: Buffer[] = []; let size = 0;
@@ -121,6 +122,20 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
           const info: any = await new Bridge(s).ping();
           return send(res, 200, { ok: true, ms: Date.now() - t, plugin: info?.version ?? null, wp: info?.site?.wp ?? null, php: info?.site?.php ?? null, user: info?.user ?? null, themeFiles: !!info?.capabilities?.theme_files, theme: info?.capabilities?.theme ?? null, acf: !!info?.capabilities?.acf, elementor: !!info?.capabilities?.elementor, checkedAt: new Date().toISOString() });
         } catch (e) { return send(res, 200, { ok: false, ms: Date.now() - t, error: (e as Error).message, checkedAt: new Date().toISOString() }); }
+      }
+      // ---- "eyes": the widget lends the person's browser to the assistant (live line + answers)
+      m = url.pathname.match(/^\/sites\/([\w-]+)\/eyes$/);
+      if (m && req.method === "GET") {
+        if (!sites.get(m[1])) return send(res, 404, { error: "Unknown site" });
+        res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+        const off = eyes.connect(m[1], res, String(url.searchParams.get("pageUrl") ?? ""), Number(url.searchParams.get("viewport") ?? 0));
+        req.on("close", off);
+        return;
+      }
+      m = url.pathname.match(/^\/sites\/([\w-]+)\/eyes\/(eye_[a-f0-9]+)$/);
+      if (m && req.method === "POST") {
+        const b = await readBody(req, 8_000_000).then((x) => (x.length ? JSON.parse(x.toString("utf8")) : {}));
+        return eyes.respond(m[2], b) ? send(res, 200, { ok: true }) : send(res, 404, { error: "That request is no longer waiting." });
       }
       m = url.pathname.match(/^\/sites\/([\w-]+)\/fields$/);
       if (m && req.method === "GET") { // every ACF / Elementor content field on a page (key + value), for manual editing
@@ -254,6 +269,8 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         if (!b.approvalId || typeof b.approved !== "boolean") return send(res, 400, { error: "approvalId and approved (true/false) are required." });
         return send(res, 200, publicJob(runner.respond(m[1], String(b.approvalId), b.approved, b.reason ? String(b.reason) : undefined)));
       }
+      m = url.pathname.match(/^\/jobs\/([\w-]+)\/stop$/);
+      if (m && req.method === "POST") { try { return send(res, 200, publicJob(runner.stop(m[1]))); } catch (e) { return send(res, 409, { error: (e as Error).message }); } }
       m = url.pathname.match(/^\/jobs\/([\w-]+)\/approval-mode$/);
       if (m && req.method === "PUT") { const b = await readJson(req); return send(res, 200, publicJob(runner.setApprovalMode(m[1], b.mode))); }
       m = url.pathname.match(/^\/jobs\/([\w-]+)\/requests\/(\d+)\/revert$/);

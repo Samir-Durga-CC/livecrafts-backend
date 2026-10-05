@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, buildTimeline, followJob, lastStatus, ledgerFrom, setToken } from "../api";
+import { PausedBar, type PauseKind } from "../components/PausedBar";
+import { answerEyes, api, buildTimeline, followEyes, followJob, lastStatus, ledgerFrom, setToken } from "../api";
 import { Composer } from "../components/Composer";
 import { Transcript } from "../components/Messages";
 import { ApprovalModePicker, RequestChanges } from "../components/RequestChanges";
@@ -115,6 +116,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       if (e.data.type === "lc:selected") { setSelected(e.data.element as PickedElement); setPicking(false); setTab("actions"); }
       if (e.data.type === "lc:pick-ended") setPicking(false);
       if (e.data.type === "lc:text-edited") textEdited.current?.(String(e.data.selector), String(e.data.oldText ?? ""), String(e.data.newText ?? ""));
+      if (e.data.type === "lc:eyes-result") eyesWaiting.current.get(String(e.data.id))?.({ ok: !!e.data.ok, result: e.data.result, error: e.data.error });
       if (e.data.type === "lc:text-error") setProblem(String(e.data.error ?? "Could not edit that text."));
     };
     window.addEventListener("message", on);
@@ -143,6 +145,12 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   const status = jobId ? lastStatus(events) : "idle";
   const working = status === "queued" || status === "running";
   const waiting = status === "waiting_approval";
+  const paused = status === "paused";
+  const [pauseKind, setPauseKind] = useState<PauseKind>("note");
+  const [stopping, setStopping] = useState(false);
+  useEffect(() => { if (!working) setStopping(false); if (paused) setPauseKind("note"); }, [working, paused]);
+  const stop = () => { setStopping(true); api.stop(jobId).catch((e) => { setStopping(false); setProblem((e as Error).message); }); };
+  const cont = () => api.resume(jobId).catch((e) => setProblem((e as Error).message));
   const timeline = useMemo(() => buildTimeline(events), [events]);
   const ledger = useMemo(() => ledgerFrom(baseLedger, events), [baseLedger, events]);
   const groups = useMemo(() => groupRequests(timeline, ledger, working), [timeline, ledger, working]);
@@ -176,6 +184,33 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       return false;
     }
   }
+  // ---- eyes: answer "look at the page" requests from the assistant with THIS browser (plugin 0.9.2+ on the page)
+  const [looking, setLooking] = useState(0);
+  const eyesWaiting = useRef(new Map<string, (r: { ok: boolean; result?: any; error?: string }) => void>());
+  const eyesOk = (() => { const v = (cfg.widgetVersion ?? "").split(".").map(Number); return v[0] > 0 || (v[1] ?? 0) > 9 || ((v[1] ?? 0) === 9 && (v[2] ?? 0) >= 2); })();
+  useEffect(() => {
+    if (!eyesOk) return;
+    return followEyes(site.id, cfg.pageUrl, 0, (r) => {
+      setLooking((n) => n + 1);
+      const finish = async (ans: { ok: boolean; result?: any; error?: string }) => {
+        try {
+          if (ans.ok && ans.result?.image) {
+            // a screenshot taken in this browser: store it on the backend (the assistant receives it as an image)
+            const blob = await (await fetch(ans.result.image)).blob();
+            const up = await api.uploadFile(new File([blob], `page-${Date.now()}.jpg`, { type: blob.type || "image/jpeg" }));
+            const { image: _drop, ...rest } = ans.result;
+            ans = { ok: true, result: { ...rest, screenshotId: up.id } };
+          }
+        } catch (e) { ans = { ok: false, error: `Could not store the screenshot: ${(e as Error).message}` }; }
+        await answerEyes(site.id, r.id, ans);
+        setLooking((n) => Math.max(0, n - 1));
+      };
+      eyesWaiting.current.set(r.id, (ans) => { eyesWaiting.current.delete(r.id); void finish(ans); });
+      post({ type: "lc:eyes", id: r.id, action: r.action, args: r.args });
+      setTimeout(() => { const f = eyesWaiting.current.get(r.id); if (f) f({ ok: false, error: "The page did not answer in time." }); }, 28_000);
+    });
+  }, [site.id, cfg.pageUrl, eyesOk, post]);
+
   const textEdited = useRef<((selector: string, oldText: string, newText: string) => void) | null>(null);
   textEdited.current = (selector, oldText, newText) => {
     if (!selected) return;
@@ -186,7 +221,8 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     setProblem("");
     try {
       const args = { prompt, fileIds, pageUrl: cfg.pageUrl, approvalMode: mode, extraContext };
-      if (jobId && (status === "completed" || status === "failed")) await api.message(jobId, args);
+      if (jobId && paused) await api.message(jobId, { ...args, kind: pauseKind });
+      else if (jobId && (status === "completed" || status === "failed")) await api.message(jobId, args);
       else { const j = await api.createJob(site.id, args); setJobId(j.id); }
       setTab("chat");
       refreshJobs();
@@ -231,7 +267,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
         <div className="w-avatar">{name.charAt(0).toUpperCase()}</div>
         <div className="w-title">
           <b>{name}</b>
-          <small>{working ? <><span className="spin" /> Working…</> : waiting ? "Waiting for your approval" : site.name}</small>
+          <small>{looking > 0 ? <><Icon.Eye size={12} /> Looking at the page…</> : working ? <><span className="spin" /> Working…</> : waiting ? "Waiting for your approval" : paused ? "Paused" : site.name}</small>
         </div>
         <button className="w-icon" title="New chat" onClick={() => { setJobId(""); setTab("chat"); }}><Icon.Plus size={17} /></button>
         <div className="w-menuwrap">
@@ -280,7 +316,9 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
               onEdit={() => {}} onRetry={(t) => { if (t && (status === "completed" || status === "failed")) void send(t, []); }}
               onOpen={(url) => post({ type: "lc:navigate", url })} />
             <Composer compact disabled={working || waiting} model={name} context={{}}
-              placeholder={waiting ? "Answer the approval above…" : working ? "Working…" : "Ask for any change on this page…"}
+              onStop={working && jobId ? stop : undefined} stopping={stopping}
+              notice={paused ? <PausedBar kind={pauseKind} onKind={setPauseKind} onContinue={() => void cont()} /> : undefined}
+              placeholder={waiting ? "Answer the approval above…" : working ? (stopping ? "Stopping…" : "Working… (Stop to pause)") : paused ? (pauseKind === "edit" ? "Type your corrected request…" : "Type a note…") : "Ask for any change on this page…"}
               onClearContext={() => {}} onSend={(p, f) => send(p, f, selected ? `The person may mean this element (they picked it on the page):\n${elementContext(selected)}` : undefined)}
               chips={selected ? <span className="chip"><Icon.Cursor size={12} /> {selected.label}<button aria-label="forget selection" onClick={() => setSelected(null)}><Icon.Close size={11} /></button></span> : undefined}
               extra={<ApprovalModePicker mode={mode} onChange={(m) => void changeMode(m)} />} />

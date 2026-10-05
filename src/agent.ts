@@ -7,7 +7,8 @@ import { FileStore } from "./files.js";
 import { hostinger as defaultHostinger, type HostingerClient, type RemoteFiles } from "./hostinger.js";
 import { secrets } from "./secrets.js";
 import { SiteFiles, combineRemotes, pluginFiles } from "./sitefiles.js";
-import { analyzeDesign, inspectElement, screenshotPage } from "./browser.js";
+import { analyzeDesign, inspectElement, readPage, screenshotPage } from "./browser.js";
+import { viaEyes } from "./eyes.js";
 import { APPROVAL_REQUIRED, makeTools, type ToolExtras } from "./tools.js";
 import { Skills } from "./skills.js";
 import { hydrateMessages } from "./vision.js";
@@ -28,6 +29,8 @@ export interface JobContext {
   approval?: { mode: ApprovalMode; planApproved: boolean };
   model?: string;
   persona?: Persona | null;
+  /** True once the person pressed Stop: the loop ends after the current step (a running site change always finishes). */
+  shouldStop?: () => boolean;
 }
 export type AgentFactory = (site: Site, job?: JobContext) => AgentBundle;
 
@@ -56,7 +59,7 @@ export function systemPrompt(site: Site, caps: Capabilities = { files: false, br
     caps.files
       ? "- THEME FILES: read_file / list_files → edit_file (CSS, JS and PHP templates such as header.php, footer.php, page templates) and create_file (new template parts)."
       : "- THEME FILES are NOT available on this site yet (needs the Livecrafts plugin 0.7+ or Hostinger linked). Say so plainly; never fake a design change through a content field.",
-    caps.browser ? "- A REAL BROWSER: inspect_element (computed styles + which CSS rule/file sets them) and screenshot_page (desktop / tablet / mobile)." : "",
+    caps.browser ? "- A REAL BROWSER: read_page (visible text, headings, images, links), inspect_element (computed styles + which CSS rule/file sets them), analyze_design and screenshot_page (desktop / tablet / mobile). When the Livecrafts widget is open on the site these look through the PERSON'S OWN BROWSER (exactly what they see, logged in); otherwise a server browser is used. If a tool reports BOT_CHECK, tell the person plainly and ask them to open the widget on that page - never guess what the page looks like." : "",
     caps.hostinger ? "- Read-only questions about the hosting account: hostinger_search / hostinger_read." : "",
     "- UNDO: list_changes → revert_change undoes any change of this chat (the person also has a Revert button per change).",
   ].filter(Boolean).join("\n");
@@ -124,9 +127,11 @@ export function buildAgent(files: FileStore, opts: BuildOptions = {}): AgentFact
     const remote = opts.remoteFiles ? opts.remoteFiles(site, bridge) : combineRemotes(pluginFiles(bridge), hg && site.hosting ? hg.filesFor(site) : null);
     const siteFiles = remote ? new SiteFiles({ siteId: site.id, siteUrl: site.url, remote, fetchImpl: opts.fetchImpl }) : null;
     const browser = opts.browser !== undefined ? opts.browser : {
-      inspect: (a: any) => inspectElement(site.url, a),
-      screenshot: (a: any) => screenshotPage(site.url, a),
-      design: (a: any) => analyzeDesign(site.url, a),
+      // the person's own browser (Livecrafts widget open) first; the server's headless browser otherwise
+      inspect: (a: any) => viaEyes(site.id, "inspect", a, () => inspectElement(site.url, a)),
+      screenshot: (a: any) => viaEyes(site.id, "screenshot", a, () => screenshotPage(site.url, a)),
+      design: (a: any) => viaEyes(site.id, "design", a, () => analyzeDesign(site.url, a)),
+      read: (a: any) => viaEyes(site.id, "read", a, () => readPage(site.url, a)),
     };
 
     // Approval per mode: every write asks / one plan per request / nothing asks (still verified + revertable).
@@ -149,7 +154,7 @@ export function buildAgent(files: FileStore, opts: BuildOptions = {}): AgentFact
       // OpenAI: send the whole conversation each time instead of pointing at items stored on OpenAI's side
       // (stored items expire/are not kept -> "Item with id 'rs_…' not found"). Reasoning travels encrypted instead.
       providerOptions: { openai: { store: false } },
-      stopWhen: isStepCount(config.maxSteps), // safety net against runaway loops / cost
+      stopWhen: [isStepCount(config.maxSteps), () => !!job?.shouldStop?.()], // step limit (cost safety) + the Stop button
       maxRetries: 2,                           // SDK-level retry of failed model calls
     } as any);
 

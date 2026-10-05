@@ -6,7 +6,7 @@ export interface HostingerHealth {
   websites?: number; accounts?: string[]; error?: string; checkedAt: string;
 }
 
-export type JobStatus = "queued" | "running" | "waiting_approval" | "completed" | "failed" | "interrupted";
+export type JobStatus = "queued" | "running" | "waiting_approval" | "paused" | "completed" | "failed" | "interrupted";
 
 export interface Pending { approvalId: string; toolName: string; input: any; current?: unknown }
 

@@ -24,7 +24,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return data as T;
 }
 
-export interface SendArgs { prompt: string; fileIds: string[]; pageUrl?: string; selectedTarget?: string; approvalMode?: ApprovalMode; model?: string; extraContext?: string }
+export interface SendArgs { prompt: string; fileIds: string[]; pageUrl?: string; selectedTarget?: string; approvalMode?: ApprovalMode; model?: string; extraContext?: string; kind?: "new" | "note" | "edit" }
 
 export const api = {
   health: () => request<{ ok: boolean; model: string; authRequired: boolean }>("GET", "/health"),
@@ -46,6 +46,7 @@ export const api = {
   createJob: (siteId: string, a: SendArgs) => request<JobSummary>("POST", "/jobs", { siteId, ...a }),
   message: (jobId: string, a: SendArgs) => request<JobSummary>("POST", `/jobs/${jobId}/messages`, a),
   approve: (jobId: string, approvalId: string, approved: boolean, reason?: string) => request<JobSummary>("POST", `/jobs/${jobId}/approvals`, { approvalId, approved, reason }),
+  stop: (jobId: string) => request<JobSummary>("POST", `/jobs/${jobId}/stop`),
   resume: (jobId: string) => request<JobSummary>("POST", `/jobs/${jobId}/resume`),
   /** A manual edit from the widget (no AI): style overlay, text/image in the real field, hide/show. */
   fields: (siteId: string, url: string) => request<{ ok: boolean; fields: { target: string; source: string; label: string; key: string; type: string; value: string; widget?: string; elementId?: string }[] }>("GET", `/sites/${siteId}/fields?url=${encodeURIComponent(url)}`),
@@ -119,13 +120,50 @@ export function followJob(jobId: string, onEvent: (e: JobEvent) => void, onState
   return () => abort.abort();
 }
 
+/**
+ * The widget lends this browser to the assistant: keep a live line open, receive "look at the page" requests,
+ * answer them. Reconnects by itself. Returns a function that closes it.
+ */
+export function followEyes(siteId: string, pageUrl: string, viewport: number, onRequest: (r: { id: string; action: string; args: Record<string, unknown> }) => void): () => void {
+  const abort = new AbortController();
+  (async () => {
+    while (!abort.signal.aborted) {
+      try {
+        const res = await fetch(`/sites/${siteId}/eyes?pageUrl=${encodeURIComponent(pageUrl)}&viewport=${viewport}`, { headers: authHeaders(), signal: abort.signal });
+        if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = "";
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i: number;
+          while ((i = buf.indexOf("\n\n")) >= 0) {
+            const block = buf.slice(0, i); buf = buf.slice(i + 2);
+            if (!/^event: request/m.test(block)) continue;
+            const line = block.split("\n").find((l) => l.startsWith("data: "));
+            if (line) onRequest(JSON.parse(line.slice(6)));
+          }
+        }
+      } catch { if (abort.signal.aborted) return; }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  })();
+  return () => abort.abort();
+}
+
+export async function answerEyes(siteId: string, id: string, body: { ok: boolean; result?: unknown; error?: string }) {
+  await fetch(`/sites/${siteId}/eyes/${id}`, { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(body) }).catch(() => {});
+}
+
 /** Raw events -> the list of things the chat draws. */
 export function buildTimeline(events: JobEvent[]): TimelineItem[] {
   const items: TimelineItem[] = [];
   for (const e of events) {
     const d = e.data;
     switch (e.type) {
-      case "user": items.push({ kind: "user", seq: e.seq, text: String(d.text ?? ""), fileIds: Array.isArray(d.fileIds) ? d.fileIds : [], requestId: typeof d.requestId === "number" ? d.requestId : undefined }); break;
+      case "user": items.push({ kind: "user", seq: e.seq, text: (d.kind === "edit" ? "✏️ Correction: " : d.kind === "note" ? "📝 Note: " : "") + String(d.text ?? ""), fileIds: Array.isArray(d.fileIds) ? d.fileIds : [], requestId: typeof d.requestId === "number" ? d.requestId : undefined }); break;
       case "text_delta": {
         const lastItem = items[items.length - 1];
         if (lastItem && lastItem.kind === "assistant" && lastItem.streaming) lastItem.text += String(d.text ?? "");

@@ -22,7 +22,7 @@ export interface Site {
 export type ApprovalMode = "every" | "request" | "auto";
 export const APPROVAL_MODES: ApprovalMode[] = ["every", "request", "auto"];
 
-export type JobStatus = "queued" | "running" | "waiting_approval" | "completed" | "failed" | "interrupted";
+export type JobStatus = "queued" | "running" | "waiting_approval" | "paused" | "completed" | "failed" | "interrupted";
 
 export interface PendingApproval {
   approvalId: string;

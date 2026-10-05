@@ -25,6 +25,8 @@ export const Icon = {
   Clip: (p: P) => svg(<path d="M21.4 11.6 12.2 20.8a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5" />, p),
   Image: (p: P) => svg(<><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="m21 15-5-5L5 21" /></>, p),
   Sparkle: (p: P) => svg(<><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" /><path d="M19 15l.7 2.1L22 18l-2.3.9L19 21l-.7-2.1L16 18l2.3-.9z" /></>, p),
+  Stop: (p: P) => svg(<rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />, p),
+  Play: (p: P) => svg(<path d="M8 5v14l11-7z" fill="currentColor" />, p),
   Send: (p: P) => svg(<path d="M12 19V5M5 12l7-7 7 7" />, p),
   Check: (p: P) => svg(<path d="M20 6 9 17l-5-5" />, p),
   Shield: (p: P) => svg(<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z" />, p),

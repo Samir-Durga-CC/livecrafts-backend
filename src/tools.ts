@@ -41,6 +41,7 @@ export interface ToolExtras {
     inspect: (a: { url?: string; text?: string; selector?: string; device?: Device }) => Promise<unknown>;
     screenshot: (a: { url?: string; selector?: string; text?: string; device?: Device; fullPage?: boolean }) => Promise<unknown>;
     design?: (a: { url?: string; device?: Device }) => Promise<unknown>;
+    read?: (a: { url?: string; device?: Device }) => Promise<unknown>;
   } | null;
   skills?: Skills | null;
   changes?: { list(): ChangeRecord[]; revert(id: string): Promise<Record<string, unknown>> } | null;
@@ -306,6 +307,14 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     }),
   } : {};
 
+  const reading = extras.browser?.read ? {
+    read_page: tool({
+      description: "Read a live page like a visitor: title, headings, the visible text, images (with alt) and links. Use it to understand a page and to verify text changes. Looks through the person's own browser when the Livecrafts widget is open.",
+      inputSchema: z.object({ url: z.string().optional().describe("Page URL on this site (default: the page the person is on, or the home page)"), device: deviceSchema }),
+      execute: async (a) => safe(() => extras.browser!.read!(a) as Promise<any>),
+    }),
+  } : {};
+
   const overlay = {
     style_patch: tool({
       description:
@@ -414,7 +423,7 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     }),
   } : {};
 
-  return { ...content, ...pages, ...media, ...browser, ...design, ...overlay, ...fileTools, ...apiTools, ...skillTools, ...changeTools, ...planTools };
+  return { ...content, ...pages, ...media, ...browser, ...design, ...reading, ...overlay, ...fileTools, ...apiTools, ...skillTools, ...changeTools, ...planTools };
 }
 
 /** Tools that must never run without a human saying yes. */

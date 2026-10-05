@@ -214,3 +214,15 @@ html.embed body { font-size: 14px; }
 .qa-fhead code { font-size: 10.5px; color: var(--faint); margin-left: auto; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qa-ftag { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; background: var(--hover); color: var(--muted); }
 .qa-fimg img { max-width: 100%; max-height: 90px; border-radius: 6px; }
+
+/* stop / paused */
+.send.stop { background: var(--bad); color: #fff; }
+.send.stop:not(:disabled):hover { background: var(--bad); filter: brightness(1.1); }
+.send.stop .spin { width: 15px; height: 15px; }
+.paused-bar { display: flex; flex-direction: column; gap: 8px; margin: 0 0 8px; padding: 10px; border-radius: 12px; background: var(--warn-soft); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); }
+.pb-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pb-title { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; color: var(--warn); font-size: 13px; }
+.pb-hint { flex: 1; min-width: 140px; color: var(--text-2); font-size: 12px; }
+.pb-kind { align-self: flex-start; }
+.pill.paused { background: var(--warn-soft); color: var(--warn); }
+.dot.paused { background: var(--warn); }
