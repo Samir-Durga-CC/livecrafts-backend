@@ -433,6 +433,47 @@ console.log("\n10) manual edits: safe style overlay per screen size, text/images
   assert.equal(ad.changes![0].revert?.kind, "patch"); ok("agent style_patch: tablet-only overlay, recorded and revertable");
 }
 
+// ------------------------------------------------------------------ 11) field list, robust text matching, old plugins, OpenAI history
+console.log("\n11) page fields list + direct field edits; Elementor text even when shown differently; clear 'update the plugin' errors");
+{
+  const runner = runnerFor(scripted([() => say("ok")]));
+  const app = createApp(runner, sites, files);
+  await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
+  const api = `http://127.0.0.1:${(app.address() as any).port}`;
+  const manual = (b: any) => fetch(`${api}/sites/${site.id}/manual`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pageUrl: wpUrl + "/", ...b }) }).then(async (r) => ({ status: r.status, body: await r.json() as any }));
+
+  const list: any = await fetch(`${api}/sites/${site.id}/fields?url=${encodeURIComponent(wpUrl + "/")}`).then((r) => r.json());
+  assert.ok(list.fields.some((f: any) => f.source === "ACF" && f.target === "acf:field_hero_title:5" && f.value === wp.hero));
+  assert.ok(list.fields.some((f: any) => f.source === "Elementor" && f.elementId === "abc123"));
+  ok("lists every ACF + Elementor field on the page with key and current value");
+  const f1 = await manual({ kind: "field", target: "acf:field_hero_title:5", value: "From the field list" });
+  assert.equal(f1.status, 200); assert.equal(wp.hero, "From the field list"); ok("a field from the list is saved directly");
+  const fj = runner.get(f1.body.jobId)!;
+  await runner.revertRequest(fj.id, fj.changes!.at(-1)!.requestId!); assert.notEqual(wp.hero, "From the field list"); ok("…and reverts");
+
+  wp.elTitle = "Engineering expertise<br>beyond manufacturing";
+  const t = await manual({ kind: "text", selector: "h2", elementor: { post: 5, id: "abc123", widget: "heading.default" }, oldText: "Engineering expertise beyond manufacturing (shown differently)", newText: "Engineering expertise that goes beyond manufacturing" });
+  assert.equal(t.status, 200); assert.equal(wp.elTitle, "Engineering expertise that goes beyond manufacturing");
+  ok("Elementor heading saved even when the page shows the text differently (line break, CSS capitals) - the widget has one text setting");
+
+  wp.elImage = { id: 7, url: "http://x/wp-content/uploads/hero-bg-1024x600.jpg" };
+  const img = files.save(PNG, "bg.png", "image/png");
+  const bg = await manual({ kind: "image", selector: "section.hero", fileId: img.id, bgImage: "http://x/wp-content/uploads/hero-bg.jpg" });
+  assert.equal(bg.status, 200); assert.notEqual(wp.elImage.id, 7); ok("background image replaced (matched by file name, size suffix ignored)");
+
+  const { Bridge } = await import("../src/bridge.js");
+  await assert.rejects(() => new Bridge(site as any).request("GET", "livecrafts/v1/save"), /plugin 0\.9 or newer for manual style editing/);
+  ok("old plugin → 'needs Livecrafts plugin 0.9 … install the latest livecrafts.zip' (not a confusing 'no route')");
+  app.close();
+
+  // OpenAI: history is sent in full (store:false), never as references to items OpenAI may no longer have
+  let seen: any = null;
+  const r2 = runnerFor(mockModel(async (o: any) => { seen = o.providerOptions; return say("hi"); }));
+  const j2 = r2.create(site.id, "hello");
+  await r2.waitUntilSettled(j2.id);
+  assert.equal(seen?.openai?.store, false); ok("OpenAI requests use store:false (fixes \"Item with id 'rs_…' not found\")");
+}
+
 console.log(`\nALL GOOD: ${passed} checks passed.\n`);
 fakeWp.close();
 process.exit(0);

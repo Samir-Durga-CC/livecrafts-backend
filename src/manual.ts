@@ -64,7 +64,8 @@ function record(title: string, key: string, revert: ChangeRecord["revert"], diff
 
 export interface ElementorRef { post: number; id: string; widget?: string }
 export interface ManualBody {
-  kind: "style" | "text" | "image" | "hide" | "show";
+  kind: "style" | "text" | "image" | "hide" | "show" | "field";
+  target?: string; value?: string; bgImage?: string;
   pageUrl: string; pageKey?: string; selector: string; label?: string;
   scope?: "page" | "site"; device?: Device; styles?: Record<string, string>;
   oldText?: string; newText?: string; hasChildren?: boolean;
@@ -101,15 +102,17 @@ export async function applyManual(bridge: Bridge, files: FileStore, b: ManualBod
     const textLike = (f: any) => ["text", "textarea", "wysiwyg", "html", "url", "email"].includes(f.ftype) && typeof f.value === "string";
     let candidates = fields.filter((f) => textLike(f) && norm(f.value) === norm(oldText));
     if (b.elementor?.id) {
-      const inWidget = candidates.filter((f) => f.kind === "el" && String(f.id) === String(b.elementor!.id));
+      const widgetFields = fields.filter((f) => textLike(f) && f.kind === "el" && String(f.id) === String(b.elementor!.id));
+      const inWidget = candidates.filter((f) => widgetFields.includes(f));
       if (inWidget.length) candidates = inWidget;
+      else if (widgetFields.length === 1) candidates = widgetFields; // the picked element IS this widget's only text
     }
     if (candidates.length === 1) {
       const f = candidates[0];
       const previous = String(f.value);
       const isHtml = f.ftype === "wysiwyg" || f.ftype === "html";
       // keep the field's markup: replace the old words inside it when they appear literally, else keep one paragraph
-      const value = !isHtml ? newText : previous.includes(oldText.trim()) ? previous.replace(oldText.trim(), escapeHtml(newText)) : `<p>${escapeHtml(newText)}</p>`;
+      const value = !isHtml ? newText : oldText.trim() && previous.includes(oldText.trim()) ? previous.replace(oldText.trim(), escapeHtml(newText)) : `<p>${escapeHtml(newText)}</p>`;
       const res: any = await bridge.setTarget(f.tid, value);
       if (res?.ok === false) throw new Error(res.message ?? "The site did not accept the new text.");
       const summary = `Text of ${where}: “${short(oldText)}” → “${short(newText)}”`;
@@ -133,7 +136,9 @@ export async function applyManual(bridge: Bridge, files: FileStore, b: ManualBod
     const base = (u: string) => decodeURIComponent(u.split("?")[0].split("/").pop() ?? "").replace(/-\d+x\d+(?=\.\w+$)/, "").toLowerCase();
     const images = fields.filter((f) => f.ftype === "image");
     let target = b.elementor?.id ? images.filter((f) => f.kind === "el" && String(f.id) === String(b.elementor!.id)) : [];
+    if (target.length > 1 && b.imageSrc) target = target.filter((f) => f.url && base(f.url) === base(b.imageSrc!));
     if (!target.length && b.imageSrc) target = images.filter((f) => f.url && base(f.url) === base(b.imageSrc!));
+    if (!target.length && b.bgImage) target = images.filter((f) => f.url && base(f.url) === base(b.bgImage!));
     if (target.length !== 1) throw new Error(target.length ? "This image is used by more than one field. Ask the AI agent to replace it." : "This image is not stored in an editable Elementor/ACF image field (it may be part of the theme). Ask the AI agent to replace it.");
     const f = target[0];
     const { meta, buf } = files.read(b.fileId);
@@ -143,7 +148,31 @@ export async function applyManual(bridge: Bridge, files: FileStore, b: ManualBod
     const summary = `Image of ${where} replaced with ${meta.filename}`;
     return { summary, record: record(summary, `target:${f.tid}`, { kind: "content", target: f.tid, previous: String(f.value ?? "") }, { label: `${f.kind === "el" ? "Elementor" : "ACF"} · ${f.label}`, before: f.url ?? "", after: media.url }, b.pageUrl) };
   }
+  if (b.kind === "field") {
+    // a field chosen from the "fields on this page" list: write it directly (ACF or Elementor), old value kept for revert
+    const f = fields.find((x) => x.tid === b.target);
+    if (!f) throw new Error("That field is no longer on this page. Reload the field list.");
+    if (f.ftype === "image") throw new Error("Use Replace image for image fields.");
+    const value = String(b.value ?? "");
+    const previous = String(f.value ?? "");
+    if (value === previous) throw new Error("The value did not change.");
+    const res: any = await bridge.setTarget(f.tid, value);
+    if (res?.ok === false) throw new Error(res.message ?? "The site did not accept the new value.");
+    const summary = `${f.kind === "el" ? "Elementor" : "ACF"} field “${f.label}”: “${short(previous)}” → “${short(value)}”`;
+    return { summary, record: record(summary, `target:${f.tid}`, { kind: "content", target: f.tid, previous }, { label: `${f.kind === "el" ? "Elementor" : "ACF"} · ${f.label}`, before: previous, after: value }, b.pageUrl) };
+  }
   throw new Error("Unknown manual edit.");
+}
+
+/** Every editable content field on a page (ACF + Elementor) with its key and current value - for the "fields" list. */
+export async function listFields(bridge: Bridge, pageUrl: string) {
+  const map: any = await bridge.map({ url: pageUrl });
+  const out = [...(map.acf ?? []), ...(map.elementor ?? [])].map((f: any) => ({
+    target: f.tid as string, source: f.kind === "el" ? "Elementor" : "ACF", label: String(f.label ?? f.name ?? ""), key: String(f.name ?? ""),
+    type: String(f.ftype ?? "text"), widget: f.widget ?? undefined, elementId: f.id ?? undefined,
+    value: f.ftype === "image" ? String(f.url ?? "") : String(f.value ?? ""),
+  }));
+  return { ok: true, post: map.post, fields: out };
 }
 
 const short = (s: string) => { const t = s.replace(/\s+/g, " ").trim(); return t.length > 60 ? t.slice(0, 59) + "…" : t; };

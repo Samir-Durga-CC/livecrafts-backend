@@ -11,7 +11,7 @@ import { QuickActions, elementContext, type ManualEdit, type PickedElement } fro
 /** Settings the WordPress plugin passes in the address (#cfg=...). */
 interface WidgetConfig {
   siteUrl: string; pageUrl: string; botName?: string; welcome?: string; accent?: string; approvalMode?: ApprovalMode;
-  token?: string; user?: string; parentOrigin: string; tab?: Tab;
+  token?: string; user?: string; parentOrigin: string; tab?: Tab; widgetVersion?: string;
 }
 type Tab = "chat" | "actions" | "changes";
 
@@ -288,7 +288,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
         )}
         {tab === "actions" && (
           <div className="w-scroll">
-            <QuickActions selected={selected} picking={picking} disabled={working || waiting}
+            <QuickActions siteId={site.id} widgetVersion={cfg.widgetVersion} selected={selected} picking={picking} disabled={working || waiting}
               onPick={() => { setPicking(true); post({ type: "lc:pick" }); }} onCancelPick={() => { setPicking(false); post({ type: "lc:cancel-pick" }); }}
               onSend={send} canUndo={!!lastRevertable && !working}
               onUndo={() => { if (lastRevertable) void revertGroup(lastRevertable.requestId); }}

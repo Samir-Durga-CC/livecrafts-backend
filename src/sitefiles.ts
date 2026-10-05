@@ -43,7 +43,7 @@ export function cleanPath(p: string): string {
 /** Theme files through the Livecrafts plugin (exact bytes, PHP syntax check, active theme only). */
 export function pluginFiles(bridge: Bridge): RemoteFiles {
   let supported: boolean | null = null;
-  const unsupported = (e: unknown) => e instanceof BridgeError && (e.code === "rest_no_route" || e.status === 404 && /no route/i.test(e.message));
+  const unsupported = (e: unknown) => e instanceof BridgeError && (e.code === "rest_no_route" || e.code === "plugin_outdated" || e.status === 404 && /no route/i.test(e.message));
   return {
     async list(dir) {
       const r: any = await bridge.themeFiles();

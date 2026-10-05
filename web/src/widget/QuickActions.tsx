@@ -6,7 +6,7 @@ import type { UploadedFile } from "../types";
 /** What the plugin's element picker sends for the clicked element. */
 export interface PickedElement {
   selector: string; label: string; tag: string; id: string; classes: string; text: string; html: string;
-  image: { src: string; alt: string } | null; link: string; styles: Record<string, string>;
+  image: { src: string; alt: string; selector?: string } | null; link: string; styles: Record<string, string>; rawText?: string; bgImage?: string;
   rect: { width: number; height: number }; section: string; pageUrl: string; viewport: number;
   pageKey?: string; elementor?: { post: number; id: string; widget: string } | null; hasChildren?: boolean;
   similarSelector?: string; similarCount?: number;
@@ -16,7 +16,7 @@ export type EditMode = "manual" | "agent";
 export type Device = "all" | "tablet" | "mobile";
 /** A manual edit (sent to the backend, no AI). */
 export interface ManualEdit {
-  kind: "style" | "text" | "image" | "hide" | "show"; selector: string; label: string; pageUrl: string; pageKey?: string;
+  kind: "style" | "text" | "image" | "hide" | "show" | "field"; selector: string; label: string; pageUrl: string; pageKey?: string; target?: string; value?: string; bgImage?: string;
   scope?: "page" | "site"; device?: Device; styles?: Record<string, string>; fileId?: string; imageSrc?: string;
   elementor?: PickedElement["elementor"]; oldText?: string; newText?: string; hasChildren?: boolean;
 }
@@ -85,7 +85,11 @@ const DEVICES: { id: Device; label: string; icon: ReactElement; hint: string }[]
   { id: "mobile", label: "Mobile", icon: <Icon.Phone size={14} />, hint: "Saved for screens up to 767px wide." },
 ];
 
-export function QuickActions({ selected, picking, disabled, onPick, onCancelPick, onSend, onManual, onPreview, onClearPreview, onEditText, onUndo, canUndo, onHighlight }: {
+type Field = { target: string; source: string; label: string; key: string; type: string; value: string; widget?: string; elementId?: string };
+const verAtLeast = (v: string | undefined, min: string) => { if (!v) return false; const a = v.split(".").map(Number), b = min.split(".").map(Number); for (let i = 0; i < 3; i++) { if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0); } return true; };
+
+export function QuickActions({ siteId, widgetVersion, selected, picking, disabled, onPick, onCancelPick, onSend, onManual, onPreview, onClearPreview, onEditText, onUndo, canUndo, onHighlight }: {
+  siteId: string; widgetVersion?: string;
   selected: PickedElement | null; picking: boolean; disabled: boolean;
   onPick: () => void; onCancelPick: () => void; onSend: (prompt: string, fileIds: string[], extraContext?: string) => Promise<void>;
   onManual: (edit: ManualEdit) => Promise<boolean>; onPreview: (selector: string, styles: Record<string, string>) => void; onClearPreview: () => void;
@@ -101,10 +105,24 @@ export function QuickActions({ selected, picking, disabled, onPick, onCancelPick
   const [busy, setBusy] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
+  const [textEdit, setTextEdit] = useState<string | null>(null);
+  const [fieldsOpen, setFieldsOpen] = useState(false);
+  const [fieldList, setFieldList] = useState<Field[] | null>(null);
+  const [fieldErr, setFieldErr] = useState("");
+  const [query, setQuery] = useState("");
+  const [fieldEdits, setFieldEdits] = useState<Record<string, string>>({});
+  const stylesOk = verAtLeast(widgetVersion, "0.9.0"); // style layer + inline editing need plugin 0.9+
+  const pageUrl = selected?.pageUrl ?? "";
+  const loadFields = () => {
+    if (!pageUrl) return;
+    setFieldErr(""); setFieldList(null);
+    api.fields(siteId, pageUrl).then((r) => { setFieldList(r.fields); setFieldEdits({}); }).catch((e) => { setFieldErr(e.message); setFieldList([]); });
+  };
+  useEffect(() => { if (fieldsOpen) loadFields(); }, [fieldsOpen, pageUrl]); // eslint-disable-line react-hooks/exhaustive-deps
   const base = useMemo(() => initialFields(selected), [selected]);
   const setMode = (m: EditMode) => { setModeState(m); store.set("lcw_edit_mode", m); };
 
-  useEffect(() => { setFields(base); setText(""); setSimilar(false); setDevice("all"); }, [base]);
+  useEffect(() => { setFields(base); setText(""); setSimilar(false); setDevice("all"); setTextEdit(null); }, [base]);
 
   const edited = Object.keys(fields).filter((k) => (fields[k] ?? "") !== (base[k] ?? ""));
   const ready = files.filter((f) => f.file).map((f) => f.file!.id);
@@ -215,12 +233,10 @@ export function QuickActions({ selected, picking, disabled, onPick, onCancelPick
       <div className="qa-label">Quick actions</div>
       <div className="qa-quick">
         <button className="qa-q" disabled={disabled || busy || !selected.text} title={isManual ? "Edit the text right on the page" : "Ask the AI to change the text"}
-          onClick={() => (isManual ? onEditText(selected.selector) : setText(`Change the text to: "${selected.text.slice(0, 120)}"`))}>
+          onClick={() => (isManual ? setTextEdit(selected.rawText ?? selected.text) : setText(`Change the text to: "${selected.text.slice(0, 120)}"`))}>
           <Icon.Type size={16} /><span>Edit text</span>
         </button>
-        <button className="qa-q" disabled={disabled || busy || !selected.image} title="Replace the image" onClick={() => (isManual ? imageInput.current?.click() : fileInput.current?.click())}>
-          <Icon.Image size={16} /><span>Replace image</span>
-        </button>
+
         <button className="qa-q" disabled={disabled || busy} title={`Hide it${device !== "all" ? ` on ${device}` : ""}`}
           onClick={() => (isManual ? void manual({ kind: "hide" }) : void ask(`Hide this element${device !== "all" ? ` on ${device}` : ""}.`))}>
           <Icon.Hide size={16} /><span>Hide{device !== "all" ? ` (${device})` : ""}</span>
@@ -236,9 +252,89 @@ export function QuickActions({ selected, picking, disabled, onPick, onCancelPick
         const f = e.target.files?.[0]; e.target.value = "";
         if (!f) return;
         setBusy(true);
-        try { const up = await api.uploadFile(f); await manual({ kind: "image", fileId: up.id, imageSrc: selected.image?.src }); }
+        try { const up = await api.uploadFile(f); await manual({ kind: "image", fileId: up.id, imageSrc: selected.image?.src, bgImage: selected.bgImage }); }
         catch (x) { alert((x as Error).message); } finally { setBusy(false); }
       }} />
+
+      {isManual && !stylesOk && (
+        <div className="qa-warn"><Icon.Shield size={14} /><span>Your site runs an older Livecrafts plugin{widgetVersion ? ` (${widgetVersion})` : ""}. Text, image and field edits work; <b>style editing needs plugin 0.9.1</b> - install the latest <code>livecrafts.zip</code> (Plugins → Add New → Upload → Replace current).</span></div>
+      )}
+
+      {textEdit !== null && (
+        <div className="qa-textedit">
+          <div className="qa-label">Edit text</div>
+          <textarea autoFocus value={textEdit} onChange={(e) => setTextEdit(e.target.value)} rows={Math.min(8, Math.max(2, Math.ceil(textEdit.length / 40)))} />
+          <p className="qa-mode-hint">Saved into the Elementor widget or ACF field this text comes from (exact text, not the on-screen capitals).</p>
+          <div className="qa-ai-bar">
+            {stylesOk && <button className="rbtn" onClick={() => { setTextEdit(null); onEditText(selected.selector); }}><Icon.Cursor size={13} /> Edit on the page</button>}
+            <span className="grow" />
+            <button className="rbtn" onClick={() => setTextEdit(null)}>Cancel</button>
+            <button className="btn accent sm" disabled={busy || !textEdit.trim() || textEdit.trim() === (selected.rawText ?? selected.text).trim()}
+              onClick={async () => { if (await manual({ kind: "text", oldText: selected.rawText ?? selected.text, newText: textEdit.trim(), hasChildren: selected.hasChildren })) setTextEdit(null); }}>
+              {busy ? <span className="spin" /> : <Icon.Check size={14} />} Save text
+            </button>
+          </div>
+        </div>
+      )}
+
+      {(selected.image || selected.bgImage) && (
+        <>
+          <div className="qa-label">Image</div>
+          <div className="qa-image">
+            <img src={selected.image?.src || selected.bgImage} alt={selected.image?.alt ?? ""} />
+            <div className="qa-image-actions">
+              <button className="rbtn" disabled={disabled || busy} onClick={() => (isManual ? imageInput.current?.click() : fileInput.current?.click())}><Icon.Image size={13} /> Replace</button>
+              {selected.image?.selector && (
+                <button className="rbtn danger" disabled={disabled || busy || !stylesOk} title={stylesOk ? "Hide this image (revertable)" : "Needs plugin 0.9.1"}
+                  onClick={() => (isManual ? void onManual({ kind: "hide", selector: selected.image!.selector!, label: "image", pageUrl: selected.pageUrl, pageKey: selected.pageKey, scope: "page", device }) : void ask("Remove this image from the page."))}>
+                  <Icon.Trash size={13} /> Remove
+                </button>
+              )}
+              {!isManual && <button className="rbtn" disabled={disabled || busy} onClick={() => void ask("Add a suitable image next to this element (ask me for the image if needed).")}><Icon.Plus size={13} /> Add image</button>}
+            </div>
+          </div>
+        </>
+      )}
+
+      <div className="qa-sec">
+        <button className="qa-sec-head" onClick={() => setFieldsOpen(!fieldsOpen)} aria-expanded={fieldsOpen}>
+          <Icon.List size={15} /><span className="grow">Content fields on this page</span><Icon.ChevronDown size={14} className={fieldsOpen ? "up" : ""} />
+        </button>
+        {fieldsOpen && (
+          <div className="qa-fields">
+            <div className="qa-ai-bar">
+              <input className="qa-search" placeholder="Search label, key or value…" value={query} onChange={(e) => setQuery(e.target.value)} />
+              <button className="rbtn" onClick={loadFields} title="Reload"><Icon.Retry size={13} /></button>
+            </div>
+            {fieldErr && <div className="rdetail">{fieldErr}</div>}
+            {!fieldList && !fieldErr && <div className="qa-mode-hint"><span className="spin" /> Reading the fields…</div>}
+            {fieldList && fieldList.length === 0 && !fieldErr && <div className="qa-mode-hint">No ACF or Elementor fields on this page.</div>}
+            {fieldList?.filter((f) => { const q = query.trim().toLowerCase(); return !q || `${f.label} ${f.key} ${f.value} ${f.source}`.toLowerCase().includes(q); }).slice(0, 60).map((f) => {
+              const val = fieldEdits[f.target] ?? f.value;
+              const changed = val !== f.value;
+              return (
+                <div key={f.target} className={`qa-frow ${changed ? "changed" : ""}`}>
+                  <div className="qa-fhead"><b>{f.label || f.key}</b><span className="qa-ftag">{f.source}{f.widget ? ` · ${f.widget.split(".")[0]}` : ""}</span>{f.key && <code title={f.target}>{f.key}</code>}</div>
+                  {f.type === "image"
+                    ? <div className="qa-fimg">{f.value ? <img src={f.value} alt="" /> : <em>no image</em>}</div>
+                    : f.type === "html" || f.type === "wysiwyg" || f.type === "textarea" || f.value.length > 60
+                      ? <textarea rows={3} value={val} onChange={(e) => setFieldEdits({ ...fieldEdits, [f.target]: e.target.value })} />
+                      : <input value={val} onChange={(e) => setFieldEdits({ ...fieldEdits, [f.target]: e.target.value })} />}
+                  {changed && (
+                    <div className="qa-ai-bar">
+                      <span className="grow" />
+                      <button className="rbtn" onClick={() => setFieldEdits({ ...fieldEdits, [f.target]: f.value })}>Undo</button>
+                      <button className="btn accent sm" disabled={busy} onClick={async () => { if (await onManual({ kind: "field", target: f.target, value: val, selector: "field", label: f.label || f.key, pageUrl: selected.pageUrl, pageKey: selected.pageKey })) { setFieldList((l) => l?.map((x) => (x.target === f.target ? { ...x, value: val } : x)) ?? null); } }}>
+                        <Icon.Check size={13} /> Save
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       <div className="qa-label">Apply to</div>
       <div className="qa-row">
@@ -322,7 +418,7 @@ export function QuickActions({ selected, picking, disabled, onPick, onCancelPick
 
       <div className="qa-apply">
         {edited.length > 0 && <button className="rbtn" onClick={() => setFields(base)}>Reset</button>}
-        <button className="btn accent" disabled={disabled || busy || edited.length === 0} onClick={applyStyles}>
+        <button className="btn accent" disabled={disabled || busy || edited.length === 0 || (isManual && !stylesOk)} title={isManual && !stylesOk ? "Style editing needs Livecrafts plugin 0.9.1" : undefined} onClick={applyStyles}>
           {busy ? <span className="spin" /> : isManual ? <Icon.Check size={15} /> : <Icon.Sparkle size={15} />}
           {isManual
             ? (edited.length ? `Save ${edited.length} change${edited.length === 1 ? "" : "s"}` : "Save changes")

@@ -12,7 +12,7 @@ import { hostinger, type HostingerHealth } from "./hostinger.js";
 import { secrets, type ProviderId } from "./secrets.js";
 import { PROVIDERS, providerStatus, testModel } from "./models.js";
 import { diffOf } from "./changes.js";
-import { applyManual } from "./manual.js";
+import { applyManual, listFields } from "./manual.js";
 import { assistantSettings, forgetAssistantSettings } from "./persona.js";
 import { closeBrowser, screenshotPath } from "./browser.js";
 
@@ -67,7 +67,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     let file = path.resolve(webRoot, "." + rel);
     if (!file.startsWith(webRoot)) return false; // path traversal guard
     if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) { file = path.join(webRoot, "index.html"); rel = "/index.html"; } // single-page-app fallback
-    res.writeHead(200, { "Content-Type": MIME[path.extname(file)] ?? "application/octet-stream", "Cache-Control": rel.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache" });
+    res.writeHead(200, { "Content-Type": MIME[path.extname(file)] ?? "application/octet-stream", "Cache-Control": rel.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-store" }); // the page itself is never cached, so an update shows at once
     fs.createReadStream(file).pipe(res);
     return true;
   }
@@ -122,12 +122,21 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
           return send(res, 200, { ok: true, ms: Date.now() - t, plugin: info?.version ?? null, wp: info?.site?.wp ?? null, php: info?.site?.php ?? null, user: info?.user ?? null, themeFiles: !!info?.capabilities?.theme_files, theme: info?.capabilities?.theme ?? null, acf: !!info?.capabilities?.acf, elementor: !!info?.capabilities?.elementor, checkedAt: new Date().toISOString() });
         } catch (e) { return send(res, 200, { ok: false, ms: Date.now() - t, error: (e as Error).message, checkedAt: new Date().toISOString() }); }
       }
+      m = url.pathname.match(/^\/sites\/([\w-]+)\/fields$/);
+      if (m && req.method === "GET") { // every ACF / Elementor content field on a page (key + value), for manual editing
+        const s = sites.get(m[1]);
+        if (!s) return send(res, 404, { error: "Unknown site" });
+        const pageUrl = url.searchParams.get("url") ?? s.url + "/";
+        try { new Bridge(s).assertSameOrigin(pageUrl); return send(res, 200, await listFields(new Bridge(s), pageUrl)); }
+        catch (e) { return send(res, 400, { error: (e as Error).message }); }
+      }
       m = url.pathname.match(/^\/sites\/([\w-]+)\/manual$/);
       if (m && req.method === "POST") { // a manual edit from the widget's Quick actions (no AI)
         const s = sites.get(m[1]);
         if (!s) return send(res, 404, { error: "Unknown site" });
         const b = await readJson(req);
-        if (!b.pageUrl || !b.selector || !b.kind) return send(res, 400, { error: "kind, pageUrl and selector are required." });
+        if (!b.pageUrl || !b.kind || (!b.selector && b.kind !== "field")) return send(res, 400, { error: "kind, pageUrl and selector are required." });
+        if (b.kind === "field") b.selector = b.selector || "field";
         try { new Bridge(s).assertSameOrigin(String(b.pageUrl)); } catch (e) { return send(res, 400, { error: (e as Error).message }); }
         try {
           const r = await applyManual(new Bridge(s), files, b);

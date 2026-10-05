@@ -146,6 +146,9 @@ export function buildAgent(files: FileStore, opts: BuildOptions = {}): AgentFact
       toolApproval: approval,
       // Right before every model call: turn image markers / screenshots into real pictures the model can see.
       prepareStep: ({ messages }: any) => ({ messages: hydrateMessages(messages, files) }),
+      // OpenAI: send the whole conversation each time instead of pointing at items stored on OpenAI's side
+      // (stored items expire/are not kept -> "Item with id 'rs_…' not found"). Reasoning travels encrypted instead.
+      providerOptions: { openai: { store: false } },
       stopWhen: isStepCount(config.maxSteps), // safety net against runaway loops / cost
       maxRetries: 2,                           // SDK-level retry of failed model calls
     } as any);

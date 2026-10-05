@@ -195,3 +195,22 @@ html.embed body { font-size: 14px; }
 .qa-seg button:disabled { opacity: .4; cursor: not-allowed; }
 .qa-q { position: relative; }
 .qa-ai-badge { position: absolute; top: 5px; right: 5px; width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--w-accent, var(--accent)); font-style: normal; }
+
+/* manual: plugin notice, text editor, image, page fields */
+.qa-warn { display: flex; gap: 8px; align-items: flex-start; padding: 9px 11px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 12px; line-height: 1.45; }
+.qa-warn svg { flex: none; margin-top: 2px; } .qa-warn code { font-size: 11px; }
+.qa-textedit { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--accent-line); border-radius: 12px; background: var(--accent-soft); }
+.qa-textedit textarea, .qa-frow textarea, .qa-frow input, .qa-search { width: 100%; border: 1px solid var(--line-strong); border-radius: 9px; padding: 8px 10px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; line-height: 1.45; outline: none; resize: vertical; }
+.qa-textedit textarea:focus, .qa-frow textarea:focus, .qa-frow input:focus, .qa-search:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
+.qa-image { display: flex; gap: 10px; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: 12px; }
+.qa-image img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; background: var(--card); flex: none; }
+.qa-image-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.qa-fields { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; }
+.qa-search { height: 32px; padding: 0 10px; }
+.qa-frow { display: flex; flex-direction: column; gap: 6px; padding: 9px; border: 1px solid var(--line); border-radius: 10px; }
+.qa-frow.changed { border-color: var(--w-accent, var(--accent)); }
+.qa-fhead { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12.5px; }
+.qa-fhead b { font-weight: 600; }
+.qa-fhead code { font-size: 10.5px; color: var(--faint); margin-left: auto; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qa-ftag { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; background: var(--hover); color: var(--muted); }
+.qa-fimg img { max-width: 100%; max-height: 90px; border-radius: 6px; }

@@ -79,10 +79,17 @@ export class Bridge {
       if (res.status === 404 && data === undefined && !plain) { plain = true; i--; continue; } // pretty permalinks off -> retry once with ?rest_route=
       if ((res.status >= 500 || res.status === 429) && i < attempts - 1) { await sleep(400 * 2 ** i); continue; }
 
-      const code: string = data?.code ?? "http_" + res.status;
+      let code: string = data?.code ?? "http_" + res.status;
       let msg: string = data?.message ?? `HTTP ${res.status}`;
       if (res.status === 401 || res.status === 403) msg += " - the Application Password was rejected or the user cannot edit pages (check username/password, that the site uses HTTPS, and that no security plugin disables Application Passwords).";
-      if (res.status === 404 && code === "rest_no_route") msg += " - the Livecrafts plugin is missing or older than 0.6 on this site.";
+      if (res.status === 404 && code === "rest_no_route") {
+        const need = /livecrafts\/v1\/(patches|save|revert)/.test(route) ? ["0.9", "manual style editing"]
+          : /livecrafts\/v1\/assistant/.test(route) ? ["0.8", "the assistant settings"]
+          : /livecrafts\/v1\/theme-file/.test(route) ? ["0.7", "theme file editing"]
+          : /^livecrafts\//.test(route) ? ["0.6", "Livecrafts"] : null;
+        msg = need ? `This needs the Livecrafts plugin ${need[0]} or newer for ${need[1]}. Install the latest livecrafts.zip on the site (Plugins → Add New → Upload, replace current).` : msg;
+        code = "plugin_outdated";
+      }
       throw new BridgeError(res.status, code, msg);
     }
     throw new BridgeError(0, "unreachable", "request failed");

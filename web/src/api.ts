@@ -48,6 +48,7 @@ export const api = {
   approve: (jobId: string, approvalId: string, approved: boolean, reason?: string) => request<JobSummary>("POST", `/jobs/${jobId}/approvals`, { approvalId, approved, reason }),
   resume: (jobId: string) => request<JobSummary>("POST", `/jobs/${jobId}/resume`),
   /** A manual edit from the widget (no AI): style overlay, text/image in the real field, hide/show. */
+  fields: (siteId: string, url: string) => request<{ ok: boolean; fields: { target: string; source: string; label: string; key: string; type: string; value: string; widget?: string; elementId?: string }[] }>("GET", `/sites/${siteId}/fields?url=${encodeURIComponent(url)}`),
   manual: (siteId: string, body: Record<string, unknown>) => request<{ ok: boolean; jobId: string; summary: string; note?: string }>("POST", `/sites/${siteId}/manual`, body),
   revertChange: (jobId: string, changeId: string) => request<Record<string, unknown>>("POST", `/jobs/${jobId}/changes/${changeId}/revert`),
   linkHosting: (siteId: string) => request<Site>("POST", `/sites/${siteId}/link-hosting`),
