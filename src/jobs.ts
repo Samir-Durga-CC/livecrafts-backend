@@ -158,6 +158,33 @@ export class JobRunner {
     return { ok: true, reverted: done.length };
   }
 
+  /**
+   * Record a manual edit (made by the person in Quick actions, no AI) as its own request in a chat, so it shows in
+   * Changes with a diff and Revert. Uses the given chat when it is idle, otherwise starts a "Manual edits" chat.
+   * The assistant is told about it in the conversation, so it never works against a manual change.
+   */
+  recordManual(siteId: string, jobId: string | undefined, summary: string, rec: ChangeRecord): Job {
+    let job = jobId ? this.jobs.get(jobId) : undefined;
+    if (job && (job.siteId !== siteId || this.active.has(job.id) || job.status === "running" || job.status === "queued" || job.status === "waiting_approval")) job = undefined;
+    const now = new Date().toISOString();
+    if (!job) {
+      job = { id: newId("job"), siteId, prompt: "Manual edits", status: "completed", messages: [], pending: [], events: [], changes: [], createdAt: now, updatedAt: now, approvalMode: "request", requestSeq: 0 };
+    }
+    job.requestSeq = (job.requestSeq ?? 0) + 1;
+    rec.requestId = job.requestSeq;
+    rec.request = `Manual: ${summary}`;
+    job.changes = [...(job.changes ?? []), rec];
+    // keep user/assistant turns alternating for the model
+    job.messages.push({ role: "user", content: `[I made this change myself with the manual editor - keep it unless I ask otherwise] ${summary}` });
+    job.messages.push({ role: "assistant", content: "Noted." });
+    this.emit(job, "user", { text: `✋ ${summary}`, fileIds: [], requestId: job.requestSeq, manual: true });
+    this.emit(job, "change", { change: rec });
+    this.emit(job, "text", { text: "Saved. You can see the exact change in **Changes** and revert it there." });
+    if (job.status !== "completed") this.setStatus(job, "completed");
+    else this.emit(job, "status", { status: "completed" });
+    return job;
+  }
+
   /** Change how this chat asks for approval (takes effect on the next step). */
   setApprovalMode(jobId: string, mode: ApprovalMode): Job {
     const job = this.current(jobId);

@@ -38,10 +38,12 @@ export function Thumb({ id, size = 56 }: { id: string; size?: number }) {
   return src ? <img className="thumb" style={{ width: size, height: size }} src={src} alt="attachment" /> : <div className="thumb ph" style={{ width: size, height: size }} />;
 }
 
-/** A screenshot the agent took in its browser: shown full width, click to open it big. */
+/** A screenshot the agent took to check its work: a small chip; the picture only loads when the person asks for it. */
 function Shot({ id, caption }: { id: string; caption: string }) {
+  const [open, setOpen] = useState(false);
   const [src, setSrc] = useState("");
-  useEffect(() => { fileUrl(id).then(setSrc).catch(() => setSrc("")); }, [id]);
+  useEffect(() => { if (open && !src) fileUrl(id).then(setSrc).catch(() => setSrc("")); }, [id, open, src]);
+  if (!open) return <button className="shot-chip" onClick={() => setOpen(true)} title={caption}><Icon.Eye size={13} /> View screenshot</button>;
   return (
     <figure className="shot">
       {src ? <a href={src} target="_blank" rel="noreferrer"><img src={src} alt={caption} /></a> : <div className="shot-ph" />}

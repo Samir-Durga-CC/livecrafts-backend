@@ -12,6 +12,7 @@ import { hostinger, type HostingerHealth } from "./hostinger.js";
 import { secrets, type ProviderId } from "./secrets.js";
 import { PROVIDERS, providerStatus, testModel } from "./models.js";
 import { diffOf } from "./changes.js";
+import { applyManual } from "./manual.js";
 import { assistantSettings, forgetAssistantSettings } from "./persona.js";
 import { closeBrowser, screenshotPath } from "./browser.js";
 
@@ -120,6 +121,19 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
           const info: any = await new Bridge(s).ping();
           return send(res, 200, { ok: true, ms: Date.now() - t, plugin: info?.version ?? null, wp: info?.site?.wp ?? null, php: info?.site?.php ?? null, user: info?.user ?? null, themeFiles: !!info?.capabilities?.theme_files, theme: info?.capabilities?.theme ?? null, acf: !!info?.capabilities?.acf, elementor: !!info?.capabilities?.elementor, checkedAt: new Date().toISOString() });
         } catch (e) { return send(res, 200, { ok: false, ms: Date.now() - t, error: (e as Error).message, checkedAt: new Date().toISOString() }); }
+      }
+      m = url.pathname.match(/^\/sites\/([\w-]+)\/manual$/);
+      if (m && req.method === "POST") { // a manual edit from the widget's Quick actions (no AI)
+        const s = sites.get(m[1]);
+        if (!s) return send(res, 404, { error: "Unknown site" });
+        const b = await readJson(req);
+        if (!b.pageUrl || !b.selector || !b.kind) return send(res, 400, { error: "kind, pageUrl and selector are required." });
+        try { new Bridge(s).assertSameOrigin(String(b.pageUrl)); } catch (e) { return send(res, 400, { error: (e as Error).message }); }
+        try {
+          const r = await applyManual(new Bridge(s), files, b);
+          const job = runner.recordManual(s.id, b.jobId ? String(b.jobId) : undefined, r.summary, r.record);
+          return send(res, 200, { ok: true, jobId: job.id, summary: r.summary, note: r.note, change: r.record });
+        } catch (e) { return send(res, 400, { error: (e as Error).message }); }
       }
       m = url.pathname.match(/^\/sites\/([\w-]+)\/assistant$/);
       if (m && req.method === "GET") { // bot name / welcome text / defaults set in WordPress

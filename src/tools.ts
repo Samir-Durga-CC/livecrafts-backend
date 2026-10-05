@@ -9,6 +9,7 @@ import { downloadImage } from "./net.js";
 import { postBackups, type ChangeRecord } from "./changes.js";
 import type { Skills } from "./skills.js";
 import { newId } from "./store.js";
+import { applyStylePatch } from "./manual.js";
 
 /** Expected failures become a normal tool result the model can read and react to (instead of crashing the loop). */
 async function safe<T>(fn: () => Promise<T>): Promise<T | { ok: false; error: string; status?: number; code?: string }> {
@@ -39,6 +40,7 @@ export interface ToolExtras {
   browser?: {
     inspect: (a: { url?: string; text?: string; selector?: string; device?: Device }) => Promise<unknown>;
     screenshot: (a: { url?: string; selector?: string; text?: string; device?: Device; fullPage?: boolean }) => Promise<unknown>;
+    design?: (a: { url?: string; device?: Device }) => Promise<unknown>;
   } | null;
   skills?: Skills | null;
   changes?: { list(): ChangeRecord[]; revert(id: string): Promise<Record<string, unknown>> } | null;
@@ -284,7 +286,7 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
       execute: async (a) => safe(() => extras.browser!.inspect(a) as Promise<any>),
     }),
     screenshot_page: tool({
-      description: "Screenshot the live page (or one element) at desktop, tablet or mobile size. YOU see the picture right after this call, and so does the person. Use it to compare with a reference image and to check every visual change on each screen size.",
+      description: "Screenshot the live page (or one element) at desktop, tablet or mobile size; you see the picture right after the call. Use it ONLY when you really need to look: comparing with a reference image, checking a new section/layout, or when the person asks to see it. Do NOT screenshot routine text/colour changes - the person's page reloads to show them; verify those with inspect_element or verify_page.",
       inputSchema: z.object({
         url: z.string().optional(), text: z.string().optional().describe("Screenshot just the element with this text"),
         selector: z.string().optional(), device: deviceSchema, fullPage: z.boolean().optional(),
@@ -295,6 +297,32 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
       }),
     }),
   } : {};
+
+  const design = extras.browser?.design ? {
+    analyze_design: tool({
+      description: "Measure the site's design language on the live page: fonts + sizes per heading level, colour palette, button style, container width, section spacing, CSS variables, breakpoints and the builder (Elementor / blocks / classic). Call it before designing anything new so it matches the site.",
+      inputSchema: z.object({ url: z.string().optional(), device: deviceSchema }),
+      execute: async (a) => safe(() => extras.browser!.design!(a) as Promise<any>),
+    }),
+  } : {};
+
+  const overlay = {
+    style_patch: tool({
+      description:
+        "Change how an element looks with the Livecrafts STYLE OVERLAY: CSS stored by the plugin and printed on the page - no theme file or builder data is touched, " +
+        "it beats Elementor's own styles, survives theme updates and reverts exactly. Per screen size: device all | tablet (≤1024px) | mobile (≤767px). " +
+        "scope page = only this page, site = every page. Use one specific selector (from inspect_element). Empty value removes a property. Needs approval.",
+      inputSchema: z.object({
+        selector: z.string().min(1).max(300), styles: z.record(z.string(), z.string()).describe('e.g. {"color":"#1d4ed8","font-size":"44px"}'),
+        device: z.enum(["all", "tablet", "mobile"]).default("all"), scope: z.enum(["page", "site"]).default("page"),
+        pageUrl: z.string().describe("The page the element is on (needed for scope page)"), reason: reasonSchema,
+      }),
+      execute: async ({ selector, styles, device, scope, pageUrl }) => safe(async () => {
+        bridge.assertSameOrigin(pageUrl);
+        return await applyStylePatch(bridge, { selector, styles, device: device ?? "all", scope: scope ?? "page", pageUrl });
+      }),
+    }),
+  };
 
   const sf = extras.siteFiles;
   const fileTools = sf ? {
@@ -386,13 +414,13 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     }),
   } : {};
 
-  return { ...content, ...pages, ...media, ...browser, ...fileTools, ...apiTools, ...skillTools, ...changeTools, ...planTools };
+  return { ...content, ...pages, ...media, ...browser, ...design, ...overlay, ...fileTools, ...apiTools, ...skillTools, ...changeTools, ...planTools };
 }
 
 /** Tools that must never run without a human saying yes. */
 export const APPROVAL_REQUIRED = [
   "set_content", "upload_media_from_chat", "upload_media_from_url", "undo_last_change", "edit_file", "create_file", "restore_file",
-  "create_page", "create_post", "edit_post_content", "set_post_status", "create_menu", "add_menu_item", "revert_change",
+  "create_page", "create_post", "edit_post_content", "set_post_status", "create_menu", "add_menu_item", "revert_change", "style_patch",
 ] as const;
 
 export type PostTypeName = PostType;

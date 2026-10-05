@@ -38,6 +38,10 @@ const wp = {
     [`${THEME}/style.css`, `.site-footer { background: #111; }\n`],
   ]),
   media: [] as any[],
+  // Livecrafts overlay patches + an Elementor page (heading widget abc123 + image widget img1)
+  patches: {} as Record<string, Record<string, any>>,
+  elTitle: "Elementor Heading", elImage: { id: 7, url: "http://x/wp-content/uploads/old-photo-300x200.jpg" },
+  plain: "Plain theme text",
 };
 const render = () => {
   const footer = wp.files.get(`${THEME}/footer.php`)!;
@@ -53,8 +57,27 @@ const fakeWp = http.createServer(async (req, res) => {
   const p = u.pathname;
   const lc = p.replace("/wp-json/livecrafts/v1/", "");
   if (lc === "ping") return json(200, { ok: true, version: "0.7.0", capabilities: { acf: true, theme_files: true } });
-  if (lc === "debug/target") return json(200, { stored_raw: wp.hero });
-  if (lc === "target" && req.method === "POST") { wp.hero = body.value; return json(200, { ok: true, value: body.value }); }
+  if (lc === "debug/target") { const t = u.searchParams.get("targetId") ?? ""; return json(200, { stored_raw: t.startsWith("el:5:abc123") ? wp.elTitle : t.startsWith("el:5:img1") ? wp.elImage.id : wp.hero }); }
+  if (lc === "target" && req.method === "POST") {
+    if (String(body.targetId).startsWith("el:5:abc123")) wp.elTitle = body.value;
+    else if (String(body.targetId).startsWith("el:5:img1")) wp.elImage = { id: Number(body.value), url: `${wpUrl}/wp-content/uploads/${body.value}.png` };
+    else wp.hero = body.value;
+    return json(200, { ok: true, value: body.value });
+  }
+  if (lc === "map") return json(200, { ok: true, post: { id: 5 }, acf: [{ kind: "acf", tid: "acf:field_hero_title:5", label: "Hero title", ftype: "text", value: wp.hero }],
+    elementor: [{ kind: "el", tid: "el:5:abc123:title", id: "abc123", label: "Heading", ftype: "text", value: wp.elTitle }, { kind: "el", tid: "el:5:img1:image", id: "img1", label: "Image", ftype: "image", value: wp.elImage.id, url: wp.elImage.url }] });
+  if (lc === "patches") {
+    const key = u.searchParams.get("pageKey") || (u.searchParams.get("url") ? "p5" : "");
+    if (!key) return json(400, { code: "livecrafts_bad_request", message: "bad" });
+    return json(200, { ok: true, pageKey: key, page: wp.patches[key] ?? {}, site: wp.patches.site ?? {} });
+  }
+  if ((lc === "save" || lc === "revert") && req.method === "POST") {
+    const key = body.scope === "site" ? "site" : body.pageKey;
+    wp.patches[key] ??= {};
+    if (lc === "revert") delete wp.patches[key][body.selector];
+    else { const pt: any = {}; for (const k of ["styles", "styles_tablet", "styles_mobile"]) if (body[k]) pt[k] = Object.fromEntries(Object.entries(body[k]).filter(([p]) => p !== "position")); if (typeof body.text === "string") pt.text = body.text; wp.patches[key][body.selector] = pt; }
+    return json(200, { ok: true });
+  }
   if (lc === "theme-files") return json(200, { ok: true, files: [...wp.files.keys()].map((f) => ({ path: f, bytes: wp.files.get(f)!.length })) });
   if (lc === "theme-file") {
     const f = u.searchParams.get("path") ?? body.path;
@@ -347,6 +370,67 @@ console.log("\n9) models: provider:model names, clear errors when a key is missi
   assert.throws(() => resolveModel("custom:my-model"), /no address/); ok("the custom provider asks for its address first");
   const t = await testModel("groq:x"); assert.equal(t.ok, false); ok("'Save & test' reports failures as a result");
   if (saved) process.env.GROQ_API_KEY = saved;
+}
+
+// ------------------------------------------------------------------ 10) manual edits (no AI) + the agent's style overlay
+console.log("\n10) manual edits: safe style overlay per screen size, text/images into the real Elementor/ACF field, revertable");
+{
+  const runner = runnerFor(scripted([() => say("ok")]));
+  const app = createApp(runner, sites, files);
+  await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
+  const api = `http://127.0.0.1:${(app.address() as any).port}`;
+  const manual = (b: any) => fetch(`${api}/sites/${site.id}/manual`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pageUrl: wpUrl + "/", ...b }) }).then(async (r) => ({ status: r.status, body: await r.json() as any }));
+
+  const s1 = await manual({ kind: "style", selector: "h1.hero__title", label: "h1.hero__title", pageKey: "p5", styles: { color: "#1d4ed8", "font-size": "44px" } });
+  assert.equal(s1.status, 200); assert.deepEqual(wp.patches.p5["h1.hero__title"].styles, { color: "#1d4ed8", "font-size": "44px" });
+  ok("style saved in the overlay for this page (no theme file touched), no AI involved");
+  const s2 = await manual({ kind: "style", selector: "h1.hero__title", label: "h1.hero__title", pageKey: "p5", device: "mobile", styles: { "font-size": "28px" }, jobId: s1.body.jobId });
+  assert.deepEqual(wp.patches.p5["h1.hero__title"].styles_mobile, { "font-size": "28px" }); assert.equal(wp.patches.p5["h1.hero__title"].styles.color, "#1d4ed8");
+  ok("mobile-only size kept separately; the desktop style stays");
+  const s3 = await manual({ kind: "style", selector: "h1.hero__title", pageKey: "p5", styles: { position: "fixed" }, jobId: s1.body.jobId });
+  assert.equal(s3.status, 400); assert.match(s3.body.error, /position/); ok("a property the overlay does not allow is refused with a clear message (nothing recorded)");
+  const job = runner.get(s1.body.jobId)!;
+  assert.equal(job.changes!.length, 2); assert.ok(job.events.some((e: any) => e.type === "user" && e.data.manual)); assert.match(String(job.messages.at(-2)?.content), /manual editor/);
+  ok("each manual edit is its own request in Changes, and the assistant is told about it");
+  const d: any = await fetch(`${api}/jobs/${job.id}/changes/${job.changes![1].id}/diff`).then((r) => r.json());
+  assert.match(d.after, /@media \(max-width: 767px\)[\s\S]*font-size: 28px/); ok("diff shows the CSS, including the mobile media query");
+  await runner.revertRequest(job.id, job.changes![1].requestId!); assert.equal(wp.patches.p5["h1.hero__title"].styles_mobile, undefined); assert.equal(wp.patches.p5["h1.hero__title"].styles.color, "#1d4ed8");
+  ok("revert the mobile edit → previous overlay restored exactly");
+  await runner.revertRequest(job.id, job.changes![0].requestId!).catch(() => {});
+
+  const hide = await manual({ kind: "hide", selector: ".promo", device: "mobile", pageKey: "p5" });
+  assert.equal(hide.status, 200); assert.equal(wp.patches.p5[".promo"].styles_mobile.display, "none"); ok("hide on mobile only");
+  const all = await manual({ kind: "style", selector: "a.btn", scope: "site", styles: { "border-radius": "999px" } });
+  assert.equal(all.status, 200); assert.equal(wp.patches.site["a.btn"].styles["border-radius"], "999px"); ok("'all similar' saves one site-wide rule");
+
+  const t1 = await manual({ kind: "text", selector: "h2.elementor-heading-title", elementor: { post: 5, id: "abc123", widget: "heading.default" }, oldText: "Elementor Heading", newText: "New Heading" });
+  assert.equal(t1.status, 200); assert.equal(wp.elTitle, "New Heading"); assert.equal(Object.keys(wp.patches.p5).includes("h2.elementor-heading-title"), false);
+  ok("text on an Elementor heading is written into the Elementor widget itself (not an overlay)");
+  const t2 = await manual({ kind: "text", selector: "h1.hero__title", oldText: wp.hero, newText: "Hello ACF" });
+  assert.equal(t2.status, 200); assert.equal(wp.hero, "Hello ACF"); ok("text from an ACF field is written into that ACF field");
+  const t3 = await manual({ kind: "text", selector: "footer .note", oldText: "Plain theme text", newText: "x", hasChildren: true });
+  assert.equal(t3.status, 400); assert.match(t3.body.error, /AI agent/); ok("text with inner links/markup and no field behind it is refused (nothing can break)");
+  const t4 = await manual({ kind: "text", selector: "footer .note", pageKey: "p5", oldText: "Plain theme text", newText: "Plain changed" });
+  assert.equal(t4.status, 200); assert.equal(wp.patches.p5["footer .note"].text, "Plain changed"); assert.ok(t4.body.note); ok("plain text with no field → page overlay, with a clear note");
+  const tj = runner.get(t1.body.jobId)!;
+  await runner.revertRequest(tj.id, tj.changes!.find((c: any) => /New Heading/.test(c.title))!.requestId!);
+  assert.equal(wp.elTitle, "Elementor Heading"); ok("revert puts the Elementor text back");
+
+  const img = files.save(PNG, "new.png", "image/png");
+  const i1 = await manual({ kind: "image", selector: "img.photo", elementor: { post: 5, id: "img1", widget: "image.default" }, fileId: img.id, imageSrc: wp.elImage.url });
+  assert.equal(i1.status, 200); assert.notEqual(wp.elImage.id, 7); ok("image replaced in the Elementor image widget (uploaded to the Media Library first)");
+  const bad = await manual({ kind: "style", selector: "a{}b", styles: { color: "red" } });
+  assert.equal(bad.status, 400); ok("unsafe selectors are refused");
+  const other = await fetch(`${api}/sites/${site.id}/manual`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "style", pageUrl: "https://evil.example/", selector: "h1", styles: { color: "red" } }) });
+  assert.equal(other.status, 400); ok("only pages of the connected site");
+  app.close();
+
+  // the agent's overlay tool (works the same on Elementor / ACF / any theme)
+  const ar = runnerFor(scripted([() => call("style_patch", { selector: ".elementor-heading-title", styles: { color: "#e8590c" }, device: "tablet", scope: "page", pageUrl: wpUrl + "/", reason: "Orange headings on tablet" }), () => say("Done.")]));
+  const aj = ar.create(site.id, "make headings orange on tablet", undefined, [], { approvalMode: "auto" });
+  const ad = await ar.waitUntilSettled(aj.id);
+  assert.equal(ad.status, "completed"); assert.equal(wp.patches.p5[".elementor-heading-title"].styles_tablet.color, "#e8590c");
+  assert.equal(ad.changes![0].revert?.kind, "patch"); ok("agent style_patch: tablet-only overlay, recorded and revertable");
 }
 
 console.log(`\nALL GOOD: ${passed} checks passed.\n`);

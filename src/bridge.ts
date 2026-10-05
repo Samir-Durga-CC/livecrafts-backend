@@ -23,6 +23,8 @@ const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
 
 type Query = Record<string, string | number | undefined>;
 export type PostType = "pages" | "posts";
+/** A Livecrafts overlay patch for one CSS selector: styles for all screens, tablet (≤1024px), mobile (≤767px), optional text. */
+export interface Patch { styles?: Record<string, string>; styles_tablet?: Record<string, string>; styles_mobile?: Record<string, string>; text?: string }
 
 /**
  * Talks to ONE WordPress site through the Livecrafts plugin REST API (and core REST for media / page lists),
@@ -113,6 +115,18 @@ export class Bridge {
   deleteMenu(id: number) { return this.request("DELETE", `wp/v2/menus/${id}`, { query: { force: "true" } }); }
   createMenuItem(data: Record<string, unknown>) { return this.request("POST", "wp/v2/menu-items", { json: { status: "publish", ...data } }); }
   deleteMenuItem(id: number) { return this.request("DELETE", `wp/v2/menu-items/${id}`, { query: { force: "true" } }); }
+
+  // ---- style/text overlay patches (Livecrafts plugin 0.9+): safe CSS on top of any theme / Elementor / ACF, revertable
+  getPatches(where: { url?: string; pageKey?: string }) {
+    return this.request<{ ok: boolean; pageKey: string; page: Record<string, Patch>; site: Record<string, Patch> }>("GET", "livecrafts/v1/patches", { query: { url: where.url, pageKey: where.pageKey } });
+  }
+  /** Replace the whole patch of one selector (send the merged result). An empty patch removes it. */
+  savePatch(key: string, selector: string, patch: Patch) {
+    const scope = key === "site" ? { scope: "site" } : { scope: "page", pageKey: key };
+    const empty = !patch.text && !["styles", "styles_tablet", "styles_mobile"].some((k) => Object.keys((patch as any)[k] ?? {}).length);
+    if (empty) return this.request("POST", "livecrafts/v1/revert", { json: { ...scope, selector } });
+    return this.request("POST", "livecrafts/v1/save", { json: { ...scope, selector, ...patch } });
+  }
 
   // ---- active theme files (Livecrafts plugin 0.7+)
   themeFiles() { return this.request("GET", "livecrafts/v1/theme-files"); }

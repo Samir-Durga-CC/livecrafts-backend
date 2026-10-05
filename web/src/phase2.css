@@ -176,3 +176,22 @@ html.embed body { font-size: 14px; }
 .w-confirm { display: flex; flex-direction: column; gap: 8px; padding: 8px 10px; font-size: 12.5px; color: var(--bad); background: var(--bad-soft); border-radius: 9px; }
 .w-confirm div { display: flex; gap: 6px; justify-content: flex-end; }
 .qa-sec-head span.grow { text-align: left; }
+
+/* screenshots: a chip, the picture only on request */
+.shot-chip { display: inline-flex; align-items: center; gap: 6px; margin: 8px 8px 0 0; height: 26px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--muted); font-size: 12px; }
+.shot-chip:hover { color: var(--text); border-color: var(--line-strong); }
+
+/* quick actions: manual / AI agent, scope + screen size */
+.qa-mode { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; padding: 3px; background: var(--hover); border-radius: 11px; }
+.qa-mode button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; border: 0; border-radius: 8px; background: none; color: var(--muted); font-weight: 600; font-size: 13px; }
+.qa-mode button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow-xs); }
+.qa-mode button.on svg { color: var(--w-accent, var(--accent)); }
+.qa-mode-hint { margin: -2px 2px 0; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+.qa-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.qa-seg { display: inline-flex; gap: 2px; padding: 3px; background: var(--hover); border-radius: 10px; }
+.qa-seg button { height: 28px; padding: 0 10px; border: 0; border-radius: 7px; background: none; color: var(--muted); font-size: 12px; font-weight: 550; display: inline-flex; align-items: center; gap: 5px; }
+.qa-seg.icons button { width: 34px; padding: 0; justify-content: center; }
+.qa-seg button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow-xs); }
+.qa-seg button:disabled { opacity: .4; cursor: not-allowed; }
+.qa-q { position: relative; }
+.qa-ai-badge { position: absolute; top: 5px; right: 5px; width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--w-accent, var(--accent)); font-style: normal; }

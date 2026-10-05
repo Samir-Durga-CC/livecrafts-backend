@@ -1,7 +1,7 @@
 import path from "node:path";
 import { config } from "./config.js";
 import { JsonStore, newId } from "./store.js";
-import type { Bridge, PostType } from "./bridge.js";
+import type { Bridge, Patch, PostType } from "./bridge.js";
 import type { SiteFiles } from "./sitefiles.js";
 
 /**
@@ -15,7 +15,8 @@ export type RevertSpec =
   | { kind: "post-status"; type: PostType; id: number; previous: string }  // set_post_status -> old status back
   | { kind: "trash"; type: PostType; id: number }                          // create_page / create_post -> move to Trash
   | { kind: "menu"; id: number }                                           // create_menu -> delete that menu
-  | { kind: "menu-item"; id: number };                                     // add_menu_item -> delete that item
+  | { kind: "menu-item"; id: number }                                      // add_menu_item -> delete that item
+  | { kind: "patch"; key: string; selector: string; previous: Patch | null }; // style overlay -> put the previous patch back
 
 /** What a "view diff" shows: inline before/after, or a pointer to a stored backup (file / page content). */
 export interface DiffSource { label: string; language?: string; before?: string; after?: string; fileBackupId?: string; postBackupId?: string }
@@ -72,6 +73,12 @@ export function recordFor(tool: string, input: any, out: any): ChangeRecord | nu
     case "add_menu_item":
       return { ...base, title: why(`Add “${input.title}” to the menu`), key: `menu-item:${out.itemId}`, revert: { kind: "menu-item", id: out.itemId },
         diff: { label: `Menu #${input.menuId}`, before: "", after: `${input.title} → ${input.url ?? "page #" + input.pageId}` } };
+    case "style_patch": {
+      const where = out.key === "site" ? "all pages" : "this page";
+      return { ...base, title: why(`Style ${input.selector}`), key: `patch:${out.key}:${out.selector}`, link: input.pageUrl,
+        revert: { kind: "patch", key: out.key, selector: out.selector, previous: out.previous ?? null },
+        diff: { label: `Style overlay · ${out.selector} (${where})`, language: "css", before: patchToCss(out.selector, out.previous), after: patchToCss(out.selector, out.patch) } };
+    }
     case "upload_media_from_chat": case "upload_media_from_url":
       return { ...base, title: why(`Upload image “${out.title ?? input.title ?? "image"}”`), key: `media:${out.id}`, link: out.url, revert: null, note: "Uploaded images stay in the Media Library (delete them there if not needed)." };
     case "undo_last_change": case "restore_file": case "revert_change":
@@ -125,6 +132,7 @@ export async function revertChange(c: ChangeRecord, d: RevertDeps): Promise<Reco
     }
     case "menu": await d.bridge.deleteMenu(r.id); return { ok: true };
     case "menu-item": await d.bridge.deleteMenuItem(r.id); return { ok: true };
+    case "patch": await d.bridge.savePatch(r.key, r.selector, r.previous ?? {}); return { ok: true, restored: r.previous ? "previous style" : "removed" };
   }
 }
 
@@ -143,4 +151,16 @@ export function diffOf(c: ChangeRecord, files: { getBackup(id: string): { before
     return { label: d.label, language: d.language ?? "html", before: b.before, after: b.after };
   }
   return { label: d.label, language: d.language ?? "text", before: d.before ?? "", after: d.after ?? "" };
+}
+
+/** A patch as readable CSS (for diffs and for the assistant). */
+export function patchToCss(selector: string, p: Patch | null | undefined): string {
+  if (!p) return "";
+  const block = (styles?: Record<string, string>, indent = "") => Object.entries(styles ?? {}).map(([k, v]) => `${indent}  ${k}: ${v};`).join("\n");
+  const out: string[] = [];
+  if (p.styles && Object.keys(p.styles).length) out.push(`${selector} {\n${block(p.styles)}\n}`);
+  if (p.styles_tablet && Object.keys(p.styles_tablet).length) out.push(`@media (max-width: 1024px) {\n  ${selector} {\n${block(p.styles_tablet, "  ")}\n  }\n}`);
+  if (p.styles_mobile && Object.keys(p.styles_mobile).length) out.push(`@media (max-width: 767px) {\n  ${selector} {\n${block(p.styles_mobile, "  ")}\n  }\n}`);
+  if (p.text) out.push(`/* text */ ${JSON.stringify(p.text)}`);
+  return out.join("\n");
 }

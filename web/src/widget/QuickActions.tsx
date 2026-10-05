@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { api } from "../api";
 import { Icon } from "../icons";
 import type { UploadedFile } from "../types";
@@ -8,6 +8,17 @@ export interface PickedElement {
   selector: string; label: string; tag: string; id: string; classes: string; text: string; html: string;
   image: { src: string; alt: string } | null; link: string; styles: Record<string, string>;
   rect: { width: number; height: number }; section: string; pageUrl: string; viewport: number;
+  pageKey?: string; elementor?: { post: number; id: string; widget: string } | null; hasChildren?: boolean;
+  similarSelector?: string; similarCount?: number;
+}
+
+export type EditMode = "manual" | "agent";
+export type Device = "all" | "tablet" | "mobile";
+/** A manual edit (sent to the backend, no AI). */
+export interface ManualEdit {
+  kind: "style" | "text" | "image" | "hide" | "show"; selector: string; label: string; pageUrl: string; pageKey?: string;
+  scope?: "page" | "site"; device?: Device; styles?: Record<string, string>; fileId?: string; imageSrc?: string;
+  elementor?: PickedElement["elementor"]; oldText?: string; newText?: string; hasChildren?: boolean;
 }
 
 const toHex = (v: string) => {
@@ -19,45 +30,46 @@ const toHex = (v: string) => {
 const px = (v: string) => (v && v !== "auto" && v !== "normal" ? v : "");
 
 type Fields = Record<string, string>;
-const FIELDS: { key: string; label: string; prop: string; kind?: "color" | "select"; options?: string[]; group: "type" | "color" | "layout" | "size" }[] = [
-  { key: "fontSize", label: "Size", prop: "font-size", group: "type" },
-  { key: "fontWeight", label: "Weight", prop: "font-weight", kind: "select", options: ["300", "400", "500", "600", "700", "800"], group: "type" },
-  { key: "lineHeight", label: "Line height", prop: "line-height", group: "type" },
-  { key: "letterSpacing", label: "Letter spacing", prop: "letter-spacing", group: "type" },
-  { key: "textTransform", label: "Case", prop: "text-transform", kind: "select", options: ["none", "uppercase", "lowercase", "capitalize"], group: "type" },
-  { key: "fontFamily", label: "Font", prop: "font-family", group: "type" },
-  { key: "color", label: "Text", prop: "color", kind: "color", group: "color" },
-  { key: "background", label: "Background", prop: "background-color", kind: "color", group: "color" },
-  { key: "paddingTop", label: "Padding top", prop: "padding-top", group: "layout" },
-  { key: "paddingBottom", label: "Padding bottom", prop: "padding-bottom", group: "layout" },
-  { key: "paddingX", label: "Padding sides", prop: "padding-left", group: "layout" },
-  { key: "marginTop", label: "Space above", prop: "margin-top", group: "layout" },
-  { key: "marginBottom", label: "Space below", prop: "margin-bottom", group: "layout" },
-  { key: "radius", label: "Corner radius", prop: "border-radius", group: "layout" },
-  { key: "width", label: "W", prop: "width", group: "size" },
-  { key: "height", label: "H", prop: "height", group: "size" },
-  { key: "maxWidth", label: "Max width", prop: "max-width", group: "size" },
+const FIELDS: { key: string; label: string; props: string[]; kind?: "color" | "select"; options?: string[]; group: "type" | "color" | "layout" | "size" }[] = [
+  { key: "fontSize", label: "Size", props: ["font-size"], group: "type" },
+  { key: "fontWeight", label: "Weight", props: ["font-weight"], kind: "select", options: ["300", "400", "500", "600", "700", "800"], group: "type" },
+  { key: "lineHeight", label: "Line height", props: ["line-height"], group: "type" },
+  { key: "letterSpacing", label: "Letter spacing", props: ["letter-spacing"], group: "type" },
+  { key: "textTransform", label: "Case", props: ["text-transform"], kind: "select", options: ["none", "uppercase", "lowercase", "capitalize"], group: "type" },
+  { key: "fontFamily", label: "Font", props: ["font-family"], group: "type" },
+  { key: "color", label: "Text", props: ["color"], kind: "color", group: "color" },
+  { key: "background", label: "Background", props: ["background-color"], kind: "color", group: "color" },
+  { key: "paddingTop", label: "Padding top", props: ["padding-top"], group: "layout" },
+  { key: "paddingBottom", label: "Padding bottom", props: ["padding-bottom"], group: "layout" },
+  { key: "paddingX", label: "Padding sides", props: ["padding-left", "padding-right"], group: "layout" },
+  { key: "marginTop", label: "Space above", props: ["margin-top"], group: "layout" },
+  { key: "marginBottom", label: "Space below", props: ["margin-bottom"], group: "layout" },
+  { key: "radius", label: "Corner radius", props: ["border-radius"], group: "layout" },
+  { key: "width", label: "W", props: ["width"], group: "size" },
+  { key: "height", label: "H", props: ["height"], group: "size" },
+  { key: "maxWidth", label: "Max width", props: ["max-width"], group: "size" },
 ];
 
 function initialFields(el: PickedElement | null): Fields {
   const f: Fields = {};
   if (!el) return f;
   for (const d of FIELDS) {
-    const raw = el.styles[d.prop] ?? "";
+    const raw = el.styles[d.props[0]] ?? "";
     f[d.key] = d.kind === "color" ? toHex(raw) : d.key === "width" || d.key === "height" ? String(d.key === "width" ? el.rect.width : el.rect.height) + "px" : px(raw);
   }
   f.align = el.styles["text-align"] ?? "";
   return f;
 }
 
-/** Turns the selected element + what the person asked into one precise request for the assistant. */
+/** Turns the selected element into context for the assistant. */
 export function elementContext(el: PickedElement): string {
   const keep = ["font-family", "font-size", "font-weight", "line-height", "color", "background-color", "text-align", "padding-top", "padding-bottom", "margin-top", "margin-bottom", "width", "max-width"];
   const styles = keep.map((k) => `${k}: ${el.styles[k]}`).join("; ");
   return [
     `SELECTED ELEMENT on ${el.pageUrl} (viewport ${el.viewport}px wide):`,
-    `- CSS selector: ${el.selector}`,
+    `- CSS selector: ${el.selector}${el.similarCount && el.similarCount > 1 ? ` (similar elements: ${el.similarSelector}, ${el.similarCount} on this page)` : ""}`,
     `- element: <${el.tag}${el.id ? ` id="${el.id}"` : ""}${el.classes ? ` class="${el.classes}"` : ""}>${el.section ? ` inside ${el.section}` : ""}`,
+    el.elementor ? `- Elementor widget ${el.elementor.widget} id ${el.elementor.id} on post ${el.elementor.post}` : "",
     el.text ? `- text: "${el.text.slice(0, 200)}"` : "",
     el.image ? `- image: ${el.image.src}${el.image.alt ? ` (alt "${el.image.alt}")` : ""}` : "",
     el.link ? `- links to: ${el.link}` : "",
@@ -66,25 +78,57 @@ export function elementContext(el: PickedElement): string {
   ].filter(Boolean).join("\n");
 }
 
-export function QuickActions({ selected, picking, disabled, onPick, onCancelPick, onSend, onUndo, canUndo, onHighlight }: {
+const store = { get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* ignore */ } } };
+const DEVICES: { id: Device; label: string; icon: ReactElement; hint: string }[] = [
+  { id: "all", label: "All screens", icon: <Icon.Monitor size={14} />, hint: "" },
+  { id: "tablet", label: "Tablet", icon: <Icon.Tablet size={14} />, hint: "Saved for screens up to 1024px wide." },
+  { id: "mobile", label: "Mobile", icon: <Icon.Phone size={14} />, hint: "Saved for screens up to 767px wide." },
+];
+
+export function QuickActions({ selected, picking, disabled, onPick, onCancelPick, onSend, onManual, onPreview, onClearPreview, onEditText, onUndo, canUndo, onHighlight }: {
   selected: PickedElement | null; picking: boolean; disabled: boolean;
   onPick: () => void; onCancelPick: () => void; onSend: (prompt: string, fileIds: string[], extraContext?: string) => Promise<void>;
-  onUndo: () => void; canUndo: boolean; onHighlight: (selector: string) => void;
+  onManual: (edit: ManualEdit) => Promise<boolean>; onPreview: (selector: string, styles: Record<string, string>) => void; onClearPreview: () => void;
+  onEditText: (selector: string) => void; onUndo: () => void; canUndo: boolean; onHighlight: (selector: string) => void;
 }) {
+  const [mode, setModeState] = useState<EditMode>((store.get("lcw_edit_mode") as EditMode) || "manual");
+  const [device, setDevice] = useState<Device>("all");
+  const [similar, setSimilar] = useState(false);
   const [text, setText] = useState("");
-  const [allSimilar, setAllSimilar] = useState(false);
   const [files, setFiles] = useState<{ key: string; preview: string; file?: UploadedFile; error?: string }[]>([]);
   const [open, setOpen] = useState<Record<string, boolean>>({ type: true });
   const [fields, setFields] = useState<Fields>({});
   const [busy, setBusy] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const imageInput = useRef<HTMLInputElement>(null);
   const base = useMemo(() => initialFields(selected), [selected]);
+  const setMode = (m: EditMode) => { setModeState(m); store.set("lcw_edit_mode", m); };
 
-  useEffect(() => { setFields(base); setText(""); setAllSimilar(false); }, [base]);
+  useEffect(() => { setFields(base); setText(""); setSimilar(false); setDevice("all"); }, [base]);
 
   const edited = Object.keys(fields).filter((k) => (fields[k] ?? "") !== (base[k] ?? ""));
   const ready = files.filter((f) => f.file).map((f) => f.file!.id);
   const uploading = files.some((f) => !f.file && !f.error);
+  const canSimilar = !!selected?.similarSelector && (selected.similarCount ?? 0) > 1;
+  const targetSelector = selected ? (similar && canSimilar ? selected.similarSelector! : selected.selector) : "";
+
+  /** The edited fields as CSS. */
+  const styles = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const k of edited) {
+      if (k === "align") { out["text-align"] = fields.align; continue; }
+      const d = FIELDS.find((x) => x.key === k);
+      if (d) for (const p of d.props) out[p] = fields[k];
+    }
+    return out;
+  }, [fields, edited.join()]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // live preview on the page while editing manually (nothing is saved until "Save")
+  useEffect(() => {
+    if (mode !== "manual" || !selected || !Object.keys(styles).length) { onClearPreview(); return; }
+    onPreview(targetSelector, styles);
+  }, [mode, targetSelector, JSON.stringify(styles)]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => onClearPreview(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   function attach(list: FileList) {
     for (const f of Array.from(list)) {
@@ -96,35 +140,44 @@ export function QuickActions({ selected, picking, disabled, onPick, onCancelPick
     }
   }
 
-  /** `request` is what the person sees in the chat; `howTo` + the element details go to the assistant as context. */
-  async function go(request: string, fileIds: string[] = ready, howTo = "") {
+  /** AI agent: `request` is shown in the chat; `howTo` + element details go to the assistant as context. */
+  async function ask(request: string, fileIds: string[] = ready, howTo = "") {
     if (!selected) return;
     setBusy(true);
     try {
-      const scope = allSimilar ? "Apply it to ALL similar elements/sections on the site (same component), not only this one." : "Change only this element (and identical instances if they share the same CSS rule, say so).";
-      await onSend(`${request}${allSimilar ? " (all similar sections)" : ""}`, fileIds, `${howTo ? howTo + "\n" : ""}${scope}\n\n${elementContext(selected)}`);
+      const scope = similar && canSimilar ? `Apply it to ALL similar elements (${selected.similarSelector}), on every page where they appear.` : "Change only this element (if others share the same CSS rule, say so).";
+      const dev = device === "all" ? "" : ` Only for ${device} screens (${device === "tablet" ? "≤1024px" : "≤767px"}).`;
+      await onSend(`${request}${similar && canSimilar ? " (all similar)" : ""}${device !== "all" ? ` (${device})` : ""}`, fileIds, `${howTo ? howTo + "\n" : ""}${scope}${dev}\n\n${elementContext(selected)}`);
       setText(""); setFiles([]);
     } finally { setBusy(false); }
   }
 
-  function applyStyles() {
-    const lines = edited.filter((k) => k !== "align").map((k) => {
-      const d = FIELDS.find((x) => x.key === k)!;
-      const prop = d.key === "paddingX" ? "padding-left and padding-right" : d.prop;
-      return `- ${prop}: ${base[k] || "(not set)"} → ${fields[k]}`;
-    });
-    if (fields.align !== base.align) lines.push(`- text-align: ${base.align} → ${fields.align}`);
-    void go(`Change the style of ${selected?.label ?? "the selected element"}:\n${lines.join("\n")}`, [],
-      "Do it in the theme stylesheet by editing the rule that sets these properties (no inline styles, no !important unless needed). Keep it responsive - scale sizes down sensibly on tablet and mobile.");
+  /** Manual: saved straight into the safe style overlay / the real field. No AI. */
+  async function manual(edit: Omit<ManualEdit, "selector" | "label" | "pageUrl" | "pageKey" | "elementor">) {
+    if (!selected) return false;
+    setBusy(true);
+    try {
+      return await onManual({
+        selector: edit.kind === "style" || edit.kind === "hide" || edit.kind === "show" ? targetSelector : selected.selector,
+        label: similar && canSimilar && (edit.kind === "style" || edit.kind === "hide") ? `all ${selected.similarSelector}` : selected.label,
+        pageUrl: selected.pageUrl, pageKey: selected.pageKey, elementor: selected.elementor ?? null,
+        scope: similar && canSimilar ? "site" : "page", device, ...edit,
+      });
+    } finally { setBusy(false); }
   }
 
-  const quick = [
+  function applyStyles() {
+    if (mode === "manual") { void manual({ kind: "style", styles }); return; }
+    const lines = Object.entries(styles).map(([p, v]) => `- ${p}: ${base[FIELDS.find((d) => d.props.includes(p))?.key ?? "align"] || "(not set)"} → ${v}`);
+    void ask(`Change the style of ${selected?.label ?? "the selected element"}:\n${lines.join("\n")}`, [],
+      "Keep it responsive - scale sizes down sensibly on tablet and mobile. Use the right place for this site (see your rules: style_patch on Elementor/third-party themes, the theme stylesheet on the site's own theme).");
+  }
+
+  const agentOnly = [
     { id: "dup", icon: <Icon.Duplicate size={16} />, label: "Duplicate", prompt: "Duplicate this element/section right below itself (same design), so I can change the copy afterwards." },
-    { id: "hide", icon: <Icon.Hide size={16} />, label: "Hide", prompt: "Hide this element on the site (keep it in the code so it can be shown again)." },
     { id: "del", icon: <Icon.Trash size={16} />, label: "Remove", prompt: "Remove this element/section from the page." },
-    { id: "text", icon: <Icon.Type size={16} />, label: "Edit text", fill: `Change the text to: "${selected?.text.slice(0, 120) ?? ""}"` },
-    { id: "img", icon: <Icon.Image size={16} />, label: "Replace image", image: true },
-    { id: "mobile", icon: <Icon.Phone size={16} />, label: "Fix mobile", prompt: "Check this element on mobile and tablet with screenshots and fix anything that looks broken, too big, cramped or overflowing." },
+    { id: "mobile", icon: <Icon.Phone size={16} />, label: "Fix mobile", prompt: "Check this element on mobile and tablet and fix anything that looks broken, too big, cramped or overflowing." },
+    { id: "improve", icon: <Icon.Wand size={16} />, label: "Improve", prompt: "Improve this element professionally: better copy, spacing, typography and visual hierarchy, consistent with the rest of the site's design. Keep it responsive and accessible." },
   ];
 
   if (!selected) {
@@ -132,7 +185,7 @@ export function QuickActions({ selected, picking, disabled, onPick, onCancelPick
       <div className="qa-empty">
         <div className="qa-orb"><Icon.Cursor size={26} /></div>
         <strong>Pick something on the page</strong>
-        <p>Click <b>Pick element</b>, then click any heading, button, image or section on the page. You can then change it with quick actions, style controls or plain words.</p>
+        <p>Click <b>Pick element</b>, then click any heading, button, image or section. Change it yourself (manual, saved instantly and safely) or let the AI agent do it.</p>
         {picking
           ? <button className="btn" onClick={onCancelPick}>Cancel picking</button>
           : <button className="btn primary" disabled={disabled} onClick={onPick}><Icon.Cursor size={15} /> Pick element</button>}
@@ -140,51 +193,93 @@ export function QuickActions({ selected, picking, disabled, onPick, onCancelPick
     );
   }
 
+  const isManual = mode === "manual";
   return (
     <div className="qa">
       <div className="qa-sel">
         <div className="qa-sel-main" onClick={() => onHighlight(selected.selector)} title="Show it on the page">
-          <code>{selected.label}</code>
+          <code>{selected.label}{selected.elementor ? " · Elementor" : ""}</code>
           <span>{selected.text ? `“${selected.text.slice(0, 70)}${selected.text.length > 70 ? "…" : ""}”` : selected.image ? "Image" : selected.tag}</span>
         </div>
         <button className="rbtn" onClick={picking ? onCancelPick : onPick} disabled={disabled}><Icon.Cursor size={13} /> {picking ? "Picking…" : "Pick another"}</button>
       </div>
 
+      <div className="qa-mode" role="tablist" aria-label="How to change it">
+        <button role="tab" aria-selected={isManual} className={isManual ? "on" : ""} onClick={() => setMode("manual")}><Icon.Edit size={14} /> Manual</button>
+        <button role="tab" aria-selected={!isManual} className={!isManual ? "on" : ""} onClick={() => setMode("agent")}><Icon.Sparkle size={14} /> AI agent</button>
+      </div>
+      <p className="qa-mode-hint">{isManual
+        ? "You change it yourself - saved instantly in a safe style layer (no theme files touched), works with Elementor, ACF and any theme. Revert any time in Changes."
+        : "The AI agent makes the change properly in the right place (theme, Elementor or field) and verifies it."}</p>
+
       <div className="qa-label">Quick actions</div>
       <div className="qa-quick">
-        {quick.map((q) => (
-          <button key={q.id} className="qa-q" title={q.label} disabled={disabled || busy || (q.id === "img" && !selected.image)}
-            onClick={() => { if (q.image) fileInput.current?.click(); else if (q.fill) setText(q.fill); else void go(q.prompt!); }}>
-            {q.icon}<span>{q.label}</span>
+        <button className="qa-q" disabled={disabled || busy || !selected.text} title={isManual ? "Edit the text right on the page" : "Ask the AI to change the text"}
+          onClick={() => (isManual ? onEditText(selected.selector) : setText(`Change the text to: "${selected.text.slice(0, 120)}"`))}>
+          <Icon.Type size={16} /><span>Edit text</span>
+        </button>
+        <button className="qa-q" disabled={disabled || busy || !selected.image} title="Replace the image" onClick={() => (isManual ? imageInput.current?.click() : fileInput.current?.click())}>
+          <Icon.Image size={16} /><span>Replace image</span>
+        </button>
+        <button className="qa-q" disabled={disabled || busy} title={`Hide it${device !== "all" ? ` on ${device}` : ""}`}
+          onClick={() => (isManual ? void manual({ kind: "hide" }) : void ask(`Hide this element${device !== "all" ? ` on ${device}` : ""}.`))}>
+          <Icon.Hide size={16} /><span>Hide{device !== "all" ? ` (${device})` : ""}</span>
+        </button>
+        <button className="qa-q" title="Revert the last request" disabled={disabled || !canUndo} onClick={onUndo}><Icon.Retry size={16} /><span>Undo</span></button>
+        {agentOnly.map((q) => (
+          <button key={q.id} className="qa-q ai" title={`${q.label} - done by the AI agent`} disabled={disabled || busy} onClick={() => void ask(q.prompt)}>
+            {q.icon}<span>{q.label}</span><i className="qa-ai-badge"><Icon.Sparkle size={10} /></i>
           </button>
         ))}
-        <button className="qa-q" title="Revert the last request" disabled={disabled || !canUndo} onClick={onUndo}><Icon.Retry size={16} /><span>Undo</span></button>
       </div>
+      <input ref={imageInput} type="file" accept="image/*" hidden onChange={async (e) => {
+        const f = e.target.files?.[0]; e.target.value = "";
+        if (!f) return;
+        setBusy(true);
+        try { const up = await api.uploadFile(f); await manual({ kind: "image", fileId: up.id, imageSrc: selected.image?.src }); }
+        catch (x) { alert((x as Error).message); } finally { setBusy(false); }
+      }} />
 
-      <div className="qa-label">AI edit</div>
-      <div className="qa-ai">
-        <textarea value={text} onChange={(e) => setText(e.target.value)} rows={3} disabled={disabled}
-          placeholder="Describe your changes - what it’s for, style preferences, and specific features you want…"
-          onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && text.trim()) void go(text.trim()); }} />
-        {files.length > 0 && (
-          <div className="attachments">
-            {files.map((f) => (
-              <div key={f.key} className={`att ${f.file ? "ready" : f.error ? "error" : "uploading"}`} title={f.error}>
-                <img src={f.preview} alt="" />{!f.file && !f.error && <span className="att-badge"><span className="spin" /></span>}
-                <button className="att-x" aria-label="remove" onClick={() => setFiles((a) => a.filter((x) => x.key !== f.key))}><Icon.Close size={11} /></button>
-              </div>
-            ))}
-          </div>
-        )}
-        <label className="qa-check"><input type="checkbox" checked={allSimilar} onChange={(e) => setAllSimilar(e.target.checked)} /> Apply to all similar sections</label>
-        <div className="qa-ai-bar">
-          <button className="rbtn" onClick={() => fileInput.current?.click()} disabled={disabled}><Icon.Image size={13} /> Images</button>
-          <button className="rbtn" disabled={disabled || busy} onClick={() => void go("Improve this element professionally: better copy, spacing, typography and visual hierarchy, consistent with the rest of the site's design. Keep it responsive and accessible.")}><Icon.Wand size={13} /> Improve</button>
-          <span className="grow" />
-          <button className="btn primary sm" disabled={disabled || busy || uploading || (!text.trim() && !ready.length)} onClick={() => void go(text.trim() || "Use the attached image(s) for this element.")}>Submit <Icon.ChevronRight size={13} /></button>
+      <div className="qa-label">Apply to</div>
+      <div className="qa-row">
+        <div className="qa-seg">
+          <button className={!similar ? "on" : ""} onClick={() => setSimilar(false)}>This element</button>
+          <button className={similar ? "on" : ""} disabled={!canSimilar} onClick={() => setSimilar(true)} title={canSimilar ? selected.similarSelector : "No similar elements on this page"}>
+            All similar{canSimilar ? ` (${selected.similarCount})` : ""}
+          </button>
         </div>
-        <input ref={fileInput} type="file" accept="image/*" multiple hidden onChange={(e) => { if (e.target.files) attach(e.target.files); e.target.value = ""; }} />
+        <div className="qa-seg icons" role="radiogroup" aria-label="Screen size">
+          {DEVICES.map((d) => <button key={d.id} className={device === d.id ? "on" : ""} title={d.label} aria-label={d.label} onClick={() => setDevice(d.id)}>{d.icon}</button>)}
+        </div>
       </div>
+      {device !== "all" && <p className="qa-mode-hint">{DEVICES.find((d) => d.id === device)!.hint} Other screen sizes stay as they are.</p>}
+
+      {!isManual && (
+        <>
+          <div className="qa-label">Describe the change</div>
+          <div className="qa-ai">
+            <textarea value={text} onChange={(e) => setText(e.target.value)} rows={3} disabled={disabled}
+              placeholder="Describe your changes - what it’s for, style preferences, and specific features you want…"
+              onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && text.trim()) void ask(text.trim()); }} />
+            {files.length > 0 && (
+              <div className="attachments">
+                {files.map((f) => (
+                  <div key={f.key} className={`att ${f.file ? "ready" : f.error ? "error" : "uploading"}`} title={f.error}>
+                    <img src={f.preview} alt="" />{!f.file && !f.error && <span className="att-badge"><span className="spin" /></span>}
+                    <button className="att-x" aria-label="remove" onClick={() => setFiles((a) => a.filter((x) => x.key !== f.key))}><Icon.Close size={11} /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="qa-ai-bar">
+              <button className="rbtn" onClick={() => fileInput.current?.click()} disabled={disabled}><Icon.Image size={13} /> Images</button>
+              <span className="grow" />
+              <button className="btn primary sm" disabled={disabled || busy || uploading || (!text.trim() && !ready.length)} onClick={() => void ask(text.trim() || "Use the attached image(s) for this element.")}>Submit <Icon.ChevronRight size={13} /></button>
+            </div>
+            <input ref={fileInput} type="file" accept="image/*" multiple hidden onChange={(e) => { if (e.target.files) attach(e.target.files); e.target.value = ""; }} />
+          </div>
+        </>
+      )}
 
       <div className="qa-label">Alignment</div>
       <div className="qa-align">
@@ -228,7 +323,10 @@ export function QuickActions({ selected, picking, disabled, onPick, onCancelPick
       <div className="qa-apply">
         {edited.length > 0 && <button className="rbtn" onClick={() => setFields(base)}>Reset</button>}
         <button className="btn accent" disabled={disabled || busy || edited.length === 0} onClick={applyStyles}>
-          <Icon.ChevronRight size={15} /> {edited.length ? `Apply ${edited.length} change${edited.length === 1 ? "" : "s"}` : "Apply changes"}
+          {busy ? <span className="spin" /> : isManual ? <Icon.Check size={15} /> : <Icon.Sparkle size={15} />}
+          {isManual
+            ? (edited.length ? `Save ${edited.length} change${edited.length === 1 ? "" : "s"}` : "Save changes")
+            : (edited.length ? `Ask AI to apply ${edited.length} change${edited.length === 1 ? "" : "s"}` : "Ask AI to apply")}
         </button>
       </div>
     </div>

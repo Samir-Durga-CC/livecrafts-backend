@@ -102,6 +102,64 @@ export async function inspectElement(siteUrl: string, a: { url?: string; text?: 
   } finally { await ctx.close(); }
 }
 
+/**
+ * The site's design language, measured on the live page: fonts and sizes per heading level, the colour palette,
+ * buttons, container width, spacing, CSS variables and the breakpoints the theme uses. New work should match these.
+ */
+export async function analyzeDesign(siteUrl: string, a: { url?: string; device?: Device }) {
+  const { ctx, page } = await openPage(siteUrl, a.url, a.device ?? "desktop");
+  try {
+    const data = await page.evaluate(() => {
+      const cs = (el: Element) => getComputedStyle(el);
+      const pick = (sel: string) => {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        const s = cs(el);
+        return { family: s.fontFamily.split(",")[0].replace(/["']/g, "").trim(), size: s.fontSize, weight: s.fontWeight, lineHeight: s.lineHeight, color: s.color, letterSpacing: s.letterSpacing, textTransform: s.textTransform };
+      };
+      const typography: Record<string, unknown> = {};
+      for (const t of ["h1", "h2", "h3", "h4", "p", "a", "li", "button"]) typography[t] = pick(t);
+
+      const count = (m: Map<string, number>, k: string) => { if (k && !/rgba\(0, 0, 0, 0\)|transparent/.test(k)) m.set(k, (m.get(k) ?? 0) + 1); };
+      const text = new Map<string, number>(), bg = new Map<string, number>(), radius = new Map<string, number>(), gaps = new Map<string, number>();
+      const all = Array.from(document.body.querySelectorAll("*")).filter((e) => !e.closest("[data-livecrafts]")).slice(0, 3000);
+      for (const el of all) {
+        const s = cs(el);
+        if (el.childNodes.length && Array.from(el.childNodes).some((n) => n.nodeType === 3 && (n.textContent ?? "").trim())) count(text, s.color);
+        count(bg, s.backgroundColor);
+        if (s.borderRadius !== "0px") count(radius, s.borderRadius);
+        for (const k of ["paddingTop", "paddingBottom"] as const) if (/^(section|header|footer)$/i.test(el.tagName) || /section|container|wrap/i.test(el.className?.toString?.() ?? "")) count(gaps, s[k]);
+      }
+      const top = (m: Map<string, number>, n: number) => [...m.entries()].sort((x, y) => y[1] - x[1]).slice(0, n).map(([v, c]) => ({ value: v, uses: c }));
+
+      const btn = document.querySelector("a.btn, .btn, .button, .wp-block-button__link, .elementor-button, button:not([data-livecrafts] *)");
+      const button = btn ? (() => { const s = cs(btn); return { selector: btn.className ? "." + String(btn.className).trim().split(/\s+/).join(".") : btn.tagName.toLowerCase(), background: s.backgroundColor, color: s.color, padding: s.padding, radius: s.borderRadius, font: `${s.fontWeight} ${s.fontSize} ${s.fontFamily.split(",")[0]}`, textTransform: s.textTransform }; })() : null;
+
+      let container = 0;
+      for (const el of all) { const s = cs(el); if (s.maxWidth !== "none" && /px$/.test(s.maxWidth)) { const v = parseFloat(s.maxWidth); if (v >= 900 && v <= 1600) { container = v; break; } } }
+
+      const vars: Record<string, string> = {};
+      const media = new Set<string>();
+      for (const sheet of Array.from(document.styleSheets)) {
+        let rules: CSSRuleList | null = null;
+        try { rules = sheet.cssRules; } catch { continue; }
+        for (const r of Array.from(rules)) {
+          if (r instanceof CSSMediaRule) { const m = r.conditionText.match(/(max|min)-width:\s*([\d.]+)px/); if (m) media.add(`${m[1]}-width ${m[2]}px`); }
+          if (r instanceof CSSStyleRule && /^(:root|html|body)$/.test(r.selectorText.trim())) {
+            for (let i = 0; i < r.style.length; i++) { const p = r.style[i]; if (p.startsWith("--") && Object.keys(vars).length < 60) vars[p] = r.style.getPropertyValue(p).trim(); }
+          }
+        }
+      }
+      const builder = document.querySelector("[data-elementor-id]") ? "elementor" : document.querySelector(".wp-block-group, .wp-site-blocks") ? "blocks" : "classic theme";
+      return {
+        builder, typography, textColors: top(text, 6), backgrounds: top(bg, 6), radii: top(radius, 4), sectionSpacing: top(gaps, 4),
+        button, containerMaxWidth: container ? container + "px" : null, cssVariables: vars, breakpoints: [...media].slice(0, 12),
+      };
+    });
+    return { ok: true, url: page.url().replace(/[?&]lcv=\d+/, ""), ...data, howToUse: "Reuse these fonts, sizes, colours (prefer the CSS variables), radii, spacing and breakpoints so new work looks native to this site." };
+  } finally { await ctx.close(); }
+}
+
 export async function screenshotPage(siteUrl: string, a: { url?: string; selector?: string; text?: string; device?: Device; fullPage?: boolean }) {
   const device = a.device ?? "desktop";
   const { ctx, page } = await openPage(siteUrl, a.url, device);

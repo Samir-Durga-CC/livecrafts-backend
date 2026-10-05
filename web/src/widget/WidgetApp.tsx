@@ -6,7 +6,7 @@ import { ApprovalModePicker, RequestChanges } from "../components/RequestChanges
 import { Icon } from "../icons";
 import type { ApprovalMode, AssistantInfo, ChangeRecord, JobEvent, JobSummary, Site } from "../types";
 import { groupRequests, titleOf, writeCount } from "../util";
-import { QuickActions, elementContext, type PickedElement } from "./QuickActions";
+import { QuickActions, elementContext, type ManualEdit, type PickedElement } from "./QuickActions";
 
 /** Settings the WordPress plugin passes in the address (#cfg=...). */
 interface WidgetConfig {
@@ -114,6 +114,8 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       if (e.origin !== cfg.parentOrigin || !e.data || typeof e.data.type !== "string") return;
       if (e.data.type === "lc:selected") { setSelected(e.data.element as PickedElement); setPicking(false); setTab("actions"); }
       if (e.data.type === "lc:pick-ended") setPicking(false);
+      if (e.data.type === "lc:text-edited") textEdited.current?.(String(e.data.selector), String(e.data.oldText ?? ""), String(e.data.newText ?? ""));
+      if (e.data.type === "lc:text-error") setProblem(String(e.data.error ?? "Could not edit that text."));
     };
     window.addEventListener("message", on);
     return () => window.removeEventListener("message", on);
@@ -156,6 +158,29 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       post({ type: "lc:reload", tab });
     }
   }, [writes, working, jobId, autoRefresh, post, tab]);
+
+  /** Manual edit: saved by the backend without AI, recorded in Changes; the page then reloads to show it. */
+  async function manualEdit(edit: ManualEdit): Promise<boolean> {
+    setProblem("");
+    try {
+      const r = await api.manual(site.id, { ...edit, jobId: jobId || undefined });
+      if (r.jobId !== jobId) setJobId(r.jobId);
+      say(r.note ? "Saved (see note in chat)" : "Saved");
+      if (r.note) setProblem(r.note);
+      post({ type: "lc:preview-clear" });
+      if (autoRefresh) setTimeout(() => post({ type: "lc:reload", tab }), r.note ? 1800 : 300);
+      return true;
+    } catch (e) {
+      setProblem((e as Error).message);
+      post({ type: "lc:preview-clear" });
+      return false;
+    }
+  }
+  const textEdited = useRef<((selector: string, oldText: string, newText: string) => void) | null>(null);
+  textEdited.current = (selector, oldText, newText) => {
+    if (!selected) return;
+    void manualEdit({ kind: "text", selector, label: selected.label, pageUrl: selected.pageUrl, pageKey: selected.pageKey, elementor: selected.elementor ?? null, oldText, newText, hasChildren: selected.hasChildren });
+  };
 
   async function send(prompt: string, fileIds: string[], extraContext?: string) {
     setProblem("");
@@ -267,7 +292,9 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
               onPick={() => { setPicking(true); post({ type: "lc:pick" }); }} onCancelPick={() => { setPicking(false); post({ type: "lc:cancel-pick" }); }}
               onSend={send} canUndo={!!lastRevertable && !working}
               onUndo={() => { if (lastRevertable) void revertGroup(lastRevertable.requestId); }}
-              onHighlight={(selector) => post({ type: "lc:highlight", selector })} />
+              onHighlight={(selector) => post({ type: "lc:highlight", selector })}
+              onManual={manualEdit} onPreview={(selector, styles) => post({ type: "lc:preview", selector, styles })}
+              onClearPreview={() => post({ type: "lc:preview-clear" })} onEditText={(selector) => post({ type: "lc:edit-text", selector })} />
           </div>
         )}
         {tab === "changes" && (

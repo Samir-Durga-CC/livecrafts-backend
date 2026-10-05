@@ -37,10 +37,27 @@ const wp = { title: "Delivering Reliable Process Solutions.", cta: "Request Cons
 // The REAL plugin widget (livecrafts/assets/widget.js + .css) is loaded on every demo page, exactly like WordPress does it.
 const PLUGIN_ASSETS = path.resolve(process.cwd(), "..", "livecrafts", "livecrafts", "assets");
 const DEMO_PORT = Number(process.env.DEMO_PORT ?? 8791);
-const widgetTags = () => `<link rel="stylesheet" href="/wp-content/plugins/livecrafts/assets/widget.css">
-<script>window.LIVECRAFTS_WIDGET=${JSON.stringify({ backend: `http://127.0.0.1:${DEMO_PORT}`, token: "", botName: "Aero Assistant", welcome: "Hi! I'm the Aeromatic site assistant. Tell me what to change, or pick an element on the page.", accent: "#e8590c", position: "right", approvalMode: "request", siteUrl: wpUrl, user: "admin" })}; window.LIVECRAFTS_WIDGET.pageUrl = location.href;</script>
+const widgetTags = (pageKey = "p5") => `<link rel="stylesheet" href="/wp-content/plugins/livecrafts/assets/widget.css">
+<script>window.LIVECRAFTS_WIDGET=${JSON.stringify({ backend: `http://127.0.0.1:${DEMO_PORT}`, token: "", botName: "Aero Assistant", welcome: "Hi! I'm the Aeromatic site assistant. Tell me what to change, or pick an element on the page.", accent: "#e8590c", position: "right", approvalMode: "request", siteUrl: wpUrl, user: "admin", pageKey })}; window.LIVECRAFTS_WIDGET.pageUrl = location.href;</script>
 <script src="/wp-content/plugins/livecrafts/assets/widget.js" defer></script>`;
-const pageHtml = (body: string) => `<!doctype html><html><head><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/${CSS_PATH}?ver=1"></head><body>${body}${widgetTags()}</body></html>`;
+// Livecrafts style overlay (the plugin prints this in <head>; same format: all screens, tablet ≤1024px, mobile ≤767px)
+const patches: Record<string, Record<string, any>> = {};
+const overlayCss = (key: string) => {
+  let all = "", tablet = "", mobile = "";
+  for (const k of ["site", key]) for (const [sel, pt] of Object.entries(patches[k] ?? {})) {
+    const decl = (o: Record<string, string>) => Object.entries(o ?? {}).map(([p, v]) => `${p}:${v} !important`).join(";");
+    if (pt.styles) all += `${sel}{${decl(pt.styles)}}\n`;
+    if (pt.styles_tablet) tablet += `${sel}{${decl(pt.styles_tablet)}}\n`;
+    if (pt.styles_mobile) mobile += `${sel}{${decl(pt.styles_mobile)}}\n`;
+  }
+  return all + (tablet ? `@media (max-width:1024px){${tablet}}` : "") + (mobile ? `@media (max-width:767px){${mobile}}` : "");
+};
+const textScript = (key: string) => {
+  const t: Record<string, string> = {};
+  for (const k of ["site", key]) for (const [sel, pt] of Object.entries(patches[k] ?? {})) if (pt.text) t[sel] = pt.text;
+  return Object.keys(t).length ? `<script>(function(){var m=${JSON.stringify(t)};Object.keys(m).forEach(function(s){var e=document.querySelector(s);if(e)e.textContent=m[s];});})();</script>` : "";
+};
+const pageHtml = (body: string, key = "p5") => `<!doctype html><html><head><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/${CSS_PATH}?ver=1"><style id="livecrafts-patches">${overlayCss(key)}</style></head><body>${body}${textScript(key)}${widgetTags(key)}</body></html>`;
 const fakeWp = http.createServer(async (req, res) => {
   const u = new URL(req.url!, "http://x");
   const chunks: Buffer[] = []; for await (const c of req) chunks.push(c as Buffer);
@@ -48,6 +65,14 @@ const fakeWp = http.createServer(async (req, res) => {
   const json = (code: number, o: unknown) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); };
   const route = u.pathname.replace("/wp-json/livecrafts/v1/", "");
   if (route === "ping") return json(200, { ok: true, plugin: "livecrafts", version: "0.8.0", site: { wp: "6.8", php: "8.3" }, user: { login: "admin", can_edit_pages: true, can_edit_themes: true }, capabilities: { acf: true, elementor: false, theme_files: false, theme: "aeromatic" } });
+  if (route === "patches") { const key = u.searchParams.get("pageKey") || "p5"; return json(200, { ok: true, pageKey: key, page: patches[key] ?? {}, site: patches.site ?? {} }); }
+  if ((route === "save" || route === "revert") && req.method === "POST") {
+    const b = JSON.parse(raw.toString()); const key = b.scope === "site" ? "site" : b.pageKey;
+    patches[key] ??= {};
+    if (route === "revert") delete patches[key][b.selector];
+    else { const pt: any = {}; for (const k of ["styles", "styles_tablet", "styles_mobile"]) if (b[k]) pt[k] = b[k]; if (typeof b.text === "string") pt.text = b.text; patches[key][b.selector] = pt; }
+    return json(200, { ok: true });
+  }
   if (route === "assistant") return json(200, { ok: true, botName: "Aero Assistant", welcome: "Hi! I'm the Aeromatic site assistant. Tell me what to change, or pick an element on the page.", instructions: "Brand colours: #e8590c and #111827.", model: "", approvalMode: "request", accent: "#e8590c" });
   const asset = u.pathname.match(/^\/wp-content\/plugins\/livecrafts\/assets\/(widget\.(js|css))$/);
   if (asset) { res.writeHead(200, { "Content-Type": asset[2] === "js" ? "text/javascript" : "text/css", "Cache-Control": "no-store" }); return res.end(fs.readFileSync(path.join(PLUGIN_ASSETS, asset[1]))); }

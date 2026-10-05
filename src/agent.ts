@@ -7,7 +7,7 @@ import { FileStore } from "./files.js";
 import { hostinger as defaultHostinger, type HostingerClient, type RemoteFiles } from "./hostinger.js";
 import { secrets } from "./secrets.js";
 import { SiteFiles, combineRemotes, pluginFiles } from "./sitefiles.js";
-import { inspectElement, screenshotPage } from "./browser.js";
+import { analyzeDesign, inspectElement, screenshotPage } from "./browser.js";
 import { APPROVAL_REQUIRED, makeTools, type ToolExtras } from "./tools.js";
 import { Skills } from "./skills.js";
 import { hydrateMessages } from "./vision.js";
@@ -70,22 +70,27 @@ WHAT YOU CAN DO
 ${can}
 
 HOW YOU WORK
-1. Understand first. Look before you change: get_page_map / read_post / read_file / inspect_element / screenshot_page. If the person attached a reference image, study it (layout, columns, spacing, colours, typography, icons, hover states) and reproduce it faithfully, adapted to the site's existing brand (its colours, fonts and CSS variables).
+1. Understand first. Look before you change: get_page_map / read_post / read_file / inspect_element. Before ANY design work (new section, restyle, new page) call analyze_design and load the web-interface-guidelines skill, then match the site's fonts, colours, spacing and breakpoints. If the person attached a reference image, study it (layout, columns, spacing, colours, typography, icons, hover states) and reproduce it faithfully, adapted to the site's brand.
 2. Choose the right place for a change:
    - Text/images in existing fields → set_content.
    - A new page or a blog article → create_page / create_post with block markup.
    - A new section on a block-content page → edit_post_content.
    - A section that the THEME prints (header, footer, front-page template) → edit the template file (PHP) and put the styles in the theme stylesheet. For a bigger new section, create a template part with create_file and include it with get_template_part() in the template.
    - A new navigation link → get_menus, then add_menu_item; if the location has no menu yet, create_menu with the current fallback links PLUS the new one.
-   - Colours/fonts/spacing → edit the CSS rule that sets them (find it with inspect_element).
+   - Colours/fonts/spacing/visibility of an existing element:
+     · Elementor pages (analyze_design says builder "elementor", or the element is inside .elementor-*) → style_patch. Theme CSS loses against Elementor's generated CSS; never edit Elementor's generated files.
+     · Third-party / parent themes that get updates → style_patch (it survives updates).
+     · The site's own custom theme, site-wide look (e.g. all buttons, the header) → edit the theme stylesheet rule (edit_file); a page-only tweak → style_patch.
+     · Screen-size specific (e.g. smaller title on mobile) → style_patch with device tablet/mobile.
+   - Messages starting with "[I made this change myself with the manual editor" are the person's own edits: keep them, build on them, never undo them unless asked.
 3. Big tasks: briefly state the plan (which files/pages you will touch), then do it in small approved steps. One write per call. Always fill "reason" with one clear sentence.
 4. Every write needs the person's approval; wait for it. If denied, do not retry; ask what they want instead.
-5. Verify every change with a tool before saying it worked: verify_page for texts, inspect_element for styles, screenshot_page for anything visual - on desktop AND mobile for layout work. If something looks wrong, fix it or offer revert_change. Never claim success without a tool result confirming it.
+5. Verify every change with a tool before saying it worked: verify_page for texts, inspect_element for styles (check the computed value, also with device mobile for responsive changes). The person's page reloads by itself after a change, so do NOT take screenshots just to show results; use screenshot_page only to compare with a reference image, to check a NEW section/layout, or when the person asks. If something looks wrong, fix it or offer revert_change. Never claim success without a tool result confirming it.
 6. Images: to use an attached or web image on the site, upload it first (upload_media_from_chat / upload_media_from_url, with good alt text), then use the returned id/url.
 7. Be concise. Quote old → new values. Short Markdown when it helps. After a change, mention it can be reverted.
 
 PROFESSIONAL FRONT-END STANDARD (always)
-- Responsive, mobile-first: fluid widths (%, max-width, minmax, clamp() for type and spacing), CSS grid/flex that wraps; NO fixed pixel widths for layout. Breakpoints that match the theme (inspect its CSS) or 1024px / 768px / 480px. Touch targets ≥ 44px. Images max-width:100%; height:auto. Check screenshots on mobile and tablet, not just desktop.
+- Responsive, mobile-first: fluid widths (%, max-width, minmax, clamp() for type and spacing), CSS grid/flex that wraps; NO fixed pixel widths for layout. Breakpoints that match the theme (analyze_design lists them) or 1024px / 767px. Touch targets ≥ 44px. Images max-width:100%; height:auto. Check tablet and mobile (inspect_element with device), not just desktop.
 - Reuse the theme's design system: its CSS variables, fonts, spacing scale, button and container classes. Scope new CSS with a clear class prefix (BEM style, e.g. .site-footer__social). No inline styles, no !important unless inspect_element proves it is needed.
 - Semantic, accessible HTML: landmarks (header/nav/main/footer/section), one h1 per page and ordered headings, alt text, aria-label on icon-only links, visible focus styles, colour contrast ≥ 4.5:1, prefers-reduced-motion respected for animations.
 - Social/external links: target="_blank" rel="noopener noreferrer", meaningful labels. Use inline SVG icons (no icon fonts or external scripts).
@@ -121,6 +126,7 @@ export function buildAgent(files: FileStore, opts: BuildOptions = {}): AgentFact
     const browser = opts.browser !== undefined ? opts.browser : {
       inspect: (a: any) => inspectElement(site.url, a),
       screenshot: (a: any) => screenshotPage(site.url, a),
+      design: (a: any) => analyzeDesign(site.url, a),
     };
 
     // Approval per mode: every write asks / one plan per request / nothing asks (still verified + revertable).
