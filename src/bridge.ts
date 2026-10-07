@@ -23,15 +23,14 @@ const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
 
 type Query = Record<string, string | number | undefined>;
 export type PostType = "pages" | "posts";
-/** A Livecrafts overlay patch for one CSS selector: styles for all screens, tablet (≤1024px), mobile (≤767px), optional text. */
-export interface Patch { styles?: Record<string, string>; styles_tablet?: Record<string, string>; styles_mobile?: Record<string, string>; text?: string }
 
 /**
  * Talks to ONE WordPress site through the Livecrafts plugin REST API (and core REST for media / page lists),
  * authenticated with an Application Password. Reads are retried; writes are never retried automatically.
  */
 export class Bridge {
-  constructor(public readonly site: Site) {}
+  /** actorToken = the chat person's signed widget token: the plugin credits every change to them. */
+  constructor(public readonly site: Site, private readonly actorToken?: string) {}
 
   get homeUrl() { return this.site.url + "/"; }
 
@@ -58,6 +57,7 @@ export class Bridge {
           headers: {
             Authorization: this.authHeader(),
             Accept: "application/json",
+            ...(this.actorToken && route.startsWith("livecrafts/") ? { "X-Livecrafts-Actor": this.actorToken } : {}),
             ...(opts.json !== undefined ? { "Content-Type": "application/json" } : {}),
             ...(opts.headers ?? {}),
           },
@@ -83,7 +83,7 @@ export class Bridge {
       let msg: string = data?.message ?? `HTTP ${res.status}`;
       if (res.status === 401 || res.status === 403) msg += " - the Application Password was rejected or the user cannot edit pages (check username/password, that the site uses HTTPS, and that no security plugin disables Application Passwords).";
       if (res.status === 404 && code === "rest_no_route") {
-        const need = /livecrafts\/v1\/(patches|save|revert)/.test(route) ? ["0.9", "manual style editing"]
+        const need = /livecrafts\/v1\/(status|changes|post|pages|notes|resolve|preview-token|connect|releases)/.test(route) ? ["0.10", "drafts, history and notes"]
           : /livecrafts\/v1\/assistant/.test(route) ? ["0.8", "the assistant settings"]
           : /livecrafts\/v1\/theme-file/.test(route) ? ["0.7", "theme file editing"]
           : /^livecrafts\//.test(route) ? ["0.6", "Livecrafts"] : null;
@@ -96,44 +96,45 @@ export class Bridge {
   }
 
   ping() { return this.request("GET", "livecrafts/v1/ping"); }
-  map(args: { url?: string; post?: number }) { return this.request("GET", "livecrafts/v1/map", { query: { url: args.url, post: args.post } }); }
+  /** Every editable value of a page (ACF, Elementor) + the Elementor outline. view "draft" (default) = what editors see. */
+  map(args: { url?: string; post?: number; view?: "draft" | "live" }) { return this.request("GET", "livecrafts/v1/map", { query: { url: args.url, post: args.post, view: args.view } }); }
   readTarget(target: string) { return this.request("GET", "livecrafts/v1/debug/target", { query: { targetId: target } }); }
-  setTarget(target: string, value: string) { return this.request("POST", "livecrafts/v1/target", { json: { targetId: target, value } }); }
   locate(post: number, texts: string[]) { return this.request("POST", "livecrafts/v1/debug/locate", { json: { post, texts } }); }
-  undo(pageKey: string) { return this.request("POST", "livecrafts/v1/undo", { json: { pageKey } }); }
-  listPages() { return this.request<any[]>("GET", "wp/v2/pages", { query: { per_page: 100, _fields: "id,link,title,status,modified" } }); }
 
-  // ---- core content (pages / posts) through the standard WordPress REST API
-  createPost(type: PostType, data: Record<string, unknown>) { return this.request("POST", `wp/v2/${type}`, { json: data }); }
-  updatePost(type: PostType, id: number, data: Record<string, unknown>) { return this.request("POST", `wp/v2/${type}/${id}`, { json: data }); }
-  /** Raw (editable) content, not the rendered HTML. */
-  getPost(type: PostType, id: number) { return this.request("GET", `wp/v2/${type}/${id}`, { query: { context: "edit" } }); }
-  /** force=false moves it to the Trash (recoverable). */
-  trashPost(type: PostType, id: number) { return this.request("DELETE", `wp/v2/${type}/${id}`); }
+  // ---- drafts, history, releases (Livecrafts plugin 0.10+). Every change is a draft until a person deploys.
+  status() { return this.request<any>("GET", "livecrafts/v1/status"); }
+  changes(q: { status?: string; post?: number; css?: boolean; source?: string; limit?: number; before?: number; release?: number } = {}) {
+    return this.request<{ ok: boolean; changes: any[] }>("GET", "livecrafts/v1/changes", { query: { ...q, css: q.css ? 1 : undefined } });
+  }
+  change(id: number) { return this.request<{ ok: boolean; change: any }>("GET", `livecrafts/v1/changes/${id}`); }
+  /** One draft change. The plugin validates it, stores it, rebuilds the preview and reads it back. */
+  makeChange(c: { kind: string; post?: number; target: string; value: unknown; label?: string; ref?: string; source?: "assistant" | "widget" }) {
+    return this.request<any>("POST", "livecrafts/v1/changes", { json: { source: "assistant", ...c } });
+  }
+  revert(id: number, ref?: string) { return this.request<any>("POST", `livecrafts/v1/changes/${id}/revert`, { json: { ref, source: "assistant" } }); }
+  createPage(p: { title: string; content?: string; type?: "page" | "post"; slug?: string; parent?: number; template?: string; excerpt?: string; ref?: string }) {
+    return this.request<any>("POST", "livecrafts/v1/pages", { json: { source: "assistant", ...p } });
+  }
+  /** Title / content / excerpt / status of a page as editors see it (draft) or as visitors do (live). */
+  post(id: number, view: "draft" | "live" = "draft") { return this.request<any>("GET", "livecrafts/v1/post", { query: { id, view } }); }
+  releases(limit = 20) { return this.request<{ ok: boolean; releases: any[] }>("GET", "livecrafts/v1/releases", { query: { limit } }); }
+  notes(post?: number) { return this.request<{ ok: boolean; site: any; page: any }>("GET", "livecrafts/v1/notes", { query: { post } }); }
+  setNotes(post: number | undefined, text: string) { return this.request<any>("POST", "livecrafts/v1/notes", { json: { post: post ?? 0, text } }); }
+  resolve(body: Record<string, unknown>) { return this.request<any>("POST", "livecrafts/v1/resolve", { json: body }); }
+  /** A 10-minute, view-only token: <page>?lc_preview=<token> shows the page with its drafts. */
+  previewToken() { return this.request<{ ok: boolean; token: string; param: string }>("POST", "livecrafts/v1/preview-token", { json: {} }); }
+  /** The site secret its widget tokens are signed with (needs an administrator's Application Password). */
+  connect(rotate = false) { return this.request<{ ok: boolean; secret: string; site: string; version: string }>("POST", "livecrafts/v1/connect", { json: { rotate } }); }
+  assistantSettings() { return this.request<any>("GET", "livecrafts/v1/assistant"); }
+
+  // ---- reading through the standard WordPress REST API
+  listPages() { return this.request<any[]>("GET", "wp/v2/pages", { query: { per_page: 100, _fields: "id,link,title,status,modified" } }); }
   listPosts(type: PostType, search?: string) {
     return this.request<any[]>("GET", `wp/v2/${type}`, { query: { per_page: 50, search, status: "publish,draft,private", context: "edit", _fields: "id,link,title,status,modified,template" } });
   }
-
-  // ---- navigation menus (classic themes: Appearance > Menus)
   menuLocations() { return this.request<Record<string, any>>("GET", "wp/v2/menu-locations"); }
   menus() { return this.request<any[]>("GET", "wp/v2/menus", { query: { per_page: 100, context: "edit" } }); }
   menuItems(menuId: number) { return this.request<any[]>("GET", "wp/v2/menu-items", { query: { menus: menuId, per_page: 100, context: "edit" } }); }
-  createMenu(name: string, locations: string[]) { return this.request("POST", "wp/v2/menus", { json: { name, locations } }); }
-  deleteMenu(id: number) { return this.request("DELETE", `wp/v2/menus/${id}`, { query: { force: "true" } }); }
-  createMenuItem(data: Record<string, unknown>) { return this.request("POST", "wp/v2/menu-items", { json: { status: "publish", ...data } }); }
-  deleteMenuItem(id: number) { return this.request("DELETE", `wp/v2/menu-items/${id}`, { query: { force: "true" } }); }
-
-  // ---- style/text overlay patches (Livecrafts plugin 0.9+): safe CSS on top of any theme / Elementor / ACF, revertable
-  getPatches(where: { url?: string; pageKey?: string }) {
-    return this.request<{ ok: boolean; pageKey: string; page: Record<string, Patch>; site: Record<string, Patch> }>("GET", "livecrafts/v1/patches", { query: { url: where.url, pageKey: where.pageKey } });
-  }
-  /** Replace the whole patch of one selector (send the merged result). An empty patch removes it. */
-  savePatch(key: string, selector: string, patch: Patch) {
-    const scope = key === "site" ? { scope: "site" } : { scope: "page", pageKey: key };
-    const empty = !patch.text && !["styles", "styles_tablet", "styles_mobile"].some((k) => Object.keys((patch as any)[k] ?? {}).length);
-    if (empty) return this.request("POST", "livecrafts/v1/revert", { json: { ...scope, selector } });
-    return this.request("POST", "livecrafts/v1/save", { json: { ...scope, selector, ...patch } });
-  }
 
   // ---- active theme files (Livecrafts plugin 0.7+)
   themeFiles() { return this.request("GET", "livecrafts/v1/theme-files"); }

@@ -59,6 +59,14 @@ export interface Job {
   planApprovedFor?: number;
   /** Model for this chat ("provider:model"); empty = the site's / server's default. */
   model?: string;
+  /** The page the person is on (default page for the assistant's reads and checks). */
+  pageUrl?: string;
+  /** The person in the chat (widget): every change is credited to them in the site history. */
+  actor?: { name: string; login: string };
+  /** Their signed widget token (short-lived; refreshed with every message / approval). */
+  actorToken?: string;
+  /** Tokens used by this chat so far. */
+  usage?: { input: number; output: number; calls: number };
   result?: string;
   error?: string;
   createdAt: string;

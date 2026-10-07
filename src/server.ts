@@ -12,7 +12,8 @@ import { hostinger, type HostingerHealth } from "./hostinger.js";
 import { secrets, type ProviderId } from "./secrets.js";
 import { PROVIDERS, providerStatus, testModel } from "./models.js";
 import { diffOf } from "./changes.js";
-import { applyManual, listFields } from "./manual.js";
+import { canUseSite, verifyWidgetToken, type Caller } from "./auth.js";
+import { log } from "./usage.js";
 import { eyes } from "./eyes.js";
 import { assistantSettings, forgetAssistantSettings } from "./persona.js";
 import { closeBrowser, screenshotPath } from "./browser.js";
@@ -33,9 +34,20 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     } catch (e) { return (e as Error).message; }
   };
   const publicJob = (j: Job) => ({ id: j.id, siteId: j.siteId, prompt: j.prompt, status: j.status, pending: j.pending, result: j.result, error: j.error, createdAt: j.createdAt, updatedAt: j.updatedAt, lastEventSeq: j.events.at(-1)?.seq ?? 0, changes: j.changes ?? [],
-    approvalMode: j.approvalMode ?? "every", model: j.model ?? null, requestSeq: j.requestSeq ?? 1 });
+    approvalMode: j.approvalMode ?? "every", model: j.model ?? null, requestSeq: j.requestSeq ?? 1, pageUrl: j.pageUrl ?? null, actor: j.actor ?? null, usage: j.usage ?? null });
+  /** Fetch the site secret its widget tokens are signed with (needs an administrator's Application Password). */
+  const connectWidget = async (site: Site): Promise<string | null> => {
+    try { const c = await new Bridge(site).connect(); secrets.setSiteSecret(site.id, c.secret); log("info", "site connected", { site: site.id, url: site.url, plugin: c.version }); return null; }
+    catch (e) { log("warn", "site secret not available", { site: site.id, error: (e as Error).message }); return `The chat widget cannot sign in people on this site yet: ${(e as Error).message} (connect with an administrator's Application Password and Livecrafts 0.10+).`; }
+  };
   const sameSite = (a: string, b: string) => a.replace(/^https?:\/\/(www\.)?/i, "").replace(/\/+$/, "").toLowerCase() === b.replace(/^https?:\/\/(www\.)?/i, "").replace(/\/+$/, "").toLowerCase();
-  const requestOpts = (b: any) => ({ approvalMode: b.approvalMode, model: typeof b.model === "string" ? b.model.trim() : undefined, kind: ["new", "note", "edit"].includes(b.kind) ? b.kind : undefined });
+  const requestOpts = (b: any, caller: Caller) => ({
+    approvalMode: b.approvalMode, model: typeof b.model === "string" ? b.model.trim() : undefined, kind: ["new", "note", "edit"].includes(b.kind) ? b.kind : undefined,
+    pageUrl: typeof b.pageUrl === "string" && /^https?:\/\//.test(b.pageUrl) ? b.pageUrl : undefined,
+    actor: caller.via === "widget" ? { token: caller.token, name: caller.user.name, login: caller.user.login } : undefined,
+  });
+  // What the chat inside the WordPress widget may call (with its signed per-person token).
+  const WIDGET_ROUTES = /^(GET \/(health|sites|models)|GET \/sites\/[\w-]+\/(assistant|eyes)|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
 
   async function readBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
     const chunks: Buffer[] = []; let size = 0;
@@ -79,12 +91,27 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     try {
       const isApi = /^\/(health|sites|jobs|files|integrations|screens|models)(\/|$)/.test(url.pathname);
       if (!isApi && req.method === "GET" && serveStatic(url.pathname, res)) return; // UI files are public; the API below is protected
-      if (config.apiToken && route !== "GET /health" && req.headers.authorization !== `Bearer ${config.apiToken}`) return send(res, 401, { error: "Unauthorized" });
+      // Who is calling: the chat in the WordPress widget (signed per-person token, only its own site) or the app / admin.
+      let caller: Caller = { via: "admin" };
+      const widgetToken = String(req.headers["x-livecrafts-widget"] ?? "");
+      if (widgetToken) {
+        const w = verifyWidgetToken(widgetToken, sites.list());
+        if (!w) return send(res, 401, { error: "Your sign-in to the assistant expired. Reload the page." });
+        if (!w.user.edit) return send(res, 403, { error: "Your WordPress account may not edit with Livecrafts." });
+        if (!WIDGET_ROUTES.test(route)) return send(res, 403, { error: "Not available from the widget." });
+        caller = { via: "widget", site: w.site, user: w.user, token: widgetToken };
+        const jm = url.pathname.match(/^\/jobs\/([\w-]+)/);
+        if (jm) { const j = runner.get(jm[1]); if (j && !canUseSite(caller, j.siteId)) return send(res, 404, { error: "Unknown job" }); }
+        const sm = url.pathname.match(/^\/sites\/([\w-]+)/);
+        if (sm && !canUseSite(caller, sm[1])) return send(res, 404, { error: "Unknown site" });
+      } else if (config.apiToken && route !== "GET /health" && req.headers.authorization !== `Bearer ${config.apiToken}`) {
+        return send(res, 401, { error: "Unauthorized" });
+      }
 
       if (route === "GET /health") return send(res, 200, { ok: true, model: config.model, authRequired: !!config.apiToken });
 
       // ---- sites
-      if (route === "GET /sites") return send(res, 200, sites.list().map(publicSite));
+      if (route === "GET /sites") return send(res, 200, sites.list().filter((x) => canUseSite(caller, x.id)).map(publicSite));
       if (route === "POST /sites") {
         const b = await readJson(req);
         const siteUrl = String(b.url ?? "").trim().replace(/\/+$/, "");
@@ -98,11 +125,12 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         try { info = await new Bridge(site).ping(); } catch (e) { return send(res, 400, { error: `Could not connect: ${(e as Error).message}` }); } // validate credentials BEFORE saving
         sites.put(site);
         forgetAssistantSettings(site.id);
+        const widgetNote = await connectWidget(site);
         const hostingNote = await linkSite(site); // automatic, best effort
-        return send(res, existing ? 200 : 201, { ...publicSite(site), plugin: info, hostingNote, reconnected: !!existing });
+        return send(res, existing ? 200 : 201, { ...publicSite(site), plugin: info, hostingNote, widgetNote, reconnected: !!existing });
       }
       let m = url.pathname.match(/^\/sites\/([\w-]+)$/);
-      if (m && req.method === "DELETE") { sites.delete(m[1]); forgetAssistantSettings(m[1]); return send(res, 200, { ok: true }); }
+      if (m && req.method === "DELETE") { sites.delete(m[1]); secrets.setSiteSecret(m[1], null); forgetAssistantSettings(m[1]); return send(res, 200, { ok: true }); }
       if (m && req.method === "PUT") { // rename / reconnect with a new Application Password (checked before saving)
         const cur = sites.get(m[1]);
         if (!cur) return send(res, 404, { error: "Unknown site" });
@@ -111,7 +139,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         let info: any = null;
         try { info = await new Bridge(next).ping(); } catch (e) { return send(res, 400, { error: `Could not connect with these details: ${(e as Error).message}` }); }
         sites.put(next); forgetAssistantSettings(next.id);
-        return send(res, 200, { ...publicSite(next), plugin: info });
+        return send(res, 200, { ...publicSite(next), plugin: info, widgetNote: await connectWidget(next) });
       }
       m = url.pathname.match(/^\/sites\/([\w-]+)\/status$/);
       if (m && req.method === "GET") { // connection check for the Sites screen
@@ -136,28 +164,6 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       if (m && req.method === "POST") {
         const b = await readBody(req, 8_000_000).then((x) => (x.length ? JSON.parse(x.toString("utf8")) : {}));
         return eyes.respond(m[2], b) ? send(res, 200, { ok: true }) : send(res, 404, { error: "That request is no longer waiting." });
-      }
-      m = url.pathname.match(/^\/sites\/([\w-]+)\/fields$/);
-      if (m && req.method === "GET") { // every ACF / Elementor content field on a page (key + value), for manual editing
-        const s = sites.get(m[1]);
-        if (!s) return send(res, 404, { error: "Unknown site" });
-        const pageUrl = url.searchParams.get("url") ?? s.url + "/";
-        try { new Bridge(s).assertSameOrigin(pageUrl); return send(res, 200, await listFields(new Bridge(s), pageUrl)); }
-        catch (e) { return send(res, 400, { error: (e as Error).message }); }
-      }
-      m = url.pathname.match(/^\/sites\/([\w-]+)\/manual$/);
-      if (m && req.method === "POST") { // a manual edit from the widget's Quick actions (no AI)
-        const s = sites.get(m[1]);
-        if (!s) return send(res, 404, { error: "Unknown site" });
-        const b = await readJson(req);
-        if (!b.pageUrl || !b.kind || (!b.selector && b.kind !== "field")) return send(res, 400, { error: "kind, pageUrl and selector are required." });
-        if (b.kind === "field") b.selector = b.selector || "field";
-        try { new Bridge(s).assertSameOrigin(String(b.pageUrl)); } catch (e) { return send(res, 400, { error: (e as Error).message }); }
-        try {
-          const r = await applyManual(new Bridge(s), files, b);
-          const job = runner.recordManual(s.id, b.jobId ? String(b.jobId) : undefined, r.summary, r.record);
-          return send(res, 200, { ok: true, jobId: job.id, summary: r.summary, note: r.note, change: r.record });
-        } catch (e) { return send(res, 400, { error: (e as Error).message }); }
       }
       m = url.pathname.match(/^\/sites\/([\w-]+)\/assistant$/);
       if (m && req.method === "GET") { // bot name / welcome text / defaults set in WordPress
@@ -248,17 +254,18 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       }
 
       // ---- jobs
-      if (route === "GET /jobs") return send(res, 200, runner.list().map(publicJob));
+      if (route === "GET /jobs") return send(res, 200, runner.list().filter((j) => canUseSite(caller, j.siteId)).map(publicJob));
       if (route === "POST /jobs") {
         const b = await readJson(req);
         if (!b.siteId || !b.prompt) return send(res, 400, { error: "siteId and prompt are required." });
-        return send(res, 201, publicJob(runner.create(String(b.siteId), String(b.prompt), contextFor(b), fileIdsOf(b), requestOpts(b))));
+        if (!canUseSite(caller, String(b.siteId))) return send(res, 404, { error: "Unknown site." });
+        return send(res, 201, publicJob(runner.create(String(b.siteId), String(b.prompt), contextFor(b), fileIdsOf(b), requestOpts(b, caller))));
       }
       m = url.pathname.match(/^\/jobs\/([\w-]+)\/messages$/);
       if (m && req.method === "POST") { // follow-up message in the same conversation
         const b = await readJson(req);
         if (!b.prompt) return send(res, 400, { error: "prompt is required." });
-        return send(res, 200, publicJob(runner.continue(m[1], String(b.prompt), contextFor(b), fileIdsOf(b), requestOpts(b))));
+        return send(res, 200, publicJob(runner.continue(m[1], String(b.prompt), contextFor(b), fileIdsOf(b), requestOpts(b, caller))));
       }
       m = url.pathname.match(/^\/jobs\/([\w-]+)$/);
       if (m && req.method === "DELETE") { try { runner.delete(m[1]); return send(res, 200, { ok: true }); } catch (e) { return send(res, 409, { error: (e as Error).message }); } }
@@ -267,7 +274,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       if (m && req.method === "POST") {
         const b = await readJson(req);
         if (!b.approvalId || typeof b.approved !== "boolean") return send(res, 400, { error: "approvalId and approved (true/false) are required." });
-        return send(res, 200, publicJob(runner.respond(m[1], String(b.approvalId), b.approved, b.reason ? String(b.reason) : undefined)));
+        return send(res, 200, publicJob(runner.respond(m[1], String(b.approvalId), b.approved, b.reason ? String(b.reason) : undefined, caller.via === "widget" ? caller.token : undefined)));
       }
       m = url.pathname.match(/^\/jobs\/([\w-]+)\/stop$/);
       if (m && req.method === "POST") { try { return send(res, 200, publicJob(runner.stop(m[1]))); } catch (e) { return send(res, 409, { error: (e as Error).message }); } }
@@ -278,16 +285,16 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         try { return send(res, 200, await runner.revertRequest(m[1], Number(m[2]))); }
         catch (e) { return send(res, 409, { error: (e as Error).message }); }
       }
-      m = url.pathname.match(/^\/jobs\/([\w-]+)\/changes\/(chg_[a-f0-9]+)\/diff$/);
-      if (m && req.method === "GET") { // GitHub-style diff of one change
+      m = url.pathname.match(/^\/jobs\/([\w-]+)\/changes\/(lc_\d+)\/diff$/);
+      if (m && req.method === "GET") { // GitHub-style diff of one change (from the site history)
         const j = runner.get(m[1]);
         const c = j?.changes?.find((x) => x.id === m![2]);
         const s = j ? sites.get(j.siteId) : undefined;
         if (!j || !c || !s) return send(res, 404, { error: "Unknown change" });
-        const d = diffOf(c, runner.siteFilesFor(s));
+        const d = await diffOf(c, new Bridge(s, j.actorToken)).catch(() => null);
         return d ? send(res, 200, d) : send(res, 404, { error: "No diff stored for this change." });
       }
-      m = url.pathname.match(/^\/jobs\/([\w-]+)\/changes\/(chg_[a-f0-9]+)\/revert$/);
+      m = url.pathname.match(/^\/jobs\/([\w-]+)\/changes\/(lc_\d+)\/revert$/);
       if (m && req.method === "POST") { // the Revert button on a change
         try { return send(res, 200, await runner.revertChange(m[1], m[2], "button")); }
         catch (e) { return send(res, 409, { error: (e as Error).message }); }
@@ -310,6 +317,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       return send(res, 404, { error: "Not found" });
     } catch (e) {
       const status = (e as any).status ?? 400;
+      if (status >= 500) log("error", "request failed", { route, error: (e as Error).message });
       return send(res, status, { error: (e as Error).message });
     }
   });

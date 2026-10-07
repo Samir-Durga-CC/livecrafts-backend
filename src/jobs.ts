@@ -5,10 +5,18 @@ import type { AgentFactory, JobContext } from "./agent.js";
 import { blockingChange, recordFor, revertChange, type ChangeRecord } from "./changes.js";
 import { imageMarker } from "./vision.js";
 import { assistantSettings } from "./persona.js";
+import { Bridge } from "./bridge.js";
+import { log, recordUsage, tokensOf } from "./usage.js";
 import type { ApprovalMode, Job, JobEvent, JobStatus, PendingApproval, Site } from "./types.js";
 import { APPROVAL_MODES } from "./types.js";
 
-export interface RequestOptions { approvalMode?: ApprovalMode; model?: string; /** "note" / "edit" = said while paused: same request continues */ kind?: "new" | "note" | "edit" }
+export interface RequestOptions {
+  approvalMode?: ApprovalMode; model?: string; /** "note" / "edit" = said while paused: same request continues */ kind?: "new" | "note" | "edit";
+  /** The person in the chat (from their signed widget token): changes are credited to them. */
+  actor?: { token: string; name: string; login: string };
+  /** The page the person is on. */
+  pageUrl?: string;
+}
 const cleanMode = (m: unknown): ApprovalMode | undefined => (APPROVAL_MODES.includes(m as ApprovalMode) ? (m as ApprovalMode) : undefined);
 
 type Listener = (e: JobEvent) => void;
@@ -53,7 +61,8 @@ export class JobRunner {
     const now = new Date().toISOString();
     const text = context ? `${context}\n\n${prompt}` : prompt;
     const job: Job = { id: newId("job"), siteId, prompt, status: "queued", messages: [userMessage(text, fileIds)], pending: [], events: [], changes: [], createdAt: now, updatedAt: now,
-      approvalMode: cleanMode(opts.approvalMode) ?? "request", requestSeq: 1, model: opts.model || undefined };
+      approvalMode: cleanMode(opts.approvalMode) ?? "request", requestSeq: 1, model: opts.model || undefined, pageUrl: opts.pageUrl || undefined,
+      actorToken: opts.actor?.token, actor: opts.actor ? { name: opts.actor.name, login: opts.actor.login } : undefined };
     this.jobs.put(job);
     this.emit(job, "user", { text: prompt, fileIds, requestId: 1, approvalMode: job.approvalMode });
     this.emit(job, "status", { status: "queued" });
@@ -81,6 +90,8 @@ export class JobRunner {
     if (kind === "new") job.requestSeq = (job.requestSeq ?? 1) + 1;
     if (cleanMode(opts.approvalMode)) job.approvalMode = cleanMode(opts.approvalMode);
     if (opts.model !== undefined) job.model = opts.model || undefined;
+    if (opts.pageUrl) job.pageUrl = opts.pageUrl;
+    if (opts.actor) { job.actorToken = opts.actor.token; job.actor = { name: opts.actor.name, login: opts.actor.login }; }
     this.emit(job, "user", { text: prompt, fileIds, requestId: job.requestSeq, approvalMode: job.approvalMode, ...(kind !== "new" ? { kind } : {}) });
     this.setStatus(job, "queued");
     this.kick(job.id);
@@ -88,8 +99,9 @@ export class JobRunner {
   }
 
   /** The person answers an approval card. When every pending request is answered the job continues. */
-  respond(jobId: string, approvalId: string, approved: boolean, reason?: string): Job {
+  respond(jobId: string, approvalId: string, approved: boolean, reason?: string, actorToken?: string): Job {
     const job = this.mustGet(jobId);
+    if (actorToken) job.actorToken = actorToken;
     if (job.status !== "waiting_approval") throw new Error(`Job is ${job.status}, not waiting for approval.`);
     const p = job.pending.find((x) => x.approvalId === approvalId);
     if (!p) throw new Error("Unknown approval id.");
@@ -146,7 +158,7 @@ export class JobRunner {
     if (by === "button" && (job.status === "running" || job.status === "queued")) throw new Error("The assistant is working right now. Wait until it finishes, then revert.");
     const site = this.sites.get(job.siteId);
     if (!site) throw new Error("Site was deleted.");
-    const { bridge, siteFiles } = this.factory(site);
+    const bridge = new Bridge(site, job.actorToken);
     const mark = (patch: Partial<ChangeRecord>, data: Record<string, unknown>) => {
       const fresh = this.current(jobId); // the job may have moved on while we were reverting
       const rec = (fresh.changes ?? []).find((x) => x.id === changeId)!;
@@ -155,7 +167,7 @@ export class JobRunner {
       return rec;
     };
     try {
-      const result = await revertChange(c, { bridge, siteFiles, healthUrls: [bridge.homeUrl, ...(c.link?.startsWith(site.url) ? [c.link] : [])], siteId: site.id });
+      const result = await revertChange(c, { bridge, ref: `${job.id}#revert` });
       const rec = mark({ revertedAt: new Date().toISOString(), revertError: undefined }, { result });
       return { ok: true, reverted: rec.title, ...result };
     } catch (e) {
@@ -163,9 +175,6 @@ export class JobRunner {
       throw e;
     }
   }
-
-  /** The site's file access (for diffs of file changes). */
-  siteFilesFor(site: Site) { return this.factory(site).siteFiles ?? null; }
 
   /** Revert every still-active change of one request, newest first. Stops at the first one that cannot be undone. */
   async revertRequest(jobId: string, requestId: number): Promise<Record<string, unknown>> {
@@ -177,33 +186,6 @@ export class JobRunner {
       catch (e) { throw new Error(`Reverted ${done.length} of ${list.length}. Stopped at “${c.title}”: ${(e as Error).message}`); }
     }
     return { ok: true, reverted: done.length };
-  }
-
-  /**
-   * Record a manual edit (made by the person in Quick actions, no AI) as its own request in a chat, so it shows in
-   * Changes with a diff and Revert. Uses the given chat when it is idle, otherwise starts a "Manual edits" chat.
-   * The assistant is told about it in the conversation, so it never works against a manual change.
-   */
-  recordManual(siteId: string, jobId: string | undefined, summary: string, rec: ChangeRecord): Job {
-    let job = jobId ? this.jobs.get(jobId) : undefined;
-    if (job && (job.siteId !== siteId || this.active.has(job.id) || job.status === "running" || job.status === "queued" || job.status === "waiting_approval")) job = undefined;
-    const now = new Date().toISOString();
-    if (!job) {
-      job = { id: newId("job"), siteId, prompt: "Manual edits", status: "completed", messages: [], pending: [], events: [], changes: [], createdAt: now, updatedAt: now, approvalMode: "request", requestSeq: 0 };
-    }
-    job.requestSeq = (job.requestSeq ?? 0) + 1;
-    rec.requestId = job.requestSeq;
-    rec.request = `Manual: ${summary}`;
-    job.changes = [...(job.changes ?? []), rec];
-    // keep user/assistant turns alternating for the model
-    job.messages.push({ role: "user", content: `[I made this change myself with the manual editor - keep it unless I ask otherwise] ${summary}` });
-    job.messages.push({ role: "assistant", content: "Noted." });
-    this.emit(job, "user", { text: `✋ ${summary}`, fileIds: [], requestId: job.requestSeq, manual: true });
-    this.emit(job, "change", { change: rec });
-    this.emit(job, "text", { text: "Saved. You can see the exact change in **Changes** and revert it there." });
-    if (job.status !== "completed") this.setStatus(job, "completed");
-    else this.emit(job, "status", { status: "completed" });
-    return job;
   }
 
   /**
@@ -331,17 +313,27 @@ export class JobRunner {
         persona,
         approval: { mode, planApproved: mode === "request" && job.planApprovedFor === (job.requestSeq ?? 1) },
         model: job.model,
+        actorToken: job.actorToken,
+        pageUrl: job.pageUrl,
+        ref: `${job.id}#${job.requestSeq ?? 1}`,
+        siteContext: await siteContext(new Bridge(site, job.actorToken), job.pageUrl),
         shouldStop: () => ctl.stop,
-        changes: {
-          list: () => job.changes ?? [],
-          revert: (id) => this.revertChange(jobId, id, "chat"),
-        },
       };
-      const { agent, bridge, siteFiles } = this.factory(site, ctx);
+      const { agent, model } = this.factory(site, ctx);
+      let step = 0;
+      let stepStart = Date.now();
       const result = await agent.stream({
         messages: job.messages,
         abortSignal: AbortSignal.any([AbortSignal.timeout(config.jobTimeoutMs), ctl.abort.signal]),
-        onStepEnd: (s: any) => { stepMessages.push(...((s?.response?.messages ?? []) as ModelMessage[])); },
+        onStepEnd: (s: any) => {
+          stepMessages.push(...((s?.response?.messages ?? []) as ModelMessage[]));
+          // every model call, with its tokens (the admin panel's LLM usage view)
+          const t = tokensOf(s?.usage);
+          recordUsage({ at: new Date().toISOString(), site: site.id, job: job.id, request: job.requestSeq ?? 1, user: job.actor?.login, model: String(s?.response?.modelId ?? model), step: ++step,
+            ...t, ms: Date.now() - stepStart, finish: typeof s?.finishReason === "string" ? s.finishReason : s?.finishReason?.unified });
+          job.usage = { input: (job.usage?.input ?? 0) + t.input, output: (job.usage?.output ?? 0) + t.output, calls: (job.usage?.calls ?? 0) + 1 };
+          stepStart = Date.now();
+        },
         onToolExecutionStart: (e: any) => { ctl.toolsRunning++; this.emit(job, "tool_start", { tool: e.toolCall?.toolName, input: e.toolCall?.input }); },
         onToolExecutionEnd: (e: any) => {
           ctl.toolsRunning = Math.max(0, ctl.toolsRunning - 1);
@@ -400,16 +392,9 @@ export class JobRunner {
           const input: any = r.toolCall?.input ?? {};
           const entry: PendingApproval & { current?: unknown } = { approvalId: r.approvalId, toolCallId: r.toolCall?.toolCallId, toolName: r.toolCall?.toolName, input };
           // Show the person what is there NOW, so the card can be a before/after diff.
-          if (entry.toolName === "set_content" && typeof input.target === "string") {
-            entry.current = await bridge.readTarget(input.target).then((d: any) => d.stored_raw ?? null).catch(() => null);
-          }
-          if (entry.toolName === "restore_file" && siteFiles && typeof input.backupId === "string") {
-            const b = siteFiles.getBackup(input.backupId);
-            entry.current = b ? { path: b.path, editedAt: b.createdAt } : null;
-          }
-          if (entry.toolName === "revert_change" && typeof input.changeId === "string") {
-            const c = (job.changes ?? []).find((x) => x.id === input.changeId);
-            entry.current = c ? { title: c.title, tool: c.tool, at: c.at } : null;
+          // Show the person what a revert would undo.
+          if (entry.toolName === "revert_change" && typeof input.changeId === "number") {
+            entry.current = await new Bridge(site, job.actorToken).change(input.changeId).then((r: any) => ({ title: r.change?.summary, status: r.change?.status, by: r.change?.user?.name, at: r.change?.at }), () => null);
           }
           pending.push(entry);
           this.emit(job, "approval_request", { approvalId: entry.approvalId, tool: entry.toolName, input, current: entry.current });
@@ -441,6 +426,7 @@ export class JobRunner {
         return;
       }
       job.error = (e as Error).message;
+      log("error", "job failed", { site: job.siteId, job: job.id, error: job.error });
       this.emit(job, "error", { error: job.error });
       this.setStatus(job, "failed", { error: job.error });
     }
@@ -451,6 +437,9 @@ export class JobRunner {
 function uiSummary(tool: string | undefined, v: any): Record<string, unknown> | undefined {
   if (!v || typeof v !== "object" || v.ok === false) return undefined;
   if (tool === "screenshot_page" && v.screenshotId) return { screenshotId: v.screenshotId, device: v.device, target: v.target };
+  if (tool === "make_change" || tool === "create_page" || tool === "revert_change") {
+    return { changeId: v.changeId, summary: v.change?.summary, status: v.change?.status, preview: v.preview, checks: v.verification ? { passed: v.verification.passed, summary: v.verification.summary } : undefined };
+  }
   if (tool === "edit_file" || tool === "restore_file" || tool === "create_file") return { path: v.path, backupId: v.backupId, verifiedLive: v.verifiedLive, created: v.created };
   if (tool === "create_page" || tool === "create_post" || tool === "edit_post_content" || tool === "set_post_status") return { id: v.id, link: v.link, status: v.status };
   if (tool === "upload_media_from_chat" || tool === "upload_media_from_url") return { mediaId: v.id, url: v.url };
@@ -473,4 +462,32 @@ function userMessage(text: string, fileIds: string[]): ModelMessage {
 function lastRequestText(job: Job): string {
   for (let i = job.events.length - 1; i >= 0; i--) if (job.events[i].type === "user") return String(job.events[i].data.text ?? "").slice(0, 200);
   return job.prompt.slice(0, 200);
+}
+
+/**
+ * What the assistant should know before it starts: drafts not deployed yet, conflicts, changes made outside Livecrafts
+ * since the last release (who / what), and the notes of the site and of the page the person is on.
+ */
+async function siteContext(bridge: Bridge, pageUrl?: string): Promise<string> {
+  const lines: string[] = [];
+  try {
+    const s: any = await bridge.status();
+    const drafts = (s.drafts?.objects ?? []) as any[];
+    lines.push(drafts.length ? `Drafts not deployed yet (${s.drafts.count}):` : "No drafts: the preview equals the live site.");
+    for (const o of drafts.slice(0, 8)) lines.push(`- ${o.object.label}: ${o.changes.slice(0, 6).map((c: any) => `#${c.id} ${c.summary} (${c.user?.name ?? c.source})`).join("; ")}`);
+    if (s.conflicts?.length) lines.push(`Conflicts (live changed under a draft): ${s.conflicts.map((c: any) => c.object).join(", ")}`);
+    const outside = (s.outside_changes_since_release ?? []) as any[];
+    if (outside.length) lines.push(`Changed outside Livecrafts since the last release: ${outside.slice(0, 6).map((c: any) => `#${c.id} ${c.object?.label}: ${c.summary} - ${c.user?.name ?? "?"}, ${c.at}`).join("; ")}`);
+    if (s.last_release) lines.push(`Last release: #${s.last_release.id} ${s.last_release.kind} - ${s.last_release.summary} (${s.last_release.at})`);
+    if (s.legacy_overlay) lines.push("This site still has an old Livecrafts 0.9 overlay (see site_status).");
+  } catch (e) { lines.push(`(Could not read the site status: ${(e as Error).message})`); }
+  try {
+    let post: number | undefined;
+    if (pageUrl) post = Number((await bridge.map({ url: pageUrl, view: "draft" }).catch(() => null))?.post?.id) || undefined;
+    const n: any = await bridge.notes(post);
+    if (n.site?.text) lines.push(`\nYOUR SITE NOTES:\n${String(n.site.text).slice(0, 4000)}`);
+    if (n.page?.text) lines.push(`\nYOUR NOTES FOR THIS PAGE:\n${String(n.page.text).slice(0, 4000)}`);
+    if (!n.site?.text && !n.page?.text) lines.push("No notes yet - write them as you learn the site (write_notes).");
+  } catch { /* notes are optional */ }
+  return lines.join("\n");
 }

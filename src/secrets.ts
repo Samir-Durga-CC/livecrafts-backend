@@ -8,7 +8,7 @@ import { config } from "./config.js";
  * Before real customers: move this to an encrypted store / secret manager.
  */
 export type ProviderId = "openai" | "anthropic" | "openrouter" | "groq" | "custom" | "gateway";
-interface Secrets { hostingerToken?: string; providers?: Partial<Record<ProviderId, { apiKey?: string; baseUrl?: string }>> }
+interface Secrets { hostingerToken?: string; providers?: Partial<Record<ProviderId, { apiKey?: string; baseUrl?: string }>>; sites?: Record<string, { secret?: string }> }
 const file = () => path.join(config.dataDir, "secrets.json");
 
 function read(): Secrets { try { return JSON.parse(fs.readFileSync(file(), "utf8")); } catch { return {}; } }
@@ -24,6 +24,14 @@ export const secrets = {
   hostingerToken(): string { return process.env.HOSTINGER_API_TOKEN || read().hostingerToken || ""; },
   hostingerSource(): "env" | "saved" | "none" { return process.env.HOSTINGER_API_TOKEN ? "env" : read().hostingerToken ? "saved" : "none"; },
   setHostingerToken(t: string) { const s = read(); if (t) s.hostingerToken = t; else delete s.hostingerToken; write(s); },
+
+  /** The secret a connected site signs its widget tokens with (POST /livecrafts/v1/connect). */
+  siteSecret(siteId: string): string { return read().sites?.[siteId]?.secret || ""; },
+  setSiteSecret(siteId: string, secret: string | null) {
+    const s = read(); s.sites ??= {};
+    if (secret) s.sites[siteId] = { ...s.sites[siteId], secret }; else delete s.sites[siteId];
+    write(s);
+  },
 
   providerKey(p: ProviderId): string { return process.env[PROVIDER_ENV[p]] || read().providers?.[p]?.apiKey || ""; },
   providerSource(p: ProviderId): "env" | "saved" | "none" { return process.env[PROVIDER_ENV[p]] ? "env" : read().providers?.[p]?.apiKey ? "saved" : "none"; },
