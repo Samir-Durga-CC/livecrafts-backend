@@ -8,9 +8,13 @@ export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 
+/** Inside the WordPress widget: the person's signed token from the plugin (per person, per site, short-lived). */
+let widgetToken = "";
+export const setWidgetToken = (t: string) => { widgetToken = t; };
+
 const authHeaders = (extra: Record<string, string> = {}): Record<string, string> => {
   const t = getToken();
-  return { ...(t ? { Authorization: `Bearer ${t}` } : {}), ...extra };
+  return { ...(widgetToken ? { "X-Livecrafts-Widget": widgetToken } : t ? { Authorization: `Bearer ${t}` } : {}), ...extra };
 };
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -48,9 +52,6 @@ export const api = {
   approve: (jobId: string, approvalId: string, approved: boolean, reason?: string) => request<JobSummary>("POST", `/jobs/${jobId}/approvals`, { approvalId, approved, reason }),
   stop: (jobId: string) => request<JobSummary>("POST", `/jobs/${jobId}/stop`),
   resume: (jobId: string) => request<JobSummary>("POST", `/jobs/${jobId}/resume`),
-  /** A manual edit from the widget (no AI): style overlay, text/image in the real field, hide/show. */
-  fields: (siteId: string, url: string) => request<{ ok: boolean; fields: { target: string; source: string; label: string; key: string; type: string; value: string; widget?: string; elementId?: string }[] }>("GET", `/sites/${siteId}/fields?url=${encodeURIComponent(url)}`),
-  manual: (siteId: string, body: Record<string, unknown>) => request<{ ok: boolean; jobId: string; summary: string; note?: string }>("POST", `/sites/${siteId}/manual`, body),
   revertChange: (jobId: string, changeId: string) => request<Record<string, unknown>>("POST", `/jobs/${jobId}/changes/${changeId}/revert`),
   linkHosting: (siteId: string) => request<Site>("POST", `/sites/${siteId}/link-hosting`),
 

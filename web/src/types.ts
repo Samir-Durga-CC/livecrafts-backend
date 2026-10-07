@@ -12,11 +12,35 @@ export interface Pending { approvalId: string; toolName: string; input: any; cur
 
 export type ApprovalMode = "every" | "request" | "auto";
 
-/** One applied change of a chat, with what is needed to revert it (from the backend ledger). */
+/** One change a chat made (a pointer to the site history in the plugin). */
 export interface ChangeRecord {
-  id: string; tool: string; title: string; key: string; at: string; link?: string;
+  id: string; pluginId?: number; tool: string; title: string; key: string; at: string; link?: string; status?: string;
   revert: { kind: string } | null; note?: string; revertedAt?: string; revertError?: string;
   requestId?: number; request?: string; diff?: { label: string; language?: string } | null;
+  verification?: { passed: boolean; summary: string };
+}
+
+/** A change in the site history (from the plugin): any source - the assistant, the widget, WP admin, Elementor. */
+export interface SiteChange {
+  id: number; status: "draft" | "live" | "discarded"; source: string; user: { id: number; login: string; name: string } | null;
+  object: { type: string; id: number; label: string; url?: string }; kind: string; target: string; summary: string;
+  release: number | null; reverts: number | null; at: string; payload: Record<string, any>;
+  diff?: { path: string; before: string; after: string }[];
+}
+
+/** One option the plugin offers for a clicked element (POST /resolve) - applied without AI. */
+export interface ResolvedAction {
+  id: string; group: "content" | "style" | "layout" | "visibility" | "motion"; label: string;
+  input: "text" | "html" | "url" | "image" | "color" | "size" | "select" | "spacing" | "switch" | "confirm" | "ask";
+  value: any; options?: Record<string, string>; units?: string[];
+  change: Record<string, any>; requires?: Record<string, any>;
+}
+export interface Resolved {
+  ok: boolean; device: string; notes: string[];
+  source: { kind: "elementor" | "block" | "acf" | "menu" | "theme" | "ambiguous"; label: string; post?: number; where?: string; edit_link?: string; type?: string };
+  actions: ResolvedAction[];
+  parent?: { label: string; elementor?: { doc: number; id: string }; block?: string };
+  css_scopes?: { page: string; site: string } | null;
 }
 
 export interface SiteStatus {

@@ -50,10 +50,9 @@ export function toBlocks(items: TimelineItem[]): Block[] {
 }
 
 // ---------------------------------------------------------------- the "Changes" side panel: one entry per requested write
-/** Tools that write to the live site (each one needs approval). */
+/** Tools that change the site (drafts, except theme files) - each one needs approval. */
 export const WRITE_TOOLS = [
-  "set_content", "upload_media_from_chat", "upload_media_from_url", "undo_last_change", "edit_file", "create_file", "restore_file",
-  "create_page", "create_post", "edit_post_content", "set_post_status", "create_menu", "add_menu_item", "revert_change",
+  "make_change", "create_page", "revert_change", "upload_media_from_chat", "upload_media_from_url", "edit_file", "create_file", "restore_file",
 ];
 
 export type ChangeState = "pending" | "denied" | "applied" | "failed" | "reverted";

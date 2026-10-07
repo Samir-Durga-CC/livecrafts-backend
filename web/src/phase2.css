@@ -226,3 +226,49 @@ html.embed body { font-size: 14px; }
 .pb-kind { align-self: flex-start; }
 .pill.paused { background: var(--warn-soft); color: var(--warn); }
 .dot.paused { background: var(--warn); }
+
+/* ---- click panel (ElementPanel): options from the element's real source, applied without AI */
+.ep { display: flex; flex-direction: column; gap: 10px; }
+.ep-parent { align-self: flex-start; display: inline-flex; gap: 6px; align-items: center; border: 0; background: none; color: var(--w-accent, var(--accent)); font-size: 12.5px; font-weight: 600; padding: 2px 0; }
+.ep-scope { align-self: flex-start; }
+.ep-actions { display: flex; flex-direction: column; gap: 10px; padding: 2px 2px 12px; }
+.ep-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.ep-row .grow, .ep-field .grow { flex: 1 1 auto; min-width: 0; }
+.ep-field { display: flex; flex-direction: column; gap: 6px; }
+.ep-label { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.ep-field input, .ep-field textarea, .ep-row input:not([type="checkbox"]):not([type="color"]), .ep-row select, .ep-ask textarea {
+  border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); padding: 7px 9px; font: inherit; font-size: 13px; min-width: 0; }
+.ep-field textarea, .ep-ask textarea { resize: vertical; width: 100%; }
+.ep-row input[type="color"] { width: 34px; height: 30px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.ep-short { width: 120px; } .ep-num { width: 72px; }
+.ep-thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); }
+.ep-switch { cursor: pointer; } .ep-switch input { width: 18px; height: 18px; }
+.ep-btn { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 9px; padding: 8px 11px; font-size: 13px; font-weight: 550; }
+.ep-btn:hover:not(:disabled) { background: var(--hover); }
+.ep-btn.danger { color: var(--bad); }
+.ep-ask { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; }
+.ep-ask .btn { align-self: flex-end; }
+
+/* ---- site history (SiteChanges) */
+.sc { display: flex; flex-direction: column; gap: 12px; }
+.sc-status { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.sc-dot-line { display: flex; align-items: center; gap: 8px; }
+.sc-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.sc-dot.draft { background: var(--warn); } .sc-dot.live { background: var(--ok); }
+.sc-head { display: flex; align-items: center; gap: 10px; }
+.sc-head .grow { flex: 1; }
+.sc-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.sc-item { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.sc-item.discarded { opacity: .6; }
+.sc-main { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; width: 100%; text-align: left; border: 0; background: none; color: var(--text); padding: 9px 11px; }
+.sc-sum { font-size: 13px; font-weight: 550; line-height: 1.35; overflow-wrap: anywhere; }
+.sc-badge { font-size: 10.5px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; }
+.sc-badge.draft { background: var(--warn-soft); color: var(--warn); }
+.sc-badge.live { background: var(--ok-soft); color: var(--ok); }
+.sc-badge.discarded { background: var(--hover); color: var(--muted); }
+.sc-detail { display: flex; flex-direction: column; gap: 8px; padding: 0 11px 11px; }
+.sc-diff { display: flex; flex-direction: column; gap: 4px; }
+.sc-diff-label { font-size: 11.5px; font-weight: 600; color: var(--text-2); }
+.sc-diff pre { margin: 0; max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11.5px; line-height: 1.45; padding: 7px 9px; border-radius: 8px; }
+.sc-before { background: color-mix(in srgb, var(--bad) 9%, transparent); }
+.sc-after { background: color-mix(in srgb, var(--ok) 11%, transparent); }

@@ -1,18 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PausedBar, type PauseKind } from "../components/PausedBar";
-import { answerEyes, api, buildTimeline, followEyes, followJob, lastStatus, ledgerFrom, setToken } from "../api";
+import { answerEyes, api, buildTimeline, followEyes, followJob, lastStatus, setWidgetToken } from "../api";
 import { Composer } from "../components/Composer";
 import { Transcript } from "../components/Messages";
-import { ApprovalModePicker, RequestChanges } from "../components/RequestChanges";
+import { ApprovalModePicker } from "../components/RequestChanges";
 import { Icon } from "../icons";
-import type { ApprovalMode, AssistantInfo, ChangeRecord, JobEvent, JobSummary, Site } from "../types";
-import { groupRequests, titleOf, writeCount } from "../util";
-import { QuickActions, elementContext, type ManualEdit, type PickedElement } from "./QuickActions";
+import type { ApprovalMode, AssistantInfo, JobEvent, JobSummary, Resolved, Site } from "../types";
+import { titleOf, writeCount } from "../util";
+import { elementContext, type PickedElement } from "./element";
+import { ElementPanel } from "./ElementPanel";
+import { SiteChanges } from "./SiteChanges";
+import { connectParent } from "./parent";
 
 /** Settings the WordPress plugin passes in the address (#cfg=...). */
 interface WidgetConfig {
   siteUrl: string; pageUrl: string; botName?: string; welcome?: string; accent?: string; approvalMode?: ApprovalMode;
-  token?: string; user?: string; parentOrigin: string; tab?: Tab; widgetVersion?: string;
+  user?: string; parentOrigin: string; tab?: Tab; widgetVersion?: string;
+  /** The person's signed token from the plugin: the backend signs them in with it and credits changes to them. */
+  widgetToken?: string; postId?: number; view?: "draft" | "live"; drafts?: number; canDeploy?: boolean;
 }
 type Tab = "chat" | "actions" | "changes";
 
@@ -22,7 +27,8 @@ function readConfig(): WidgetConfig | null {
     if (!raw) return null;
     const c = JSON.parse(raw);
     if (!c.siteUrl || !c.parentOrigin) return null;
-    if (c.token) setToken(c.token); // the backend access token from the plugin settings (if the backend requires one)
+    if (c.widgetToken) setWidgetToken(c.widgetToken);
+    connectParent(c.parentOrigin);
     return c;
   } catch { return null; }
 }
@@ -88,10 +94,14 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [jobId, setJobId] = useState(store.get(jobKey) ?? "");
   const [events, setEvents] = useState<JobEvent[]>([]);
-  const [baseLedger, setBaseLedger] = useState<ChangeRecord[]>([]);
   const [tab, setTabState] = useState<Tab>(cfg.tab ?? "chat");
   const [mode, setMode] = useState<ApprovalMode>((store.get("lcw_mode") as ApprovalMode) || cfg.approvalMode || "request");
   const [selected, setSelected] = useState<PickedElement | null>(null);
+  const [resolved, setResolved] = useState<Resolved | null>(null);
+  const [resolving, setResolving] = useState(false);
+  const [resolveError, setResolveError] = useState("");
+  const [historyKey, setHistoryKey] = useState(0);
+  const editApply = useRef<((text: string) => Promise<void>) | null>(null);
   const [picking, setPicking] = useState(false);
   const [menu, setMenu] = useState<"" | "history">("");
   const [answering, setAnswering] = useState(false);
@@ -113,9 +123,11 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   useEffect(() => {
     const on = (e: MessageEvent) => {
       if (e.origin !== cfg.parentOrigin || !e.data || typeof e.data.type !== "string") return;
-      if (e.data.type === "lc:selected") { setSelected(e.data.element as PickedElement); setPicking(false); setTab("actions"); }
+      if (e.data.type === "lc:selected") { setSelected(e.data.element as PickedElement); setResolved(null); setResolveError(""); setResolving(true); setPicking(false); setTab("actions"); }
+      if (e.data.type === "lc:resolved") { setResolving(false); if (e.data.resolved) setResolved(e.data.resolved as Resolved); else setResolveError(String(e.data.error ?? "Could not find out what this element is.")); }
       if (e.data.type === "lc:pick-ended") setPicking(false);
-      if (e.data.type === "lc:text-edited") textEdited.current?.(String(e.data.selector), String(e.data.oldText ?? ""), String(e.data.newText ?? ""));
+      if (e.data.type === "lc:text-edited") { const f = editApply.current; editApply.current = null; void f?.(String(e.data.newText ?? "")); }
+      if (e.data.type === "lc:text-cancelled") editApply.current = null;
       if (e.data.type === "lc:eyes-result") eyesWaiting.current.get(String(e.data.id))?.({ ok: !!e.data.ok, result: e.data.result, error: e.data.error });
       if (e.data.type === "lc:text-error") setProblem(String(e.data.error ?? "Could not edit that text."));
     };
@@ -125,12 +137,11 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
 
   // follow the current chat
   useEffect(() => {
-    setEvents([]); setBaseLedger([]); baseline.current = null;
+    setEvents([]); baseline.current = null;
     if (!jobId) return;
     let alive = true;
     api.job(jobId).then((j) => {
       if (!alive) return;
-      setBaseLedger(j.changes ?? []);
       if (j.approvalMode) setMode(j.approvalMode);
       // writes that already happened before this page load must not trigger another reload
       const done = writeCount(buildTimeline((j as any).events ?? [])) + ((j as any).events ?? []).filter((e: JobEvent) => e.type === "change_update").length;
@@ -152,37 +163,25 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   const stop = () => { setStopping(true); api.stop(jobId).catch((e) => { setStopping(false); setProblem((e as Error).message); }); };
   const cont = () => api.resume(jobId).catch((e) => setProblem((e as Error).message));
   const timeline = useMemo(() => buildTimeline(events), [events]);
-  const ledger = useMemo(() => ledgerFrom(baseLedger, events), [baseLedger, events]);
-  const groups = useMemo(() => groupRequests(timeline, ledger, working), [timeline, ledger, working]);
   const writes = useMemo(() => writeCount(timeline) + events.filter((e) => e.type === "change_update").length, [timeline, events]);
-  const lastRevertable = [...groups].reverse().find((g) => g.changes.some((c) => !c.revertedAt && c.revert));
 
   // show the result: reload the page once the assistant has finished a step that changed the site
   useEffect(() => {
     if (!jobId || baseline.current === null || !autoRefresh || working) return;
     if (writes > baseline.current) {
       baseline.current = writes;
+      setHistoryKey((k) => k + 1);
       store.sset(`lcw_reloaded:${jobId}`, String(writes));
       post({ type: "lc:reload", tab });
     }
   }, [writes, working, jobId, autoRefresh, post, tab]);
 
-  /** Manual edit: saved by the backend without AI, recorded in Changes; the page then reloads to show it. */
-  async function manualEdit(edit: ManualEdit): Promise<boolean> {
-    setProblem("");
-    try {
-      const r = await api.manual(site.id, { ...edit, jobId: jobId || undefined });
-      if (r.jobId !== jobId) setJobId(r.jobId);
-      say(r.note ? "Saved (see note in chat)" : "Saved");
-      if (r.note) setProblem(r.note);
-      post({ type: "lc:preview-clear" });
-      if (autoRefresh) setTimeout(() => post({ type: "lc:reload", tab }), r.note ? 1800 : 300);
-      return true;
-    } catch (e) {
-      setProblem((e as Error).message);
-      post({ type: "lc:preview-clear" });
-      return false;
-    }
+  /** A change made in the click panel (directly in WordPress, no AI): show it - it is a draft only editors see. */
+  function applied(summary: string) {
+    say(`Saved as a draft: ${summary.length > 60 ? summary.slice(0, 59) + "…" : summary}`);
+    setHistoryKey((k) => k + 1);
+    post({ type: "lc:drafts-changed" });
+    if (autoRefresh) setTimeout(() => post({ type: "lc:reload", tab }), 600);
   }
   // ---- eyes: answer "look at the page" requests from the assistant with THIS browser (plugin 0.9.2+ on the page)
   const [looking, setLooking] = useState(0);
@@ -211,12 +210,6 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     });
   }, [site.id, cfg.pageUrl, eyesOk, post]);
 
-  const textEdited = useRef<((selector: string, oldText: string, newText: string) => void) | null>(null);
-  textEdited.current = (selector, oldText, newText) => {
-    if (!selected) return;
-    void manualEdit({ kind: "text", selector, label: selected.label, pageUrl: selected.pageUrl, pageKey: selected.pageKey, elementor: selected.elementor ?? null, oldText, newText, hasChildren: selected.hasChildren });
-  };
-
   async function send(prompt: string, fileIds: string[], extraContext?: string) {
     setProblem("");
     try {
@@ -231,10 +224,6 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   async function answer(approvalId: string, ok: boolean, reason?: string) {
     setAnswering(true);
     try { await api.approve(jobId, approvalId, ok, reason); } catch (e) { setProblem((e as Error).message); } finally { setAnswering(false); }
-  }
-  async function revertGroup(requestId: number) {
-    try { const r = await api.revertRequest(jobId, requestId); say(`Reverted ${r.reverted}`); }
-    catch (e) { setProblem((e as Error).message); }
   }
   async function changeMode(m: ApprovalMode) {
     setMode(m); store.set("lcw_mode", m);
@@ -302,8 +291,8 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
 
       <nav className="w-tabs" role="tablist">
         <button role="tab" aria-selected={tab === "chat"} className={tab === "chat" ? "on" : ""} onClick={() => setTab("chat")}><Icon.Chat size={15} /> Chat</button>
-        <button role="tab" aria-selected={tab === "actions"} className={tab === "actions" ? "on" : ""} onClick={() => setTab("actions")}><Icon.Wand size={15} /> Quick actions{selected && <span className="qa-dot" />}</button>
-        <button role="tab" aria-selected={tab === "changes"} className={tab === "changes" ? "on" : ""} onClick={() => setTab("changes")}><Icon.List size={15} /> Changes{groups.filter((g) => g.changes.length).length > 0 && <span className="count">{groups.filter((g) => g.changes.length).length}</span>}</button>
+        <button role="tab" aria-selected={tab === "actions"} className={tab === "actions" ? "on" : ""} onClick={() => setTab("actions")}><Icon.Cursor size={15} /> Edit{selected && <span className="qa-dot" />}</button>
+        <button role="tab" aria-selected={tab === "changes"} className={tab === "changes" ? "on" : ""} onClick={() => setTab("changes")}><Icon.List size={15} /> Changes</button>
       </nav>
 
       {problem && <div className="banner error w-banner"><span>{problem}</span><button onClick={() => setProblem("")}><Icon.Close size={13} /></button></div>}
@@ -319,28 +308,23 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
               onStop={working && jobId ? stop : undefined} stopping={stopping}
               notice={paused ? <PausedBar kind={pauseKind} onKind={setPauseKind} onContinue={() => void cont()} /> : undefined}
               placeholder={waiting ? "Answer the approval above…" : working ? (stopping ? "Stopping…" : "Working… (Stop to pause)") : paused ? (pauseKind === "edit" ? "Type your corrected request…" : "Type a note…") : "Ask for any change on this page…"}
-              onClearContext={() => {}} onSend={(p, f) => send(p, f, selected ? `The person may mean this element (they picked it on the page):\n${elementContext(selected)}` : undefined)}
+              onClearContext={() => {}} onSend={(p, f) => send(p, f, selected ? `The person may mean this element (they picked it on the page):\n${elementContext(selected, resolved?.source)}` : undefined)}
               chips={selected ? <span className="chip"><Icon.Cursor size={12} /> {selected.label}<button aria-label="forget selection" onClick={() => setSelected(null)}><Icon.Close size={11} /></button></span> : undefined}
               extra={<ApprovalModePicker mode={mode} onChange={(m) => void changeMode(m)} />} />
           </div>
         )}
         {tab === "actions" && (
           <div className="w-scroll">
-            <QuickActions siteId={site.id} widgetVersion={cfg.widgetVersion} selected={selected} picking={picking} disabled={working || waiting}
+            <ElementPanel selected={selected} resolved={resolved} resolving={resolving} error={resolveError} picking={picking} disabled={working || waiting}
               onPick={() => { setPicking(true); post({ type: "lc:pick" }); }} onCancelPick={() => { setPicking(false); post({ type: "lc:cancel-pick" }); }}
-              onSend={send} canUndo={!!lastRevertable && !working}
-              onUndo={() => { if (lastRevertable) void revertGroup(lastRevertable.requestId); }}
-              onHighlight={(selector) => post({ type: "lc:highlight", selector })}
-              onManual={manualEdit} onPreview={(selector, styles) => post({ type: "lc:preview", selector, styles })}
-              onClearPreview={() => post({ type: "lc:preview-clear" })} onEditText={(selector) => post({ type: "lc:edit-text", selector })} />
+              onApplied={applied} onHighlight={(selector) => post({ type: "lc:highlight", selector })}
+              onAsk={(q) => void send(q, [], selected ? `The person picked this element on the page:\n${elementContext(selected, resolved?.source)}` : undefined)}
+              onEditOnPage={(selector, apply) => { editApply.current = apply; post({ type: "lc:edit-text", selector }); }} />
           </div>
         )}
         {tab === "changes" && (
           <div className="w-scroll pad">
-            <RequestChanges jobId={jobId} groups={groups} busy={working}
-              onRevert={(g) => revertGroup(g.requestId)}
-              onOpen={(url) => post({ type: "lc:navigate", url })}
-              emptyText="Each request shows up here as one item. Click a file to see exactly what changed, or revert the whole request." />
+            <SiteChanges postId={Number(cfg.postId) || 0} reloadKey={historyKey} canDeploy={!!cfg.canDeploy} onChanged={(m) => { say(m); post({ type: "lc:drafts-changed" }); if (autoRefresh) setTimeout(() => post({ type: "lc:reload", tab }), 600); }} />
           </div>
         )}
       </div>
