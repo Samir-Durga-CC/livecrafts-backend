@@ -296,6 +296,7 @@ export async function auditPage(siteUrl: string, a: { url?: string; device?: Dev
 export async function compareShots(a: Buffer, b: Buffer): Promise<{ changed: number; bands: Array<{ from: number; to: number }> }> {
   const br = await getBrowser();
   const ctx = await br.newContext();
+  await ctx.addInitScript("window.__name = window.__name || ((f) => f);"); // see openPage
   try {
     const page = await ctx.newPage();
     return await page.evaluate(async ({ a, b }) => {

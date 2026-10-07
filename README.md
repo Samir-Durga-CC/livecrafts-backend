@@ -1,77 +1,79 @@
 # Livecrafts backend
 
-Central agent service. The browser (or a WordPress plugin widget) only *watches*; the work runs here.
+The agent service behind the Livecrafts WordPress plugin. The browser (the plugin's chat widget, or this app) only
+*watches*; the work runs here.
 
 ```
-UI / plugin widget ──HTTP+SSE──►  this backend  ──REST (Application Password)──►  WordPress site (Livecrafts plugin >= 0.6)
-                                  ├─ AI SDK 7 ToolLoopAgent   (loop, tool calling, retries, step limit, approvals)
-                                  ├─ Jobs: saved after every run → pause for approval, resume after restart
-                                  └─ Tools: get_page_map · read_target · find_text · set_content* · verify_page ·
-                                            upload_media_from_chat* · undo_last_change* · list_pages     (* = needs approval)
+WordPress page ── widget.js ──(cookie + nonce)──► Livecrafts plugin  ◄──(Application Password + person's token)── this backend
+   └─ chat panel (iframe of this app) ──HTTP+SSE, X-Livecrafts-Widget──────────────────────────────────────────────► │
+                                                                                       ├─ AI SDK ToolLoopAgent (tools, approvals, step limit)
+                                                                                       ├─ Jobs: saved after every run, pause/resume
+                                                                                       ├─ verify.ts: every change checked in a real browser
+                                                                                       └─ usage.ts: every model call + tokens, app log
 ```
 
-## Requirements
-* **Node 22 or newer** (AI SDK 7 requires it). `node -v` — if it says 20.x, install Node 22 LTS.
-* An OpenAI API key (or any model reachable through the AI SDK / AI Gateway).
-* On each WordPress site: Livecrafts plugin **0.6+** and an **Application Password** (Users → Profile → Application Passwords). WordPress needs HTTPS for these.
-
-## Chat UI (`web/`)
-A React single-page app (Vite + TypeScript, no UI framework) built to `web/dist` and served by this backend at `/`.
-Features: **streaming answers** (word by word, with a typing caret), user messages in an outlined bubble and answers as clean
-Markdown text (bold, lists, tables, code blocks with Copy), a one-line activity summary per run, **approval cards with a
-Before → After comparison and Approve / Deny**, a Changes panel, follow-up messages in the same conversation, **image attach
-(button, drag & drop, paste)**, pinned/dated history, light/dark theme, phone layout, and reconnect-safe progress (reload and the
-whole chat comes back; text still streaming at that moment arrives as one finished message).
-It can receive context from a link: `/?site=<id>&page=<url>&target=<target id>` (this is what the WordPress plugin button will use).
+## How a change happens
+1. The assistant (or the person, in the widget's click panel) makes a change. It is a **draft**: the plugin stores it
+   in the real source (Elementor, blocks, ACF, post fields, Additional CSS), and logged-in editors see it on the site.
+   Visitors see the live site until a person **deploys** (password, in the widget). The backend cannot deploy.
+2. After each change the backend **checks it in a real browser** (`verify.ts`): the draft view through a 10-minute
+   view-only preview token (the change is there: text, element, computed styles vs. the intended values), page health
+   on desktop and mobile (loads, PHP errors, sideways scrolling, broken images, script errors), visitors do not see it
+   yet, and what else moved (text diff, screenshot diff by page area). The model gets the result with the tool
+   result and must fix or revert a failure.
+3. Every change is in the site's **history** (plugin), from every source - the assistant, the widget, WP admin, the
+   Elementor editor - with who/when/before/after. Each run starts with that context: drafts, conflicts, outside changes
+   since the last release, and the assistant's **notes** about the site and the page.
 
 ## Run it
+Needs **Node 22+**, a model key (or any AI SDK provider), and on each site the Livecrafts plugin **0.10+** with an
+administrator's **Application Password**.
+
 ```bash
-cd livecrafts-backend
 npm install
-npm run build:web           # builds the chat UI into web/dist (needed once, and after UI changes)
-cp .env.example .env        # put OPENAI_API_KEY in it; change LC_MODEL to switch models
-npm test                    # 27 checks, no API key and no real site needed
-npm start                   # open http://127.0.0.1:8790
-npm run demo                # try the UI with a FAKE site and a FAKE model: http://127.0.0.1:8791
+npm run build:web           # the chat UI (web/dist)
+cp .env.example .env        # model key(s), LC_MODEL, LC_API_TOKEN for anything not on localhost
+npm test                    # fake site + scripted model, plus the checker in a real browser if Edge/Chrome is installed
+npm start                   # http://127.0.0.1:8790
+npm run demo                # the UI with a FAKE site and a FAKE model: http://127.0.0.1:8791
 ```
 
-### Quick terminal test (no server)
-```bash
-export LC_SITE_URL=https://your-site.com   LC_SITE_USER=admin   LC_SITE_APP_PASSWORD="abcd efgh ijkl ..."
-npm run chat -- "change the hero title to Welcome to Aeromatic"
-```
-It prints each tool call, shows an **Allow? [y/N]** prompt for every change, then verifies the public page.
+Connect a site (app → Sites, or `POST /sites`). The backend checks the credentials and fetches the site's widget
+secret (`POST /livecrafts/v1/connect`), which it uses to verify the per-person tokens the widget sends.
 
-## HTTP API (all JSON; set `LC_API_TOKEN` to require `Authorization: Bearer …`)
-| Call | Purpose |
+## Settings (.env)
+| Name | |
 |---|---|
-| `POST /sites` `{name,url,username,appPassword}` | Register a site. Pings it first (validates the credentials); the password is never returned. |
-| `GET /sites` · `DELETE /sites/:id` · `POST /sites/:id/ping` | Manage / check sites |
-| `POST /files` (raw body, `Content-Type: image/png`, `x-filename`) | Attach an image from the user's computer → `fileId` |
-| `POST /jobs` `{siteId,prompt,pageUrl?,selectedTarget?,fileIds?}` | Start a job (returns immediately) |
-| `GET /jobs/:id` · `GET /jobs` | State + events |
-| `GET /jobs/:id/events?after=<seq>` | **Server-Sent Events**; reconnect-safe replay |
-| `POST /jobs/:id/approvals` `{approvalId,approved,reason?}` | Answer an approval card |
-| `POST /jobs/:id/resume` | Continue an interrupted/failed job |
+| `LC_MODEL` | Default model, e.g. `gpt-5.5`, `anthropic:claude-sonnet-5-5`, `openrouter:google/gemini-3-pro` |
+| `LC_API_TOKEN` | Required `Authorization: Bearer …` for the app/admin routes. The widget uses its own signed per-person token. |
+| `LC_VERIFY_CHANGES` | `0` turns the browser checks off (e.g. a server without Edge/Chrome). Default on. |
+| `LC_ALLOW_THEME_FILES` | `1` lets the assistant edit theme files. They go **live at once** (cannot be drafts) - off by default. |
+| `LC_BROWSER_PATH` | Edge/Chrome path if neither is found automatically. |
 
-## What happens if the browser closes
-Nothing is lost. A job is saved to disk after every run. When the agent needs permission the job goes to `waiting_approval`
-and costs nothing while it waits; answering later (even after a restart) continues from the saved conversation.
+## Who may call what
+| Caller | Auth | Can |
+|---|---|---|
+| App / admin panel | `LC_API_TOKEN` (or localhost without one) | everything |
+| Chat in the WordPress widget | `X-Livecrafts-Widget: <token>` signed by the site for the logged-in person | its own site only: chats, approvals, files, the person's-browser line |
 
 ## Files
 | File | Job |
 |---|---|
-| `src/agent.ts` | Builds the SDK `ToolLoopAgent`: model, system prompt, tools, approval policy, step limit, retries. Model-neutral. |
-| `src/tools.ts` | The tools (small, typed, zod schemas). Expected failures return `{ok:false,error}` so the model can react. |
-| `src/bridge.ts` | Talks to the WordPress plugin: Basic auth, timeouts, retries (reads only), clear error hints, same-origin guard. |
-| `src/jobs.ts` | Job runner: persist, pause/resume on approvals, event stream, crash recovery. |
-| `src/server.ts` / `src/cli.ts` | HTTP API / terminal chat |
-| `src/store.ts` / `src/files.ts` | JSON-file storage (dev) / chat image uploads |
-| `test/smoke.ts` | End-to-end test with a fake WordPress and a scripted mock model |
+| `src/agent.ts` | The `ToolLoopAgent`: model, system prompt (drafts, native sources, checks, notes), approvals, browser views. |
+| `src/tools.ts` | Tools: site_status / site_history / change_details, notes, page map, read_post, make_change, create_page, revert_change, media, browser, theme files (read; writes only when allowed). |
+| `src/verify.ts` | The automatic checks after each change. |
+| `src/browser.ts` | Headless Edge/Chrome: read, inspect (computed styles + winning rules), screenshot, design, page audit, screenshot diff. |
+| `src/bridge.ts` | The plugin's REST API (drafts, history, notes, preview tokens) + core REST reads; credits the person. |
+| `src/auth.ts` | Widget token verification. |
+| `src/jobs.ts` | Job runner: persist, approvals, stop/continue, site context at the start of each run, usage per model call. |
+| `src/changes.ts` | A chat's pointers into the site history (revert, diff). |
+| `src/usage.ts` | `data/usage/*.jsonl` (model, tokens per call), `data/logs/*.jsonl` (+ live follow). |
+| `src/eyes.ts` | The person's own browser (widget open) as the assistant's eyes. |
+| `web/` | React UI: the app, and the widget (chat, click panel without AI, site history). |
+| `test/` | `fakeSite.ts` (plugin 0.10 API in memory), `smoke.ts`, `features.ts`, `verify-browser.ts`, `demo.ts`. |
 
-## Known limits (v0.1)
-* Storage is JSON files and the site password sits in `data/sites/*.json` — **dev only**; move to Postgres + encrypted secrets before real use.
-* No user login yet (binds to localhost; optional bearer token). MFA and per-user permissions come later.
-* The loop is in-process: a server crash mid-step loses that step (the job is marked `interrupted` and can be resumed). True durable execution = AI SDK `WorkflowAgent` (needs the Workflow runtime) — a later upgrade.
-* verify_page checks the public HTML text; a headless browser (screenshots, computed styles) and the URL-scraper tool are not built yet.
-* The model has only been exercised through a scripted mock — **no real LLM run yet**.
+## Known limits
+* Storage is JSON files (`data/`), and site Application Passwords and secrets sit in `data/` - fine for one server;
+  move to a database with encrypted secrets before multi-tenant use.
+* The backend's own browser cannot open unpublished (draft) pages; new pages are checked by the person in the
+  preview, and after deploy.
