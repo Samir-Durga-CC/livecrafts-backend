@@ -33,6 +33,7 @@ export interface SendArgs { prompt: string; fileIds: string[]; pageUrl?: string;
 export const api = {
   health: () => request<{ ok: boolean; model: string; authRequired: boolean }>("GET", "/health"),
   sites: () => request<Site[]>("GET", "/sites"),
+  previewToken: (siteId: string) => request<{ token: string; param: string }>("POST", `/sites/${siteId}/preview-token`, {}),
   addSite: (b: { name: string; url: string; username: string; appPassword: string }) => request<Site & { plugin?: any; reconnected?: boolean; hostingNote?: string | null }>("POST", "/sites", b),
   deleteSite: (id: string) => request("DELETE", `/sites/${id}`),
   updateSite: (id: string, b: { name?: string; username?: string; appPassword?: string }) => request<Site>("PUT", `/sites/${id}`, b),

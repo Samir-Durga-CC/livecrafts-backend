@@ -6,8 +6,8 @@ import type { RequestGroup } from "../util";
 
 export type PanelTab = "preview" | "changes";
 
-export function ChangesPanel({ tab, onTab, jobId, groups, context, siteUrl, reloadKey, navigate, busy, onRevert, onOpen, onClose }: {
-  tab: PanelTab; onTab: (t: PanelTab) => void; jobId: string; groups: RequestGroup[]; context: Context; siteUrl?: string; reloadKey: number;
+export function ChangesPanel({ tab, onTab, jobId, groups, context, siteUrl, siteId, reloadKey, navigate, busy, onRevert, onOpen, onClose }: {
+  tab: PanelTab; onTab: (t: PanelTab) => void; jobId: string; groups: RequestGroup[]; context: Context; siteUrl?: string; siteId?: string; reloadKey: number;
   navigate?: { url: string; n: number }; busy: boolean;
   onRevert: (g: RequestGroup) => Promise<void>; onOpen: (url: string) => void; onClose: () => void;
 }) {
@@ -22,7 +22,7 @@ export function ChangesPanel({ tab, onTab, jobId, groups, context, siteUrl, relo
         <button className="ghost-icon" onClick={onClose} aria-label="Close"><Icon.Close size={18} /></button>
       </div>
 
-      {tab === "preview" ? <Preview siteUrl={siteUrl} pageUrl={context.pageUrl} reloadKey={reloadKey} navigate={navigate} /> : (
+      {tab === "preview" ? <Preview siteUrl={siteUrl} siteId={siteId} pageUrl={context.pageUrl} reloadKey={reloadKey} navigate={navigate} /> : (
         <>
           {(context.pageUrl || context.selectedTarget) && (
             <div className="ctx-card">

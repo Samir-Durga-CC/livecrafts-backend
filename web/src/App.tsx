@@ -207,7 +207,7 @@ export default function App() {
           </section>
         </main>
 
-        {panelOpen && <ChangesPanel tab={panelTab} onTab={setPanelTab} jobId={jobId} groups={groups} context={ctx} siteUrl={site?.url} reloadKey={reloadKey} navigate={navigate} busy={working}
+        {panelOpen && <ChangesPanel tab={panelTab} onTab={setPanelTab} jobId={jobId} groups={groups} context={ctx} siteUrl={site?.url} siteId={site?.id} reloadKey={reloadKey} navigate={navigate} busy={working}
           onRevert={revert} onOpen={openInPreview} onClose={() => setPanelOpen(false)} />}
       </div>
 

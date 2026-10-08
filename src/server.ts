@@ -116,6 +116,13 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       if (route === "GET /health") return send(res, 200, { ok: true, model: config.model, authRequired: !!config.apiToken });
 
       // ---- sites
+      const pt = url.pathname.match(/^\/sites\/([\w-]+)\/preview-token$/);
+      if (pt && req.method === "POST") { // the console preview shows the DRAFT view (what editors see) with a short-lived view-only token
+        const ps = sites.get(pt[1]);
+        if (!ps || !canUseSite(caller, ps.id)) return send(res, 404, { error: "Unknown site" });
+        const r = await new Bridge(ps, caller.via === "widget" ? caller.token : undefined).previewToken();
+        return send(res, 200, { token: r.token, param: r.param });
+      }
       if (route === "GET /sites") return send(res, 200, sites.list().filter((x) => canUseSite(caller, x.id)).map(publicSite));
       if (route === "POST /sites") {
         const b = await readJson(req);
