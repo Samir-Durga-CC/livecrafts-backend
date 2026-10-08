@@ -60,6 +60,21 @@ export const api = {
   saveHostinger: (token: string) => request<HostingerHealth>("PUT", "/integrations/hostinger", { token }),
   removeHostinger: () => request<HostingerHealth>("DELETE", "/integrations/hostinger"),
 
+  voiceInfo: () => request<{ available: boolean; voice: string; voices: string[] }>("GET", "/voice"),
+  /** Recorded speech -> text ("" when nothing was said). */
+  async transcribe(audio: Blob, signal?: AbortSignal): Promise<string> {
+    const res = await fetch("/voice/transcribe", { method: "POST", headers: authHeaders({ "Content-Type": audio.type || "audio/webm" }), body: audio, signal });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new ApiError(res.status, (data as any).error ?? `Transcription failed (HTTP ${res.status})`);
+    return String((data as any).text ?? "");
+  },
+  /** Text -> speech (mp3). */
+  async speech(text: string, voice: string, signal?: AbortSignal): Promise<Blob> {
+    const res = await fetch("/voice/speak", { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify({ text, voice }), signal });
+    if (!res.ok) { const data = await res.json().catch(() => ({})); throw new ApiError(res.status, (data as any).error ?? `Speech failed (HTTP ${res.status})`); }
+    return res.blob();
+  },
+
   async uploadFile(file: File): Promise<UploadedFile> {
     const res = await fetch("/files", { method: "POST", headers: authHeaders({ "Content-Type": file.type, "x-filename": file.name }), body: file });
     const data = await res.json().catch(() => ({}));

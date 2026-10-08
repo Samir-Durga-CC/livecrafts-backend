@@ -17,6 +17,7 @@ import { log } from "./usage.js";
 import { eyes } from "./eyes.js";
 import { assistantSettings, forgetAssistantSettings } from "./persona.js";
 import { closeBrowser, screenshotPath } from "./browser.js";
+import { speak, transcribe, voiceInfo } from "./voice.js";
 
 export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: FileStore) {
   const publicSite = (s: Site) => ({ id: s.id, name: s.name, url: s.url, username: s.username, createdAt: s.createdAt, hosting: s.hosting ?? null }); // never expose the password
@@ -47,7 +48,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     actor: caller.via === "widget" ? { token: caller.token, name: caller.user.name, login: caller.user.login } : undefined,
   });
   // What the chat inside the WordPress widget may call (with its signed per-person token).
-  const WIDGET_ROUTES = /^(GET \/(health|sites|models)|GET \/sites\/[\w-]+\/(assistant|eyes)|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
+  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/voice\/(transcribe|speak)|GET \/sites\/[\w-]+\/(assistant|eyes)|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
 
   async function readBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
     const chunks: Buffer[] = []; let size = 0;
@@ -89,7 +90,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     const url = new URL(req.url ?? "/", "http://x");
     const route = `${req.method} ${url.pathname}`;
     try {
-      const isApi = /^\/(health|sites|jobs|files|integrations|screens|models)(\/|$)/.test(url.pathname);
+      const isApi = /^\/(health|sites|jobs|files|integrations|screens|models|voice)(\/|$)/.test(url.pathname);
       if (!isApi && req.method === "GET" && serveStatic(url.pathname, res)) return; // UI files are public; the API below is protected
       // Who is calling: the chat in the WordPress widget (signed per-person token, only its own site) or the app / admin.
       let caller: Caller = { via: "admin" };
@@ -240,6 +241,19 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
 
       m = url.pathname.match(/^\/sites\/([\w-]+)\/ping$/);
       if (m && req.method === "POST") { const s = sites.get(m[1]); if (!s) return send(res, 404, { error: "Unknown site" }); return send(res, 200, await new Bridge(s).ping()); }
+
+      // ---- voice: what the person says -> text; the assistant's answer -> speech
+      if (route === "GET /voice") return send(res, 200, voiceInfo());
+      if (route === "POST /voice/transcribe") {
+        const buf = await readBody(req, 12_000_000);
+        return send(res, 200, await transcribe(buf, String(req.headers["content-type"] ?? "")));
+      }
+      if (route === "POST /voice/speak") {
+        const b = await readJson(req);
+        const audio = await speak(String(b.text ?? ""), typeof b.voice === "string" ? b.voice : undefined);
+        res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": audio.length, "Cache-Control": "no-store" });
+        return void res.end(audio);
+      }
 
       // ---- files (images from the user's computer)
       if (route === "POST /files") {

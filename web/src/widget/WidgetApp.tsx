@@ -1,16 +1,32 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PausedBar, type PauseKind } from "../components/PausedBar";
-import { answerEyes, api, buildTimeline, followEyes, followJob, lastStatus, setWidgetToken } from "../api";
+import { answerEyes, api, buildTimeline, fileUrl, followEyes, followJob, lastStatus, setWidgetToken } from "../api";
 import { Composer } from "../components/Composer";
 import { Transcript } from "../components/Messages";
 import { ApprovalModePicker } from "../components/RequestChanges";
 import { Icon } from "../icons";
-import type { ApprovalMode, AssistantInfo, JobEvent, JobSummary, Resolved, Site } from "../types";
+import type { ApprovalMode, AssistantInfo, JobEvent, JobSummary, Resolved, Site, TimelineItem, UploadedFile } from "../types";
 import { titleOf, writeCount } from "../util";
 import { elementContext, type PickedElement } from "./element";
 import { ElementPanel } from "./ElementPanel";
 import { SiteChanges } from "./SiteChanges";
-import { connectParent } from "./parent";
+import { connectParent, uploadToMedia } from "./parent";
+import { VoiceAgent, type VoiceState } from "./voice";
+import { VoiceBar } from "./VoiceBar";
+
+/** Told to the assistant with every spoken request. */
+const VOICE_NOTE = "VOICE MODE: the person is talking to you and hears your replies read aloud. Answer in one to three short, natural spoken sentences - no tables, code, URLs or long lists. Say what you did or found; the details stay visible in the chat.";
+const YES = /^(yes|yeah|yep|yup|sure|ok|okay|go ahead|go for it|do it|approve|approved|confirm|confirmed|proceed|sounds good|perfect|please do|of course|absolutely|correct)\b[\s,.!]*/i;
+const NO = /^(no|nope|nah|don'?t|do not|cancel|deny|reject|not now)\b[\s,.!]*/i;
+
+/** What the voice reads out of the chat: finished answers, approval questions, errors. */
+const sayableOf = (items: TimelineItem[]) => items.filter((i) => (i.kind === "assistant" && !i.streaming && i.text.trim() !== "") || i.kind === "approval" || i.kind === "error");
+function sayText(i: TimelineItem): string {
+  if (i.kind === "assistant") return i.text;
+  if (i.kind === "error") return `Sorry, that did not work. ${i.text}`;
+  if (i.kind === "approval") return i.tool === "propose_plan" && i.input?.summary ? `Here is my plan: ${i.input.summary}. Shall I go ahead?` : "This needs your OK before I change the site. Shall I go ahead?";
+  return "";
+}
 
 /** Settings the WordPress plugin passes in the address (#cfg=...). */
 interface WidgetConfig {
@@ -18,6 +34,8 @@ interface WidgetConfig {
   user?: string; parentOrigin: string; tab?: Tab; widgetVersion?: string;
   /** The person's signed token from the plugin: the backend signs them in with it and credits changes to them. */
   widgetToken?: string; postId?: number; view?: "draft" | "live"; drafts?: number; canDeploy?: boolean;
+  /** Plugin 0.11+: images from this computer can be saved into the Media Library (and the account may upload). */
+  canUpload?: boolean; maxUpload?: number;
 }
 type Tab = "chat" | "actions" | "changes";
 
@@ -135,13 +153,22 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     return () => window.removeEventListener("message", on);
   }, [cfg.parentOrigin]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // voice: how many speakable items of the current chat were already read out (or are history, never read out)
+  const spoken = useRef<{ job: string; count: number } | null>({ job: "", count: 0 });
+  const freshJob = useRef("");
+  const [spokenReady, setSpokenReady] = useState("");
+
   // follow the current chat
   useEffect(() => {
     setEvents([]); baseline.current = null;
+    spoken.current = jobId ? null : { job: "", count: 0 };
     if (!jobId) return;
     let alive = true;
     api.job(jobId).then((j) => {
       if (!alive) return;
+      // a chat that was just started from here: read its answers; an existing one: its history stays silent
+      spoken.current = { job: jobId, count: freshJob.current === jobId ? 0 : sayableOf(buildTimeline((j as any).events ?? [])).length };
+      setSpokenReady(jobId);
       if (j.approvalMode) setMode(j.approvalMode);
       // writes that already happened before this page load must not trigger another reload
       const done = writeCount(buildTimeline((j as any).events ?? [])) + ((j as any).events ?? []).filter((e: JobEvent) => e.type === "change_update").length;
@@ -165,6 +192,31 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   const timeline = useMemo(() => buildTimeline(events), [events]);
   const writes = useMemo(() => writeCount(timeline) + events.filter((e) => e.type === "change_update").length, [timeline, events]);
 
+  // ---- voice mode: talk hands-free and hear the answers; every message still appears in the chat
+  const [voiceOn, setVoiceOn] = useState(false);
+  const [voiceState, setVoiceState] = useState<VoiceState>("off");
+  const [heard, setHeard] = useState("");
+  const [blocked, setBlocked] = useState(false);
+  const [queued, setQueued] = useState("");
+  const queuedRef = useRef("");
+  const [voiceList, setVoiceList] = useState<string[]>([]);
+  const [voiceName, setVoiceName] = useState(store.get("lcw_voice_name") ?? "");
+  const [speakOn, setSpeakOn] = useState(store.get("lcw_voice_speak") !== "0");
+  const onUtterance = useRef<(text: string) => void>(() => {});
+  const [voice] = useState(() => new VoiceAgent({
+    onState: setVoiceState, onUtterance: (t) => onUtterance.current(t), onError: (m) => setProblem(m), onBlocked: setBlocked,
+  }));
+  useEffect(() => () => voice.stop(), [voice]);
+  const sayable = useMemo(() => sayableOf(timeline), [timeline]);
+
+  // read out what is new in the chat (declared before the reload below: the answer is spoken before the page reloads)
+  useEffect(() => {
+    const s = spoken.current;
+    if (!s || s.job !== jobId || sayable.length < s.count) return;
+    if (voiceOn) for (let k = s.count; k < sayable.length; k++) voice.say(sayText(sayable[k]));
+    s.count = sayable.length;
+  }, [sayable, jobId, voiceOn, voice, spokenReady]);
+
   // show the result: reload the page once the assistant has finished a step that changed the site
   useEffect(() => {
     if (!jobId || baseline.current === null || !autoRefresh || working) return;
@@ -172,9 +224,10 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       baseline.current = writes;
       setHistoryKey((k) => k + 1);
       store.sset(`lcw_reloaded:${jobId}`, String(writes));
-      post({ type: "lc:reload", tab });
+      const reload = () => post({ type: "lc:reload", tab });
+      if (voiceOn) void voice.whenIdle().then(reload); else reload(); // let it finish speaking; voice mode resumes after the reload
     }
-  }, [writes, working, jobId, autoRefresh, post, tab]);
+  }, [writes, working, jobId, autoRefresh, post, tab, voiceOn, voice]);
 
   /** A change made in the click panel (directly in WordPress, no AI): show it - it is a draft only editors see. */
   function applied(summary: string) {
@@ -216,7 +269,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       const args = { prompt, fileIds, pageUrl: cfg.pageUrl, approvalMode: mode, extraContext };
       if (jobId && paused) await api.message(jobId, { ...args, kind: pauseKind });
       else if (jobId && (status === "completed" || status === "failed")) await api.message(jobId, args);
-      else { const j = await api.createJob(site.id, args); setJobId(j.id); }
+      else { const j = await api.createJob(site.id, args); freshJob.current = j.id; setJobId(j.id); }
       setTab("chat");
       refreshJobs();
     } catch (e) { setProblem((e as Error).message); throw e; }
@@ -229,6 +282,77 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     setMode(m); store.set("lcw_mode", m);
     if (jobId) await api.setApprovalMode(jobId, m).catch(() => {});
   }
+  /** Images attached in the chat: also put them into the WordPress Media Library (as this person), and tell the assistant their ids. */
+  const [saveToLibrary, setSaveToLibrary] = useState(store.get("lcw_save_media") !== "0");
+  const selectionContext = () => selected ? `The person may mean this element (they picked it on the page):\n${elementContext(selected, resolved?.source)}` : "";
+  async function sendFromComposer(prompt: string, fileIds: string[], files: UploadedFile[]) {
+    const extra = [selectionContext()];
+    if (files.length && cfg.canUpload && saveToLibrary) {
+      const saved: string[] = [], failed: string[] = [];
+      for (const f of files) {
+        try {
+          const blob = await (await fetch(await fileUrl(f.id))).blob();
+          const att = await uploadToMedia(blob, f.filename);
+          saved.push(`attachment ${att.id} (${f.filename}, ${att.url})`);
+        } catch (e) { failed.push(`${f.filename}: ${(e as Error).message}`); }
+      }
+      if (saved.length) {
+        say(`Saved ${saved.length} image${saved.length === 1 ? "" : "s"} to the Media Library`);
+        extra.push(`The attached image(s) are ALREADY in the WordPress Media Library: ${saved.join("; ")}. Use these attachment ids directly - do not upload them again.`);
+      }
+      if (failed.length) setProblem(`Not saved to the Media Library: ${failed.join("; ")}`);
+    }
+    if (voiceOn) extra.push(VOICE_NOTE);
+    return send(prompt, fileIds, extra.filter(Boolean).join("\n\n") || undefined);
+  }
+
+  // ---- voice: start / end, and what a spoken sentence means right now
+  async function startVoice(resume = false) {
+    setProblem("");
+    const info = await api.voiceInfo().catch(() => ({ available: false, voice: "onyx", voices: [] as string[] }));
+    setVoiceList(info.available ? info.voices : []);
+    voice.voice = voiceName && info.voices.includes(voiceName) ? voiceName : info.voice;
+    voice.speakReplies = speakOn;
+    if (!(await voice.start(info.available))) { store.sset("lcw_voice", "0"); return; }
+    setVoiceOn(true); setHeard(""); store.sset("lcw_voice", "1");
+    if (!resume) voice.say("I'm listening. What would you like to change?");
+  }
+  function endVoice() {
+    voice.stop();
+    setVoiceOn(false); setHeard(""); setQueued(""); queuedRef.current = "";
+    store.sset("lcw_voice", "0");
+  }
+  useEffect(() => { if (store.sget("lcw_voice") === "1") void startVoice(true); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const voiceContext = () => [selectionContext(), VOICE_NOTE].filter(Boolean).join("\n\n");
+  const pendingApproval = [...timeline].reverse().find((i): i is Extract<TimelineItem, { kind: "approval" }> => i.kind === "approval" && !i.answer);
+
+  onUtterance.current = (text: string) => {
+    setHeard(text);
+    const low = text.toLowerCase().replace(/[.!?]+$/, "").trim();
+    if (/^(stop listening|goodbye|good bye|bye|that'?s all|that is all|(turn off|end|exit|close) voice( mode)?)$/.test(low)) { voice.say("Goodbye."); void voice.whenIdle(8000).then(endVoice); return; }
+    if (/^(stop talking|be quiet|quiet|silence|shut up|enough)$/.test(low)) { voice.stopSpeaking(); return; }
+    if (waiting && pendingApproval) {
+      const y = YES.exec(text), n = NO.exec(text);
+      if (y) { void answer(pendingApproval.approvalId, true, text.slice(y[0].length).trim() || undefined); voice.say("On it."); }
+      else if (n) { void answer(pendingApproval.approvalId, false, text.slice(n[0].length).trim() || undefined); voice.say("Cancelled."); }
+      else { void answer(pendingApproval.approvalId, false, text); voice.say("Understood. I'll take that into account."); }
+      return;
+    }
+    if (working) {
+      if (/^(stop|cancel|halt|abort|pause|wait|hold on)\b/.test(low)) { stop(); voice.say("Stopping."); return; }
+      queuedRef.current = text; setQueued(text);
+      voice.say("Noted. I'll do that next.");
+      return;
+    }
+    send(text, [], voiceContext()).catch(() => voice.say("Sorry, I could not send that."));
+  };
+  // something said while the assistant was busy: send it as soon as it is free
+  useEffect(() => {
+    if (!voiceOn || working || waiting || !queuedRef.current) return;
+    const t = queuedRef.current; queuedRef.current = ""; setQueued("");
+    send(t, [], voiceContext()).catch(() => {});
+  }, [voiceOn, working, waiting]); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function clearHistory() {
     setConfirmClear(false);
     let failed = 0;
@@ -304,18 +428,28 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
               onAnswer={(a, ok, r) => void answer(a, ok, r)} onCopy={(t) => { navigator.clipboard?.writeText(t); say("Copied"); }}
               onEdit={() => {}} onRetry={(t) => { if (t && (status === "completed" || status === "failed")) void send(t, []); }}
               onOpen={(url) => post({ type: "lc:navigate", url })} />
+            {voiceOn && (
+              <VoiceBar agent={voice} state={voiceState} heard={heard} busy={working} waiting={waiting} queued={queued} blocked={blocked}
+                voices={voiceList} voice={voiceName && voiceList.includes(voiceName) ? voiceName : voice.voice} speak={speakOn}
+                onVoice={(v) => { voice.voice = v; setVoiceName(v); store.set("lcw_voice_name", v); voice.say("This is how I sound now."); }}
+                onSpeak={(on) => { voice.speakReplies = on; if (!on) voice.stopSpeaking(); setSpeakOn(on); store.set("lcw_voice_speak", on ? "1" : "0"); }}
+                onEnd={endVoice} />
+            )}
             <Composer compact disabled={working || waiting} model={name} context={{}}
               onStop={working && jobId ? stop : undefined} stopping={stopping}
               notice={paused ? <PausedBar kind={pauseKind} onKind={setPauseKind} onContinue={() => void cont()} /> : undefined}
-              placeholder={waiting ? "Answer the approval above…" : working ? (stopping ? "Stopping…" : "Working… (Stop to pause)") : paused ? (pauseKind === "edit" ? "Type your corrected request…" : "Type a note…") : "Ask for any change on this page…"}
-              onClearContext={() => {}} onSend={(p, f) => send(p, f, selected ? `The person may mean this element (they picked it on the page):\n${elementContext(selected, resolved?.source)}` : undefined)}
+              placeholder={voiceOn && !waiting && !working ? "Voice mode is on - just talk, or type here…" : waiting ? "Answer the approval above…" : working ? (stopping ? "Stopping…" : "Working… (Stop to pause)") : paused ? (pauseKind === "edit" ? "Type your corrected request…" : "Type a note…") : "Ask for any change on this page…"}
+              voice={<button className={`mode mic ${voiceOn ? "on" : ""}`} aria-pressed={voiceOn} onClick={() => (voiceOn ? endVoice() : void startVoice())}
+                title={voiceOn ? "End voice mode" : "Voice mode: just talk - no need to press Enter. Answers are read aloud."}><Icon.Mic size={17} /></button>}
+              attachNote={cfg.canUpload ? <label className="att-save"><input type="checkbox" checked={saveToLibrary} onChange={(e) => { setSaveToLibrary(e.target.checked); store.set("lcw_save_media", e.target.checked ? "1" : "0"); }} /> Also save to the Media Library</label> : undefined}
+              onClearContext={() => {}} onSend={sendFromComposer}
               chips={selected ? <span className="chip"><Icon.Cursor size={12} /> {selected.label}<button aria-label="forget selection" onClick={() => setSelected(null)}><Icon.Close size={11} /></button></span> : undefined}
               extra={<ApprovalModePicker mode={mode} onChange={(m) => void changeMode(m)} />} />
           </div>
         )}
         {tab === "actions" && (
           <div className="w-scroll">
-            <ElementPanel selected={selected} resolved={resolved} resolving={resolving} error={resolveError} picking={picking} disabled={working || waiting}
+            <ElementPanel selected={selected} resolved={resolved} resolving={resolving} error={resolveError} picking={picking} disabled={working || waiting} canUpload={!!cfg.canUpload}
               onPick={() => { setPicking(true); post({ type: "lc:pick" }); }} onCancelPick={() => { setPicking(false); post({ type: "lc:cancel-pick" }); }}
               onApplied={applied} onHighlight={(selector) => post({ type: "lc:highlight", selector })}
               onAsk={(q) => void send(q, [], selected ? `The person picked this element on the page:\n${elementContext(selected, resolved?.source)}` : undefined)}

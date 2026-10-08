@@ -11,7 +11,7 @@ export function connectParent(parentOrigin: string) {
   origin = parentOrigin;
   window.addEventListener("message", (e) => {
     if (e.origin !== origin || !e.data || typeof e.data.id !== "string") return;
-    if (e.data.type === "lc:wp-result" || e.data.type === "lc:media-result") waiting.get(e.data.id)?.(e.data);
+    if (e.data.type === "lc:wp-result" || e.data.type === "lc:media-result" || e.data.type === "lc:upload-result") waiting.get(e.data.id)?.(e.data);
   });
 }
 
@@ -39,6 +39,16 @@ export async function pickMedia(): Promise<Attachment | null> {
   if (r.ok && r.attachment) return r.attachment;
   if (r.cancelled) return null;
   throw new Error(r.error || "The Media Library could not be opened.");
+}
+
+/**
+ * Save an image from the person's computer into the WordPress Media Library. The page uploads it as the logged-in
+ * person (plugin 0.11+), so it is theirs in the library like any upload in wp-admin.
+ */
+export async function uploadToMedia(file: Blob, name: string, alt?: string): Promise<Attachment> {
+  const r = await ask<{ ok: boolean; attachment?: Attachment; error?: string }>({ type: "lc:upload", file, name, alt }, 5 * 60_000);
+  if (r.ok && r.attachment) return r.attachment;
+  throw new Error(r.error || "The upload failed.");
 }
 
 export const tell = (msg: Record<string, unknown>) => { if (origin) window.parent.postMessage(msg, origin); };

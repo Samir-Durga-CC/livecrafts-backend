@@ -1,8 +1,8 @@
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import { Icon } from "../icons";
 import type { Resolved, ResolvedAction } from "../types";
 import type { PickedElement } from "./element";
-import { pickMedia, wp } from "./parent";
+import { pickMedia, uploadToMedia, wp } from "./parent";
 
 const GROUPS: { id: ResolvedAction["group"]; label: string; icon: ReactElement }[] = [
   { id: "content", label: "Content", icon: <Icon.Text size={15} /> },
@@ -36,8 +36,10 @@ function initial(a: ResolvedAction): string {
  * The click panel: what the clicked element is (its real source) and only the options that source supports.
  * Every option makes one draft change directly in WordPress - no AI. Drafts are seen by editors only until deployed.
  */
-export function ElementPanel({ selected, resolved, resolving, error, picking, disabled, onPick, onCancelPick, onApplied, onAsk, onEditOnPage, onHighlight }: {
+export function ElementPanel({ selected, resolved, resolving, error, picking, disabled, canUpload, onPick, onCancelPick, onApplied, onAsk, onEditOnPage, onHighlight }: {
   selected: PickedElement | null; resolved: Resolved | null; resolving: boolean; error: string; picking: boolean; disabled: boolean;
+  /** The plugin can save images from this computer into the Media Library (0.11+, and the account may upload). */
+  canUpload: boolean;
   onPick: () => void; onCancelPick: () => void; onApplied: (summary: string) => void; onAsk: (prompt: string) => void;
   onEditOnPage: (selector: string, apply: (text: string) => Promise<void>) => void; onHighlight: (selector: string) => void;
 }) {
@@ -117,6 +119,7 @@ export function ElementPanel({ selected, resolved, resolving, error, picking, di
             <div className="ep-actions">
               {actions.filter((a) => a.group === g.id && a.input !== "ask").map((a) => (
                 <ActionRow key={a.id} a={a} busy={busy === a.id} disabled={disabled || (!!busy && busy !== a.id)} onApply={(v) => apply(a, v)}
+                  canUpload={canUpload} onProblem={setProblem}
                   onEditOnPage={a.input === "text" || a.input === "html" ? () => onEditOnPage(selected.selector, (text) => apply(a, text)) : undefined} />
               ))}
             </div>
@@ -134,7 +137,10 @@ export function ElementPanel({ selected, resolved, resolving, error, picking, di
   );
 }
 
-function ActionRow({ a, busy, disabled, onApply, onEditOnPage }: { a: ResolvedAction; busy: boolean; disabled: boolean; onApply: (v?: unknown) => Promise<void>; onEditOnPage?: () => void }) {
+function ActionRow({ a, busy, disabled, onApply, onEditOnPage, canUpload, onProblem }: {
+  a: ResolvedAction; busy: boolean; disabled: boolean; onApply: (v?: unknown) => Promise<void>; onEditOnPage?: () => void;
+  canUpload: boolean; onProblem: (message: string) => void;
+}) {
   const [v, setV] = useState(initial(a));
   const [num, setNum] = useState(() => (initial(a).match(/^-?[\d.]+/) ?? [""])[0]);
   const [unit, setUnit] = useState(() => (initial(a).match(/[a-z%]+$/i) ?? [a.units?.[0] ?? "px"])[0]);
@@ -150,13 +156,7 @@ function ActionRow({ a, busy, disabled, onApply, onEditOnPage }: { a: ResolvedAc
       return <label className="ep-row ep-switch"><span className="grow">{a.label}</span><input type="checkbox" checked={on} disabled={disabled || busy} onChange={() => go(value)} /></label>;
     }
     case "image":
-      return (
-        <div className="ep-row">
-          <span className="grow">{a.label}</span>
-          {a.value?.url && <img className="ep-thumb" src={a.value.url} alt="" />}
-          <button className="btn accent sm" disabled={disabled || busy} onClick={async () => { const m = await pickMedia().catch(() => null); if (m) go(m.id); }}>{busy ? <span className="spin" /> : <><Icon.Image size={14} /> Choose</>}</button>
-        </div>
-      );
+      return <ImageRow a={a} busy={busy} disabled={disabled} canUpload={canUpload} onPick={(id) => go(id)} onProblem={onProblem} />;
     case "html":
     case "text":
       return (
@@ -203,4 +203,50 @@ function ActionRow({ a, busy, disabled, onApply, onEditOnPage }: { a: ResolvedAc
       );
   }
   return null;
+}
+
+/**
+ * One image slot: the current picture, "Upload" (a file from this computer, saved into the Media Library first) and
+ * "Library" (WordPress's own window: choose an existing image or upload there). Dropping a file on the row uploads it.
+ */
+function ImageRow({ a, busy, disabled, canUpload, onPick, onProblem }: {
+  a: ResolvedAction; busy: boolean; disabled: boolean; canUpload: boolean; onPick: (attachmentId: number) => void; onProblem: (message: string) => void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState("");
+  const [drag, setDrag] = useState(false);
+  const off = disabled || busy || !!uploading;
+
+  async function upload(file: File | undefined) {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { onProblem("That is not an image file."); return; }
+    setUploading(file.name); onProblem("");
+    try { const att = await uploadToMedia(file, file.name); onPick(att.id); }
+    catch (e) { onProblem(`Upload failed: ${(e as Error).message}`); }
+    finally { setUploading(""); }
+  }
+
+  return (
+    <div className={`ep-img ${drag ? "drag" : ""}`}
+      onDragOver={canUpload && !off ? (e) => { e.preventDefault(); setDrag(true); } : undefined} onDragLeave={() => setDrag(false)}
+      onDrop={canUpload && !off ? (e) => { e.preventDefault(); setDrag(false); void upload(e.dataTransfer.files[0]); } : undefined}>
+      <div className="ep-img-head">
+        {a.value?.url ? <img className="ep-thumb" src={a.value.url} alt="" /> : <span className="ep-thumb empty"><Icon.Image size={16} /></span>}
+        <span className="grow">{a.label}{uploading && <small className="ep-img-note">Uploading {uploading}…</small>}</span>
+      </div>
+      <div className="qa-row">
+        {canUpload && (
+          <button className="btn accent sm" disabled={off} onClick={() => input.current?.click()} title="Upload an image from this computer (it is saved in the Media Library)">
+            {uploading ? <span className="spin" /> : <><Icon.Upload size={14} /> Upload</>}
+          </button>
+        )}
+        <button className={`btn sm ${canUpload ? "" : "accent"}`} disabled={off} onClick={async () => { const m = await pickMedia().catch((e) => { onProblem((e as Error).message); return null; }); if (m) onPick(m.id); }}
+          title="Choose from the Media Library">
+          {busy && !uploading ? <span className="spin" /> : <><Icon.Image size={14} /> Library</>}
+        </button>
+        {canUpload && <span className="ep-img-hint">or drop a file here</span>}
+      </div>
+      <input ref={input} type="file" accept="image/*" hidden onChange={(e) => { void upload(e.target.files?.[0]); e.target.value = ""; }} />
+    </div>
+  );
 }

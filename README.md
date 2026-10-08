@@ -49,6 +49,16 @@ secret (`POST /livecrafts/v1/connect`), which it uses to verify the per-person t
 | `LC_VERIFY_CHANGES` | `0` turns the browser checks off (e.g. a server without Edge/Chrome). Default on. |
 | `LC_ALLOW_THEME_FILES` | `1` lets the assistant edit theme files. They go **live at once** (cannot be drafts) - off by default. |
 | `LC_BROWSER_PATH` | Edge/Chrome path if neither is found automatically. |
+| `LC_TTS_VOICE` | Default voice of the voice mode (`onyx`, `ash`, `echo`, `fable`, `sage`, `alloy`, `coral`, `nova`, `shimmer`, `ballad`, `verse`). Each person can pick another in the widget. Default `onyx`. |
+| `LC_TTS_MODEL` / `LC_STT_MODEL` | Speech and transcription models. Default `gpt-4o-mini-tts` / `gpt-4o-mini-transcribe`. Voice uses the OpenAI key. |
+
+## Voice mode (widget)
+The mic button in the chat turns on hands-free voice: the microphone stays open, a pause ends what you said (no Enter),
+it is transcribed (`POST /voice/transcribe`) and sent as a normal chat message; answers are read aloud sentence by
+sentence (`POST /voice/speak`). Everything stays visible in the chat. Say "yes" / "no" to approvals, "stop" to
+interrupt work, "stop talking" to cut the answer short, "goodbye" to end. Talking over an answer interrupts it. After a
+change the page reloads once the answer was spoken, and voice mode resumes. Needs plugin 0.11+ (it lets the chat frame
+use the microphone). Without an OpenAI key the browser's own speech recognition and voices are used where available.
 
 ## Who may call what
 | Caller | Auth | Can |
@@ -69,6 +79,7 @@ secret (`POST /livecrafts/v1/connect`), which it uses to verify the per-person t
 | `src/changes.ts` | A chat's pointers into the site history (revert, diff). |
 | `src/usage.ts` | `data/usage/*.jsonl` (model, tokens per call), `data/logs/*.jsonl` (+ live follow). |
 | `src/eyes.ts` | The person's own browser (widget open) as the assistant's eyes. |
+| `src/voice.ts` | Voice mode: speech to text and text to speech (OpenAI audio API, key stays on the server). |
 | `web/` | React UI: the app, and the widget (chat, click panel without AI, site history). |
 | `test/` | `fakeSite.ts` (plugin 0.10 API in memory), `smoke.ts`, `features.ts`, `verify-browser.ts`, `demo.ts`. |
 

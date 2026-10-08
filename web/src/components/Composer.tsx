@@ -7,14 +7,18 @@ interface Attachment { key: string; name: string; preview: string; state: "uploa
 
 export interface Context { pageUrl?: string; selectedTarget?: string }
 
-export function Composer({ disabled, placeholder, model, context, draft, onClearContext, onSend, extra, chips, compact, onStop, stopping, notice }: {
+export function Composer({ disabled, placeholder, model, context, draft, onClearContext, onSend, extra, chips, compact, onStop, stopping, notice, voice, attachNote }: {
   disabled: boolean; placeholder: string; model: string; context: Context; draft?: { text: string; n: number };
   extra?: ReactNode; chips?: ReactNode; compact?: boolean;
   /** While the assistant works: the send button becomes Stop. */
   onStop?: () => void; stopping?: boolean;
   /** A bar above the input (e.g. "Paused - Continue / note / correction"). */
   notice?: ReactNode;
-  onClearContext: (k: keyof Context) => void; onSend: (text: string, fileIds: string[]) => Promise<void>;
+  /** The voice-mode button, next to the attach buttons. */
+  voice?: ReactNode;
+  /** Shown under attached images (e.g. "also save them to the Media Library"). */
+  attachNote?: ReactNode;
+  onClearContext: (k: keyof Context) => void; onSend: (text: string, fileIds: string[], files: UploadedFile[]) => Promise<void>;
 }) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<Attachment[]>([]);
@@ -45,7 +49,7 @@ export function Composer({ disabled, placeholder, model, context, draft, onClear
   async function submit() {
     if (!canSend) return;
     setSending(true);
-    try { await onSend(text.trim() || "Use the attached image(s).", ready.map((f) => f.file!.id)); setText(""); setFiles([]); }
+    try { await onSend(text.trim() || "Use the attached image(s).", ready.map((f) => f.file!.id), ready.map((f) => f.file!)); setText(""); setFiles([]); }
     finally { setSending(false); }
   }
 
@@ -71,6 +75,7 @@ export function Composer({ disabled, placeholder, model, context, draft, onClear
               <button className="att-x" aria-label="remove" onClick={() => setFiles((a) => a.filter((x) => x.key !== f.key))}><Icon.Close size={11} /></button>
             </div>
           ))}
+          {attachNote && <div className="att-note">{attachNote}</div>}
         </div>
       )}
       <div className="c-input">
@@ -84,6 +89,7 @@ export function Composer({ disabled, placeholder, model, context, draft, onClear
         <button className="mode" title="Attach an image (you can also drag & drop or paste)" onClick={() => picker.current?.click()} disabled={disabled}><Icon.Image size={17} /></button>
         <button className="mode" title="Attach a file" onClick={() => picker.current?.click()} disabled={disabled}><Icon.Clip size={17} /></button>
         <input ref={picker} type="file" accept="image/*" multiple hidden onChange={(e) => { if (e.target.files) add(e.target.files); e.target.value = ""; }} />
+        {voice}
         <span className="c-hint">Enter to send · Shift+Enter for a new line</span>
         <span className="grow" />
         {extra ?? <span className="model-pill" title="Change the model with LC_MODEL in the backend .env"><Icon.Sparkle size={13} /> {model}</span>}
