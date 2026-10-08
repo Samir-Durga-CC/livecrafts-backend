@@ -4,6 +4,7 @@ import path from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { config } from "./config.js";
 import { newId } from "./store.js";
+import { measureComponent, type ComponentReport } from "./library/check.js";
 
 /**
  * A real browser for the agent (headless Edge/Chrome already on the machine via playwright-core - no download).
@@ -23,7 +24,7 @@ async function launch(): Promise<Browser> {
   throw new Error("No browser available for page checks. Install Microsoft Edge or Google Chrome, or set LC_BROWSER_PATH. (" + String((last as Error)?.message ?? last).split("\n")[0] + ")");
 }
 
-async function getBrowser() {
+export async function getBrowser() {
   if (!browserP) browserP = launch().catch((e) => { browserP = null; throw e; });
   const b = await browserP;
   if (!b.isConnected()) { browserP = null; return getBrowser(); }
@@ -228,6 +229,8 @@ export interface PageAudit {
   /** Visible text, one line per block of text. */
   lines: string[];
   element?: { selector: string; found: boolean; visible?: boolean; text?: string; styles?: StyleCheck[] };
+  /** Layout checks of a library component on this page (see library/check.ts). */
+  component?: ComponentReport;
   shot?: Buffer;
 }
 
@@ -236,7 +239,7 @@ export interface PageAudit {
  * does it load, any PHP error, sideways scrolling, broken images, script errors, its text - and optionally one
  * element: does it exist, is it visible, do its computed styles equal the intended values.
  */
-export async function auditPage(siteUrl: string, a: { url?: string; device?: Device; selector?: string; declarations?: Record<string, string>; shot?: boolean }, view: View = {}): Promise<PageAudit> {
+export async function auditPage(siteUrl: string, a: { url?: string; device?: Device; selector?: string; declarations?: Record<string, string>; shot?: boolean; component?: string }, view: View = {}): Promise<PageAudit> {
   const device = a.device ?? "desktop";
   const consoleErrors: string[] = [];
   const { ctx, page, status } = await openPage(siteUrl, a.url, device, view, (p) => {
@@ -280,11 +283,12 @@ export async function auditPage(siteUrl: string, a: { url?: string; device?: Dev
       }
       return { text, fatal: fatal ? fatal[1] : null, broken, overflowX, element };
     }, { selector: a.selector, declarations: a.declarations });
+    const component = a.component ? await page.evaluate(measureComponent, a.component).catch(() => undefined) : undefined;
     const shot = a.shot ? await page.screenshot({ fullPage: true, type: "jpeg", quality: 50, timeout: 20_000 }).catch(() => undefined) : undefined;
     return {
       url: cleanUrl(page.url()), device, status, fatal: data.fatal, overflowX: data.overflowX, brokenImages: data.broken, consoleErrors,
       lines: data.text.split(/\n+/).map((l: string) => l.replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 2000),
-      element: data.element, shot,
+      element: data.element, component, shot,
     };
   } finally { await ctx.close(); }
 }

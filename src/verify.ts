@@ -1,4 +1,5 @@
 import { auditPage, compareShots, type Device, type PageAudit } from "./browser.js";
+import { componentChecks } from "./library/check.js";
 
 /**
  * The automatic checks after every change the assistant makes - the same checks a careful developer does, run by the
@@ -67,7 +68,8 @@ export class Verifier {
     try { return await this.audit(this.d.siteUrl, { url, shot: true }, { preview: await this.d.previewToken() }); } catch { return null; }
   }
 
-  async after(url: string, change: any, before: PageAudit | null): Promise<Verification> {
+  /** opts.component = CSS selector of a library component that was just placed: it is also measured on desktop, tablet and mobile. */
+  async after(url: string, change: any, before: PageAudit | null, opts: { component?: string } = {}): Promise<Verification> {
     const checks: Check[] = [{ name: "stored", ok: true, detail: "The site stored the draft and read it back." }];
     const exp = expectationOf(change);
     let preview: string;
@@ -78,7 +80,7 @@ export class Verifier {
     const device = exp.device ?? "desktop";
     let main: PageAudit | null = null;
     try {
-      main = await this.audit(this.d.siteUrl, { url, device, selector: exp.selector, declarations: exp.declarations, shot: device === "desktop" }, { preview });
+      main = await this.audit(this.d.siteUrl, { url, device, selector: exp.selector, declarations: exp.declarations, shot: device === "desktop", component: opts.component }, { preview });
     } catch (e) {
       const msg = (e as Error).message;
       return done([...checks, { name: "draft", ok: /^BOT_CHECK/.test(msg) ? null : false, detail: "The draft page could not be opened: " + short(msg, 200) }]);
@@ -96,8 +98,14 @@ export class Verifier {
       }
     }
     checks.push(...health(main, before, device));
-    for (const other of (["desktop", "mobile"] as Device[]).filter((x) => x !== device)) {
-      try { const a = await this.audit(this.d.siteUrl, { url, device: other }, { preview }); checks.push(...health(a, null, other).filter((c) => c.ok === false)); } catch { /* reported by the main audit */ }
+    if (opts.component && main.component) checks.push(...componentChecks(main.component, device));
+    const others: Device[] = opts.component ? ["desktop", "tablet", "mobile"] : ["desktop", "mobile"];
+    for (const other of others.filter((x) => x !== device)) {
+      try {
+        const a = await this.audit(this.d.siteUrl, { url, device: other, component: opts.component }, { preview });
+        checks.push(...health(a, null, other).filter((c) => c.ok === false));
+        if (opts.component && a.component) { const cc = componentChecks(a.component, other); checks.push(...cc.filter((c) => c.ok === false)); if (cc.every((c) => c.ok !== false)) checks.push({ name: `component (${other})`, ok: true, detail: `Fits, nothing overlaps or is covered on ${other}.` }); }
+      } catch { /* reported by the main audit */ }
     }
 
     // 4: still a draft for visitors
