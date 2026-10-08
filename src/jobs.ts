@@ -3,7 +3,7 @@ import { config } from "./config.js";
 import { JsonStore, newId } from "./store.js";
 import type { AgentFactory, JobContext } from "./agent.js";
 import { quickCommand, undoReply } from "./quick.js";
-import { blockingChange, recordsFor, revertChange, type ChangeRecord } from "./changes.js";
+import { blockingChange, reconcile, recordsFor, revertChange, type ChangeRecord } from "./changes.js";
 import { imageMarker } from "./vision.js";
 import { assistantSettings } from "./persona.js";
 import { Bridge } from "./bridge.js";
@@ -177,6 +177,22 @@ export class JobRunner {
       mark({ revertError: (e as Error).message }, {});
       throw e;
     }
+  }
+
+  /**
+   * The site's change ledger is the one record, and a change can be reverted from anywhere (page widget, wp-admin, another
+   * chat). Before a chat shows its changes, bring them up to date with the ledger. Best effort: the site may be unreachable.
+   */
+  async syncChanges(jobId: string): Promise<void> {
+    const job = this.jobs.get(jobId);
+    if (!job || this.active.has(jobId) || !(job.changes ?? []).some((c) => c.pluginId && !c.revertedAt)) return;
+    const site = this.sites.get(job.siteId);
+    if (!site) return;
+    try {
+      const ledger = (await new Bridge(site, job.actorToken).changes({ limit: 300 })).changes ?? [];
+      const fresh = this.current(jobId);
+      if (reconcile(fresh.changes ?? [], ledger)) { fresh.updatedAt = new Date().toISOString(); this.jobs.put(fresh); }
+    } catch { /* offline: show what we know */ }
   }
 
   /** "undo" / "wapas kar do": revert from the ledger, answer in the person's language - no model call, no tokens. */

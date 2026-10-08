@@ -49,6 +49,27 @@ export function blockingChange(all: ChangeRecord[], c: ChangeRecord): ChangeReco
   return all.slice(idx + 1).find((x) => !x.revertedAt && x.key === c.key) ?? null;
 }
 
+/**
+ * A change can be undone from anywhere - the page widget, wp-admin, the console, another chat - because the site's ledger is
+ * the one record. Bring a chat's pointers up to date with it: a dropped draft, or a live change that a later change reverts,
+ * counts as reverted here too; draft -> live (deployed) is picked up. Returns true when something changed.
+ */
+export function reconcile(changes: ChangeRecord[], ledger: any[]): boolean {
+  const byId = new Map<number, any>(ledger.map((r) => [Number(r.id), r]));
+  const revertOf = new Map<number, any>();
+  for (const r of ledger) if (r.reverts && r.status !== "discarded") revertOf.set(Number(r.reverts), r);
+  let changed = false;
+  for (const c of changes) {
+    const row = byId.get(c.pluginId);
+    if (!row) continue;
+    if (row.status && row.status !== c.status && row.status !== "discarded") { c.status = row.status; changed = true; }
+    if (c.revertedAt) continue;
+    const undone = row.status === "discarded" ? row : revertOf.get(c.pluginId);
+    if (undone) { c.revertedAt = String(undone.updated ?? undone.at ?? new Date().toISOString()); c.revertError = undefined; c.note = c.note ?? "Reverted outside this chat."; changed = true; }
+  }
+  return changed;
+}
+
 export interface RevertDeps { bridge: Bridge; ref?: string }
 
 /** Undo one change through the plugin (drops a draft, or drafts the old value of a live change). */

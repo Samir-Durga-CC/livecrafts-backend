@@ -294,7 +294,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       }
       m = url.pathname.match(/^\/jobs\/([\w-]+)$/);
       if (m && req.method === "DELETE") { try { runner.delete(m[1]); return send(res, 200, { ok: true }); } catch (e) { return send(res, 409, { error: (e as Error).message }); } }
-      if (m && req.method === "GET") { const j = runner.get(m[1]); return j ? send(res, 200, { ...publicJob(j), events: j.events }) : send(res, 404, { error: "Unknown job" }); }
+      if (m && req.method === "GET") { await runner.syncChanges(m[1]); const j = runner.get(m[1]); return j ? send(res, 200, { ...publicJob(j), events: j.events }) : send(res, 404, { error: "Unknown job" }); }
       m = url.pathname.match(/^\/jobs\/([\w-]+)\/approvals$/);
       if (m && req.method === "POST") {
         const b = await readJson(req);

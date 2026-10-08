@@ -46,10 +46,12 @@ export function SiteChanges({ postId, reloadKey, canDeploy, onChanged }: { postI
   }
 
   const drafts = status?.drafts?.count ?? 0;
+  const files = status?.files ?? 0; // theme files: live at once, undone by Discard all
   return (
     <div className="sc">
       <div className="sc-status">
         <div className="sc-dot-line"><span className={`sc-dot ${drafts ? "draft" : "live"}`} /><b>{drafts ? `${drafts} unpublished change${drafts === 1 ? "" : "s"}` : "No drafts - the preview is the live site"}</b></div>
+        {files > 0 && <small className="muted">{files} theme-file edit{files === 1 ? " is" : "s are"} already live; Discard all puts {files === 1 ? "that file" : "those files"} back as before.</small>}
         {status?.last_release && <small className="muted">Last release #{status.last_release.id}: {status.last_release.summary} · {when(status.last_release.at)}{status.last_release.user ? ` · ${status.last_release.user.name}` : ""}</small>}
         {status?.conflicts?.length > 0 && <div className="qa-warn">Changed on the live site after the draft was made: {status.conflicts.map((c: any) => c.object).join(", ")}. Deploy asks you to confirm.</div>}
         {status?.broken?.length > 0 && <div className="banner error">Some drafts no longer fit the page: {status.broken.map((b: any) => `${b.object}: ${b.error}`).join("; ")}. Revert them.</div>}
@@ -84,9 +86,9 @@ export function SiteChanges({ postId, reloadKey, canDeploy, onChanged }: { postI
                   detail.diff?.length ? detail.diff.map((d) => <Diff key={d.path} label={d.path} before={d.before} after={d.after} />)
                     : <Diff label={detail.target || detail.kind} before={text(detail.payload.before)} after={text(detail.payload.after)} />
                 )}
-                {c.status !== "discarded" && c.kind !== "restore" && (
+                {c.status !== "discarded" && c.kind !== "restore" && !c.reverts && (
                   <button className="btn sm" disabled={busy === c.id} onClick={() => void revert(c)}>
-                    {busy === c.id ? <span className="spin" /> : <Icon.Retry size={14} />} {c.status === "draft" ? "Drop this draft" : "Revert (as a draft)"}
+                    {busy === c.id ? <span className="spin" /> : <Icon.Retry size={14} />} {c.status === "draft" ? "Drop this draft" : c.kind === "file.write" ? "Put the file back now" : "Revert (as a draft)"}
                   </button>
                 )}
               </div>

@@ -161,6 +161,11 @@ export class HostingerClient {
   }
 }
 
+/** ref = which chat/request wrote it; rollbackOf = the ledger change this write undoes at once (the page broke). */
+export interface FileOpts { ref?: string; rollbackOf?: number }
+/** What the plugin answers to a write: the change it recorded in the site's ledger. */
+export interface FileResult { change?: { id: number; summary?: string; status?: string; kind?: string; object?: unknown; target?: string; at?: string } | null }
+
 export interface RemoteFiles {
   list(dir: string): Promise<{ name: string; path: string; type: string; bytes: number | null }[]>;
   readViaApi(rel: string, fromLine?: number, maxLines?: number): Promise<string>;
@@ -168,9 +173,11 @@ export interface RemoteFiles {
   /** Exact bytes + fingerprint (Livecrafts plugin 0.7+). Without it only static files can be edited. */
   readExact?(rel: string): Promise<{ content: string; sha1: string } | null>;
   /** Write with a fingerprint check ("new" = create a new file). PHP is syntax-checked by the plugin before writing. */
-  write?(rel: string, content: string, expectedSha1: string): Promise<void>;
+  write?(rel: string, content: string, expectedSha1: string, o?: FileOpts): Promise<FileResult | void>;
   /** Delete a file only if it still has exactly this fingerprint (used to undo "create file"). */
-  remove?(rel: string, sha1: string): Promise<void>;
+  remove?(rel: string, sha1: string, o?: FileOpts): Promise<FileResult | void>;
+  /** Undo a recorded file change by its id in the site's change ledger (the plugin does it, whoever made the change). */
+  revert?(changeId: number, ref?: string): Promise<unknown>;
 }
 
 export const hostinger = new HostingerClient();

@@ -1,6 +1,8 @@
 import { config } from "./config.js";
 import type { Site } from "./types.js";
 
+export interface FileWriteOpts { ref?: string; rollbackOf?: number }
+
 export class BridgeError extends Error {
   constructor(public status: number, public code: string, message: string) {
     super(message);
@@ -146,8 +148,9 @@ export class Bridge {
   // ---- active theme files (Livecrafts plugin 0.7+)
   themeFiles() { return this.request("GET", "livecrafts/v1/theme-files"); }
   readThemeFile(path: string) { return this.request<{ ok: boolean; path: string; content: string; sha1: string; bytes: number }>("GET", "livecrafts/v1/theme-file", { query: { path } }); }
-  writeThemeFile(path: string, content: string, expectedSha1: string) { return this.request("POST", "livecrafts/v1/theme-file", { json: { path, content, expectedSha1 } }); }
-  deleteThemeFile(path: string, expectedSha1: string) { return this.request("DELETE", "livecrafts/v1/theme-file", { query: { path, expectedSha1 } }); }
+  /** The plugin records every write in the site's change ledger (the answer has `change`); rollbackOf = undo my own change at once, leaving no trace. */
+  writeThemeFile(path: string, content: string, expectedSha1: string, o: FileWriteOpts = {}) { return this.request<{ ok: boolean; change?: any }>("POST", "livecrafts/v1/theme-file", { json: { path, content, expectedSha1, source: "assistant", ref: o.ref, rollback_of: o.rollbackOf } }); }
+  deleteThemeFile(path: string, expectedSha1: string, o: FileWriteOpts = {}) { return this.request<{ ok: boolean; change?: any }>("DELETE", "livecrafts/v1/theme-file", { query: { path, expectedSha1, source: "assistant", ref: o.ref, rollback_of: o.rollbackOf } }); }
 
   async uploadMedia(buf: Buffer, filename: string, mime: string, title?: string, alt?: string) {
     // Images are stored as WebP (smaller, faster pages); the original is uploaded when conversion is not possible.

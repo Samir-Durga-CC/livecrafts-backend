@@ -144,7 +144,7 @@ export function buildAgent(files: FileStore, opts: BuildOptions = {}): AgentFact
     const hg = opts.hostinger !== undefined ? opts.hostinger : secrets.hostingerToken() ? defaultHostinger : null;
     // Theme files: the Livecrafts plugin (exact + PHP) first, the Hostinger account as fallback for static files.
     const remote = opts.remoteFiles ? opts.remoteFiles(site, bridge) : combineRemotes(pluginFiles(bridge), hg && site.hosting ? hg.filesFor(site) : null);
-    const siteFiles = remote ? new SiteFiles({ siteId: site.id, siteUrl: site.url, remote, fetchImpl: opts.fetchImpl }) : null;
+    const siteFiles = remote ? new SiteFiles({ siteId: site.id, siteUrl: site.url, remote, fetchImpl: opts.fetchImpl, ref: () => job?.ref ?? "" }) : null;
     const tok = () => previewToken(site, bridge);
     const at = (a: any) => ({ ...a, url: a.url || job?.pageUrl });
     // Draft view: the person's own browser when the widget is open (they see the drafts), else the server's browser with

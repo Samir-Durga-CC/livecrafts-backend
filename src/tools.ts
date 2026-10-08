@@ -341,7 +341,7 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     ...(extras.allowThemeWrites ? {
       edit_file: tool({
         description:
-          "LIVE AT ONCE (theme files cannot be drafts): edit a theme file by replacing ONE exact, unique snippet copied from read_file. Only when no draft change can do it (e.g. text hard-coded in a template). " +
+          "LIVE AT ONCE (theme files cannot be drafts, but the edit is recorded in the site history like every change: revert_change undoes it, Discard all and resets put the file back): edit a theme file by replacing ONE exact, unique snippet copied from read_file. Only when no draft change can do it (e.g. text hard-coded in a template). " +
           "Say clearly that it is live immediately. PHP is syntax-checked, a backup is kept, and a broken page is restored automatically. Needs approval.",
         inputSchema: z.object({ path: z.string(), find: z.string().min(1).max(30_000), replace: z.string().max(60_000), reason: reasonSchema, checkUrl: z.string().optional() }),
         execute: async ({ path, find, replace, checkUrl }) => safe(() => sf.edit(path, find, replace, [bridge.homeUrl, ...(checkUrl ? [checkUrl] : [])])),
@@ -352,7 +352,7 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
         execute: async ({ path, content }) => safe(() => sf.create(path, content, [bridge.homeUrl])),
       }),
       restore_file: tool({
-        description: "Put a theme file back from its backupId (from edit_file/create_file). Live at once. Needs approval.",
+        description: "Put a theme file back from its backupId (from edit_file/create_file) - the same as revert_change on its change id. Live at once. Needs approval.",
         inputSchema: z.object({ backupId: z.string(), reason: reasonSchema }),
         execute: async ({ backupId }) => safe(() => sf.restore(backupId, [bridge.homeUrl])),
       }),
@@ -405,6 +405,6 @@ export const APPROVAL_REQUIRED = [
 ] as const;
 
 /** Tools that change the site (they create history entries). */
-export const WRITE_TOOLS = new Set<string>(["make_change", "create_page", "revert_change", "place_component"]);
+export const WRITE_TOOLS = new Set<string>(["make_change", "create_page", "revert_change", "place_component", "edit_file", "create_file", "restore_file"]);
 
 export type PostTypeName = PostType;

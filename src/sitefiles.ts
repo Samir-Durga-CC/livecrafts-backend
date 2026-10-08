@@ -4,7 +4,7 @@ import { config } from "./config.js";
 import { JsonStore, newId } from "./store.js";
 import type { Bridge } from "./bridge.js";
 import { BridgeError } from "./bridge.js";
-import type { RemoteFiles } from "./hostinger.js";
+import type { FileOpts, FileResult, RemoteFiles } from "./hostinger.js";
 
 /**
  * Safe file editing on a WordPress site.
@@ -15,8 +15,12 @@ import type { RemoteFiles } from "./hostinger.js";
  *  - Static files (css/js/json/txt/svg) can always be edited. Template files (php/html) only through the Livecrafts
  *    plugin 0.7+, which reads exact bytes, refuses PHP with a syntax error and only touches the active theme.
  *  - One exact, unique snippet is replaced (find -> replace). 0 or 2+ matches = refused, nothing written.
- *  - A backup is stored before writing; the change is read back to prove it is live; the page is loaded afterwards and
- *    if it broke (server error, PHP error, page cut off) the original file is put back automatically.
+ *  - The change is read back to prove it is live; the page is loaded afterwards and if it broke (server error, PHP error,
+ *    page cut off) the original file is put back automatically.
+ *  - Where the change is kept: through the Livecrafts plugin every write is recorded in the SITE's change ledger (WordPress)
+ *    with its full before/after - the same history as every other change, shown and revertable from the page widget, the
+ *    console and wp-admin, and covered by "Discard all" and resets. The local backup store below is only the fallback
+ *    for the hosting-account route (an old plugin), which has no ledger.
  */
 
 const THEME_FILE = /^wp-content\/themes\/[A-Za-z0-9._-]+\/(?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]+$/i;
@@ -32,6 +36,7 @@ export const sha1 = (s: string) => crypto.createHash("sha1").update(s, "utf8").d
 export interface Backup {
   id: string; siteId: string; path: string; before: string; after: string; createdAt: string; restoredAt?: string;
   created?: boolean; // the edit CREATED this file (undo = delete it)
+  changeId?: number; // the change in the site's ledger (the plugin undoes it); without it this local backup is the only record
 }
 
 export function cleanPath(p: string): string {
@@ -62,8 +67,9 @@ export function pluginFiles(bridge: Bridge): RemoteFiles {
         throw e;
       }
     },
-    async write(rel, content, expectedSha1) { await bridge.writeThemeFile(rel, content, expectedSha1); },
-    async remove(rel, s) { await bridge.deleteThemeFile(rel, s); },
+    async write(rel, content, expectedSha1, o) { return await bridge.writeThemeFile(rel, content, expectedSha1, o); },
+    async remove(rel, s, o) { return await bridge.deleteThemeFile(rel, s, o); },
+    async revert(changeId, ref) { return bridge.revert(changeId, ref); },
   };
 }
 
@@ -79,8 +85,9 @@ export function combineRemotes(primary: RemoteFiles, fallback: RemoteFiles | nul
     readViaApi: async (rel, a, b) => { try { return await primary.readViaApi(rel, a, b); } catch (e) { if (fallback) return fallback.readViaApi(rel, a, b); throw e; } },
     upload: async (rel, c) => { const r = await pick(rel).catch(() => fallback); if (!r) throw new Error("No way to write files: update the Livecrafts plugin to 0.7+ or connect Hostinger."); return r.upload(rel, c); },
     readExact: (rel) => primary.readExact!(rel),
-    write: (rel, c, s) => primary.write!(rel, c, s),
-    remove: (rel, s) => primary.remove!(rel, s),
+    write: (rel, c, s, o) => primary.write!(rel, c, s, o),
+    remove: (rel, s, o) => primary.remove!(rel, s, o),
+    revert: (id, ref) => primary.revert!(id, ref),
   };
 }
 
@@ -90,6 +97,8 @@ export interface SiteFileDeps {
   remote: RemoteFiles;
   fetchImpl?: typeof fetch;
   backups?: JsonStore<Backup>;
+  /** Which chat and request make the edit (stored with the change in the site's history). */
+  ref?: () => string;
 }
 
 interface Health { ok: boolean; reason?: string; complete?: boolean }
@@ -123,8 +132,9 @@ export class SiteFiles {
     return { content: await this.readPublic(rel), sha1: null, exact: false };
   }
 
-  private async put(rel: string, content: string, expectedSha1: string | null) {
-    if (expectedSha1 !== null && this.d.remote.write) return this.d.remote.write(rel, content, expectedSha1);
+  private async put(rel: string, content: string, expectedSha1: string | null, o: FileOpts = {}): Promise<FileResult | void> {
+    const opts = { ref: this.d.ref?.(), ...o };
+    if (expectedSha1 !== null && this.d.remote.write) return this.d.remote.write(rel, content, expectedSha1, opts);
     return this.d.remote.upload(rel, content);
   }
 
@@ -186,7 +196,9 @@ export class SiteFiles {
     const urls = Array.isArray(healthUrls) ? healthUrls : [healthUrls];
     const baseline = await Promise.all(urls.map((u) => this.pageHealth(u)));
     const backup = this.backups.put({ id: newId("bak"), siteId: this.d.siteId, path: rel, before, after, createdAt: new Date().toISOString(), created });
-    await this.put(rel, after, expectedSha1);
+    const written = await this.put(rel, after, expectedSha1);
+    const change = (written as FileResult | undefined)?.change ?? null; // the site's ledger entry (plugin route only)
+    if (change?.id) this.backups.put({ ...backup, changeId: Number(change.id) });
 
     // Prove it is live: read the file back (a CDN or server cache may lag for a moment on public URLs).
     let live = false;
@@ -198,13 +210,14 @@ export class SiteFiles {
     // The pages must still load. If one does not, put the old file back immediately.
     const broken = await this.firstBroken(urls, baseline);
     if (broken) {
-      if (created && this.d.remote.remove) await this.d.remote.remove(rel, sha1(after)).catch(() => this.put(rel, "", null));
-      else await this.put(rel, before, exact ? sha1(after) : null);
-      this.backups.put({ ...backup, restoredAt: new Date().toISOString() });
+      const rollbackOf = change?.id ? Number(change.id) : undefined; // the ledger entry leaves the history: it never happened
+      if (created && this.d.remote.remove) await this.d.remote.remove(rel, sha1(after), { ref: this.d.ref?.(), rollbackOf }).catch(() => this.put(rel, "", null));
+      else await this.put(rel, before, exact ? sha1(after) : null, { rollbackOf });
+      this.backups.put({ ...backup, changeId: undefined, restoredAt: new Date().toISOString() });
       return { ok: false, error: `The page ${broken.url} broke after the change (${broken.reason}). The original was restored automatically - nothing changed on the site.`, path: rel, backupId: backup.id, rolledBack: true };
     }
     return {
-      ok: true, path: rel, backupId: backup.id, verifiedLive: live, created,
+      ok: true, path: rel, backupId: backup.id, verifiedLive: live, created, change,
       publicUrl: STATIC_EDITABLE.test(rel) ? this.publicUrl(rel) : undefined, linesChanged: after.split("\n").length - (created ? 0 : before.split("\n").length) ,
       note: live ? "The file on the server now contains the change and the page still loads." : "Saved, but the public file still served the old version (server/CDN cache). It should update shortly; verify on the page.",
     };
@@ -213,6 +226,13 @@ export class SiteFiles {
   async restore(backupId: string, healthUrls: string | string[]) {
     const b = this.backups.get(backupId);
     if (!b || b.siteId !== this.d.siteId) throw new Error("Unknown backup id for this site.");
+    if (b.changeId && this.d.remote.revert) { // recorded in the site's ledger: the plugin undoes it there (same as the Revert button)
+      const r: any = await this.d.remote.revert(b.changeId, this.d.ref?.());
+      if (r?.ok === false) throw new Error(String(r.error ?? r.message ?? "The site refused to revert it."));
+      this.backups.put({ ...b, restoredAt: new Date().toISOString() });
+      const broken = await this.firstBroken(Array.isArray(healthUrls) ? healthUrls : [healthUrls]);
+      return { ok: !broken, path: b.path, verifiedLive: true, removed: !!b.created, change: r?.change ?? null, ...(broken ? { error: `Restored, but ${broken.url} still does not load (${broken.reason}).` } : {}) };
+    }
     const exact = this.d.remote.readExact ? await this.d.remote.readExact(b.path).catch(() => null) : null;
     if (b.created) {
       if (!this.d.remote.remove) throw new Error("Removing a created file needs the Livecrafts plugin 0.7+.");

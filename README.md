@@ -47,10 +47,19 @@ secret (`POST /livecrafts/v1/connect`), which it uses to verify the per-person t
 | `LC_MODEL` | Default model, e.g. `gpt-5.5`, `anthropic:claude-sonnet-5-5`, `openrouter:google/gemini-3-pro` |
 | `LC_API_TOKEN` | Required `Authorization: Bearer …` for the app/admin routes. The widget uses its own signed per-person token. |
 | `LC_VERIFY_CHANGES` | `0` turns the browser checks off (e.g. a server without Edge/Chrome). Default on. |
-| `LC_ALLOW_THEME_FILES` | `1` lets the assistant edit theme files. They go **live at once** (cannot be drafts) - off by default. |
+| `LC_ALLOW_THEME_FILES` | `1` lets the assistant edit theme files. They go **live at once** (cannot be drafts) - off by default. Every edit is still recorded in the site's change ledger (see below). |
 | `LC_BROWSER_PATH` | Edge/Chrome path if neither is found automatically. |
 | `LC_TTS_VOICE` | Default voice of the voice mode (`onyx`, `ash`, `echo`, `fable`, `sage`, `alloy`, `coral`, `nova`, `shimmer`, `ballad`, `verse`). Each person can pick another in the widget. Default `onyx`. |
 | `LC_TTS_MODEL` / `LC_STT_MODEL` | Speech and transcription models. Default `gpt-4o-mini-tts` / `gpt-4o-mini-transcribe`. Voice uses the OpenAI key. |
+
+## One record of every change
+
+The **site's change ledger** (in WordPress, written by the plugin) is the only record: drafts, live changes, resets, edits made
+in wp-admin / Elementor, and - since plugin 0.13 - theme-file edits (full before/after). A chat only keeps a pointer to each
+change it made (`pluginId`) and re-reads their state from the ledger whenever it is opened, so a change reverted in the page
+widget, in wp-admin or in another chat shows as reverted here too. Reverting works from any of them (`POST /changes/<id>/revert`);
+"Discard all" also puts back theme files edited since the last release, Deploy accepts them into the release, and a reset to a
+release restores files edited after it. `data/backups/` is only a fallback for the hosting-account route (an old plugin).
 
 ## Voice mode (widget)
 The mic button in the chat turns on hands-free voice: the microphone stays open, a pause ends what you said (no Enter),
