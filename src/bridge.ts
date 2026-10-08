@@ -125,6 +125,13 @@ export class Bridge {
   previewToken() { return this.request<{ ok: boolean; token: string; param: string }>("POST", "livecrafts/v1/preview-token", { json: {} }); }
   /** The site secret its widget tokens are signed with (needs an administrator's Application Password). */
   connect(rotate = false) { return this.request<{ ok: boolean; secret: string; site: string; version: string }>("POST", "livecrafts/v1/connect", { json: { rotate } }); }
+  /** Theme, builders, Elementor widgets / colours, ACF layouts, forms (Livecrafts plugin 0.12+). */
+  siteProfile() { return this.request<any>("GET", "livecrafts/v1/site-profile"); }
+  /** What the site already has that matches the terms (Elementor templates / sections / widgets, patterns, ACF layouts). */
+  components(terms: string[]) { return this.request<any>("GET", "livecrafts/v1/components", { query: { terms: terms.join(",") } }); }
+  componentSource(id: string) { return this.request<any>("GET", "livecrafts/v1/components/source", { query: { id } }); }
+  /** One Media Library image (url + alt) from the core REST API. */
+  mediaInfo(id: number) { return this.request<any>("GET", `wp/v2/media/${id}`, { query: { _fields: "id,source_url,alt_text,mime_type" } }); }
   assistantSettings() { return this.request<any>("GET", "livecrafts/v1/assistant"); }
 
   // ---- reading through the standard WordPress REST API
@@ -143,6 +150,9 @@ export class Bridge {
   deleteThemeFile(path: string, expectedSha1: string) { return this.request("DELETE", "livecrafts/v1/theme-file", { query: { path, expectedSha1 } }); }
 
   async uploadMedia(buf: Buffer, filename: string, mime: string, title?: string, alt?: string) {
+    // Images are stored as WebP (smaller, faster pages); the original is uploaded when conversion is not possible.
+    const webp = await import("./browser.js").then((m) => m.toWebp(buf, mime)).catch(() => null);
+    if (webp) { buf = webp; mime = "image/webp"; filename = filename.replace(/.[A-Za-z0-9]+$/, "") + ".webp"; }
     const safe = filename.replace(/[^A-Za-z0-9._-]/g, "_");
     const media = await this.request("POST", "wp/v2/media", { body: buf, headers: { "Content-Type": mime, "Content-Disposition": `attachment; filename="${safe}"` } });
     if (title || alt) await this.request("POST", `wp/v2/media/${media.id}`, { json: { ...(title ? { title } : {}), ...(alt ? { alt_text: alt } : {}) } }).catch(() => {});

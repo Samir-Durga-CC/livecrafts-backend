@@ -71,6 +71,9 @@ export async function startFakeSite() {
       acf: [{ kind: "acf", tid: "acf:field_hero_title:5", key: "field_hero_title", name: "hero_title", label: "Hero title", ftype: "text", value: u.searchParams.get("view") === "live" ? s.live.field_hero_title : draftValue("field_hero_title") }],
       elementor: [{ kind: "el", tid: "el:5:abc123:title", id: "abc123", label: "Heading › Title", ftype: "text", value: draftValue("abc123:title") }],
       elementor_outline: [{ id: "abc123", type: "heading", elType: "widget", parent: "", index: 0, depth: 0, text: draftValue("abc123:title") }], drafts: s.changes.filter((c) => c.status === "draft").length });
+    if (lc === "site-profile") return json(200, { ok: true, version: "0.12.0", wp: "6.8", theme: { name: "Hello Elementor", slug: "hello-elementor", block_theme: false }, builders: { elementor: { active: true, version: "3.30", pro: false, containers: true, widgets: ["heading", "text-editor", "image", "button", "shortcode", "testimonial"], colors: [{ id: "primary", title: "Primary", value: "#1d4ed8" }], fonts: [] }, acf: { active: false }, blocks: { patterns: 0 } }, forms: [{ plugin: "Contact Form 7", id: 5, title: "Contact form 1", shortcode: '[contact-form-7 id="5"]' }] });
+    if (lc === "components") return json(200, { ok: true, items: [{ id: "el-section:5:3ac5722", kind: "elementor-section", builder: "elementor", name: "Trusted by Industrial Teams", where: "Page “Home”", post: 5, matched: ["testimonial"], score: 3 }, { id: "el-widget:testimonial", kind: "elementor-widget", builder: "elementor", name: "Testimonial", where: "Elementor widget", matched: ["testimonial"], score: 2 }] });
+    if (lc === "components/source") return json(200, { ok: true, builder: "elementor", kind: "el.insert", node: { elType: "container", settings: { content_width: "full" }, elements: [{ elType: "widget", widgetType: "heading", settings: { title: "Trusted by Industrial Teams" }, elements: [] }] }, dropped: ["container › __globals__"] });
     if (lc === "debug/target") return json(200, { draft_value: draftValue("field_hero_title"), live_value: s.live.field_hero_title });
     if (lc === "status") {
       const drafts = s.changes.filter((c) => c.status === "draft");
@@ -89,6 +92,10 @@ export async function startFakeSite() {
       }
       if (b.kind === "el.setting" && b.target === "abc123:title") return json(200, { ok: true, change: make(req, b, "el.setting", b.target, b.value, `Elementor Heading › Title → “${b.value}”`) });
       if (b.kind === "css.rule") { if (JSON.stringify(b.value).includes("!important")) return json(400, { code: "livecrafts_bad_value", message: "Do not use !important." }); return json(200, { ok: true, change: make(req, b, "css.rule", "rule-x", b.value?.declarations, "Style " + b.value?.selector) }); }
+      if (b.kind === "css.block" || b.kind === "el.insert" || b.kind === "block.insert") {
+        if (b.kind === "css.block" && draftValue(b.target) === String(b.value)) return json(200, { ok: true, unchanged: true });
+        return json(200, { ok: true, change: make(req, b, b.kind, b.target, typeof b.value === "string" ? b.value : JSON.stringify(b.value), b.kind === "css.block" ? "Additional CSS block " + b.target : "Add " + (b.kind === "el.insert" ? "Elementor section" : "blocks")) });
+      }
       return json(404, { code: "livecrafts_no_field", message: "That field is not part of this page." });
     }
     m = lc.match(/^changes\/(\d+)\/revert$/);

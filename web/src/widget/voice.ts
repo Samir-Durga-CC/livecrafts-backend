@@ -386,7 +386,7 @@ export function speakable(md: string): string {
     const sentences = t.match(/[^.!?]+[.!?]+/g) ?? [t];
     let out = "";
     for (const s of sentences) { if ((out + s).length > 450) break; out += s; }
-    t = (out || t.slice(0, 450)).trim() + " The rest is in the chat.";
+    t = (out || t.slice(0, 450)).trim() + (/[\u0900-\u097F\u0600-\u06FF\u4e00-\u9fff]/.test(t) ? "" : " The rest is in the chat.");
   }
   return t;
 }

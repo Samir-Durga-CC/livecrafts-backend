@@ -32,6 +32,17 @@ export function recordFor(tool: string, _input: any, out: any): ChangeRecord | n
   };
 }
 
+/** All records of a write tool call: the extra changes first (e.g. the CSS blocks of place_component), the main change last. */
+export function recordsFor(tool: string, input: any, out: any): ChangeRecord[] {
+  const main = recordFor(tool, input, out);
+  if (!main) return [];
+  const extras = (Array.isArray(out?.extraChanges) ? out.extraChanges : []).filter((c: any) => c?.id).map((c: any): ChangeRecord => ({
+    id: "lc_" + c.id, pluginId: Number(c.id), tool, title: String(c.summary ?? tool).slice(0, 200), key: `${c.kind}:${c.object ?? ""}:${c.target ?? ""}`,
+    at: c.at ?? new Date().toISOString(), status: c.status, revert: { kind: "plugin" },
+  }));
+  return [...extras, main];
+}
+
 /** Is there a newer, still-active change to the same thing? Then that one must be reverted first. */
 export function blockingChange(all: ChangeRecord[], c: ChangeRecord): ChangeRecord | null {
   const idx = all.findIndex((x) => x.id === c.id);

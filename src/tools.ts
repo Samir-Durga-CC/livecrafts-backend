@@ -8,6 +8,7 @@ import type { Device } from "./browser.js";
 import type { Verifier } from "./verify.js";
 import { downloadImage } from "./net.js";
 import type { Skills } from "./skills.js";
+import { makeComponentTools } from "./componentTools.js";
 
 /**
  * The assistant's tools. Every write goes to the site as a DRAFT through the Livecrafts plugin (POST /changes):
@@ -92,13 +93,13 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     return postCache.get(u)!;
   };
   /** Run a write; for one that changed a page, check it in a real browser before the model hears back. */
-  const checked = async (pageUrl: string | undefined, write: () => Promise<any>) => {
+  const checked = async (pageUrl: string | undefined, write: () => Promise<any>, opts: { component?: string } = {}) => {
     const v = extras.verifier;
     const before = v && pageUrl ? await v.before(pageUrl) : null;
     const res = await write();
     if (res?.ok === false || res?.unchanged || !v || !pageUrl || !res?.change) return res;
     if (res.change.kind === "post.create") return { ...res, verification: { passed: true, summary: "New pages are drafts: open the preview link to see them; they are published on deploy.", checks: [] } };
-    return { ...res, verification: await v.after(pageUrl, res.change, before) };
+    return { ...res, verification: await v.after(pageUrl, res.change, before, opts) };
   };
 
   const reading = {
@@ -376,11 +377,12 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
   } : {};
 
   const sk = extras.skills;
+  const skillsLoaded = new Set<string>();
   const skillTools = sk && sk.list().length ? {
     load_skill: tool({
       description: "Load an official WordPress skill (expert instructions) before work in its area. Default file is SKILL.md; its references/*.md files can be loaded too.",
       inputSchema: z.object({ name: z.string(), file: z.string().optional().describe("e.g. references/theme-json.md") }),
-      execute: async ({ name, file }) => safe(async () => sk.load(name, file)),
+      execute: async ({ name, file }) => safe(async () => { const r = sk.load(name, file); skillsLoaded.add(name); return r; }),
     }),
   } : {};
 
@@ -392,15 +394,17 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     }),
   } : {};
 
-  return { ...reading, ...writing, ...media, ...browser, ...fileTools, ...apiTools, ...skillTools, ...planTools };
+  const componentTools = makeComponentTools({ bridge, safe, postIdOf, checked, changeView, parseValue, ref, pageUrl: () => extras.pageUrl?.(), skillsLoaded });
+
+  return { ...reading, ...writing, ...media, ...browser, ...fileTools, ...apiTools, ...skillTools, ...planTools, ...componentTools };
 }
 
 /** Tools that must never run without a human saying yes (in "every" mode; one plan approval in "request" mode). */
 export const APPROVAL_REQUIRED = [
-  "make_change", "create_page", "revert_change", "upload_media_from_chat", "upload_media_from_url", "edit_file", "create_file", "restore_file",
+  "make_change", "create_page", "revert_change", "place_component", "upload_media_from_chat", "upload_media_from_url", "edit_file", "create_file", "restore_file",
 ] as const;
 
 /** Tools that change the site (they create history entries). */
-export const WRITE_TOOLS = new Set<string>(["make_change", "create_page", "revert_change"]);
+export const WRITE_TOOLS = new Set<string>(["make_change", "create_page", "revert_change", "place_component"]);
 
 export type PostTypeName = PostType;

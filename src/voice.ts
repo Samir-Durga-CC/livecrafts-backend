@@ -17,6 +17,7 @@ const defaultVoice = () => (VOICES as readonly string[]).includes(process.env.LC
 /** How the assistant sounds: calm, precise, professional - a capable studio assistant, not a cheerful chatbot. */
 const STYLE = "Voice: a calm, confident, professional AI assistant with a refined, slightly British delivery. " +
   "Tone: composed, warm and precise, never bubbly. Pace: measured and clear, natural pauses between sentences. " +
+  "Speak in the language of the text with natural native pronunciation and the same calm tone (Hindi text in Hindi, English in English). " +
   "Read web words naturally (say 'WordPress', 'Elementor'); do not read out symbols or URLs.";
 
 /** Words the transcriber should expect (product and builder names it would otherwise mishear). */
@@ -53,7 +54,7 @@ export async function transcribe(audio: Buffer, mime: string): Promise<{ text: s
   form.append("file", new File([new Uint8Array(audio)], `speech.${ext}`, { type }));
   form.append("model", sttModel());
   form.append("response_format", "json");
-  form.append("prompt", `The speaker is editing their website with an AI assistant. Terms: ${VOCAB}`);
+  form.append("prompt", `The speaker is editing their website with an AI assistant and may speak any language (English, Hindi, Hinglish, ...). Transcribe in the language spoken, in its own script; do not translate. Terms: ${VOCAB}`);
   const res = await fetch(`${API}/audio/transcriptions`, { method: "POST", headers: { Authorization: `Bearer ${key()}` }, body: form, signal: AbortSignal.timeout(45_000) });
   if (!res.ok) throw await failure(res, "Transcription");
   const j = (await res.json()) as { text?: string };

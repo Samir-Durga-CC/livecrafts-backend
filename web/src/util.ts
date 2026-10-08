@@ -52,7 +52,7 @@ export function toBlocks(items: TimelineItem[]): Block[] {
 // ---------------------------------------------------------------- the "Changes" side panel: one entry per requested write
 /** Tools that change the site (drafts, except theme files) - each one needs approval. */
 export const WRITE_TOOLS = [
-  "make_change", "create_page", "revert_change", "upload_media_from_chat", "upload_media_from_url", "edit_file", "create_file", "restore_file",
+  "make_change", "create_page", "revert_change", "place_component", "upload_media_from_chat", "upload_media_from_url", "edit_file", "create_file", "restore_file",
 ];
 
 export type ChangeState = "pending" | "denied" | "applied" | "failed" | "reverted";
@@ -80,6 +80,7 @@ function changeFor(it: Extract<TimelineItem, { kind: "approval" }>): Change {
     case "set_post_status": return { ...base, icon: "page", title: reason(`Set status to ${i.status}`), target: `${i.type === "posts" ? "post" : "page"} #${i.id}` };
     case "create_menu": return { ...base, icon: "menu", title: reason(`Create menu “${i.name}”`), target: `location: ${i.location}`, to: (i.items ?? []).map((x: any) => x.title).join(" · ") };
     case "add_menu_item": return { ...base, icon: "menu", title: reason(`Add “${i.title}” to the menu`), target: `menu #${i.menuId}` };
+    case "place_component": return { ...base, icon: "page", title: reason(`Add the ${i.id} section`), target: `${i.source}: ${i.id}` };
     case "revert_change": return { ...base, icon: "undo", title: `Revert: ${(it.current as any)?.title ?? i.changeId}`, target: String(i.changeId ?? "") };
     default: return { ...base, icon: "undo", title: reason("Restore a file from its backup"), target: String((it.current as any)?.path ?? i.backupId ?? "") };
   }

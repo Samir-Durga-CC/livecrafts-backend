@@ -2,7 +2,8 @@ import type { ModelMessage } from "ai";
 import { config } from "./config.js";
 import { JsonStore, newId } from "./store.js";
 import type { AgentFactory, JobContext } from "./agent.js";
-import { blockingChange, recordFor, revertChange, type ChangeRecord } from "./changes.js";
+import { quickCommand, undoReply } from "./quick.js";
+import { blockingChange, recordsFor, revertChange, type ChangeRecord } from "./changes.js";
 import { imageMarker } from "./vision.js";
 import { assistantSettings } from "./persona.js";
 import { Bridge } from "./bridge.js";
@@ -75,6 +76,8 @@ export class JobRunner {
     const job = this.mustGet(jobId);
     if (job.status !== "completed" && job.status !== "failed" && job.status !== "paused") throw new Error(`Job is ${job.status}; wait for it to finish (or answer the approval) before sending another message.`);
     const paused = job.status === "paused";
+    const quick = !paused && !fileIds.length ? quickCommand(prompt) : null;
+    if (quick && job.pending.every((x) => x.approved !== undefined)) { this.quickUndo(job, prompt, quick.all); return job; }
     const unanswered = job.pending.filter((x) => x.approved === undefined);
     if (unanswered.length) {
       // the person changed course while a change waited for approval: that change is declined, nothing is written
@@ -174,6 +177,36 @@ export class JobRunner {
       mark({ revertError: (e as Error).message }, {});
       throw e;
     }
+  }
+
+  /** "undo" / "wapas kar do": revert from the ledger, answer in the person's language - no model call, no tokens. */
+  private quickUndo(job: Job, prompt: string, all: boolean) {
+    job.messages.push(userMessage(prompt, []));
+    job.requestSeq = (job.requestSeq ?? 1) + 1;
+    this.emit(job, "user", { text: prompt, fileIds: [], requestId: job.requestSeq, approvalMode: job.approvalMode, quick: "undo" });
+    this.setStatus(job, "running");
+    void (async () => {
+      let reply: string;
+      try {
+        const active = (this.current(job.id).changes ?? []).filter((c) => !c.revertedAt && c.revert);
+        const requests = [...new Set(active.map((c) => c.requestId ?? 0))].sort((a, b) => b - a);
+        const chosen = all ? requests : requests.slice(0, 1);
+        if (!chosen.length) reply = undoReply(prompt, "nothing");
+        else {
+          let n = 0;
+          for (const id of chosen) {
+            for (const c of (this.current(job.id).changes ?? []).filter((x) => (x.requestId ?? 0) === id && !x.revertedAt && x.revert).reverse()) { await this.revertChange(job.id, c.id, "chat"); n++; }
+          }
+          reply = undoReply(prompt, { reverted: n, requests: chosen.length });
+        }
+      } catch (e) { reply = undoReply(prompt, { error: (e as Error).message }); }
+      const fresh = this.current(job.id);
+      fresh.messages.push({ role: "assistant", content: [{ type: "text", text: reply }] } as ModelMessage);
+      fresh.result = reply;
+      this.emit(fresh, "text", { text: reply });
+      this.emit(fresh, "done", { text: reply });
+      this.setStatus(fresh, "completed");
+    })();
   }
 
   /** Revert every still-active change of one request, newest first. Stops at the first one that cannot be undone. */
@@ -343,11 +376,12 @@ export class JobRunner {
           const value = out?.output;
           toolResults.push({ toolCallId: e.toolCall?.toolCallId, toolName: e.toolCall?.toolName, output: value, error: threw ? String(out?.error?.message ?? out?.error) : undefined });
           const toolName = e.toolCall?.toolName;
-          const rec = threw ? null : recordFor(toolName, e.toolCall?.input, value);
-          if (rec) {
-            rec.requestId = job.requestSeq ?? 1;
-            rec.request = lastRequestText(job);
-            job.changes = [...(job.changes ?? []), rec];
+          const recs = threw ? [] : recordsFor(toolName, e.toolCall?.input, value);
+          const rec = recs.at(-1);
+          for (const r of recs) {
+            r.requestId = job.requestSeq ?? 1;
+            r.request = lastRequestText(job);
+            job.changes = [...(job.changes ?? []), r];
           }
           this.emit(job, "tool_end", {
             tool: toolName,
@@ -356,7 +390,7 @@ export class JobRunner {
             ui: threw ? undefined : uiSummary(toolName, value),
             changeId: rec?.id,
           });
-          if (rec) this.emit(job, "change", { change: rec });
+          for (const r of recs) this.emit(job, "change", { change: r });
         },
       });
 
@@ -437,7 +471,7 @@ export class JobRunner {
 function uiSummary(tool: string | undefined, v: any): Record<string, unknown> | undefined {
   if (!v || typeof v !== "object" || v.ok === false) return undefined;
   if (tool === "screenshot_page" && v.screenshotId) return { screenshotId: v.screenshotId, device: v.device, target: v.target };
-  if (tool === "make_change" || tool === "create_page" || tool === "revert_change") {
+  if (tool === "make_change" || tool === "create_page" || tool === "revert_change" || tool === "place_component") {
     return { changeId: v.changeId, summary: v.change?.summary, status: v.change?.status, preview: v.preview, checks: v.verification ? { passed: v.verification.passed, summary: v.verification.summary } : undefined };
   }
   if (tool === "edit_file" || tool === "restore_file" || tool === "create_file") return { path: v.path, backupId: v.backupId, verifiedLive: v.verifiedLive, created: v.created };

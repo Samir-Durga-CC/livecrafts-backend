@@ -330,3 +330,34 @@ export async function compareShots(a: Buffer, b: Buffer): Promise<{ changed: num
     }, { a: "data:image/jpeg;base64," + a.toString("base64"), b: "data:image/jpeg;base64," + b.toString("base64") });
   } finally { await ctx.close(); }
 }
+
+/**
+ * PNG / JPEG -> WebP (quality 0.85, longest side at most 2400px) with the browser's own encoder: no extra dependency,
+ * a few hundred milliseconds. Returns null when it cannot (callers then upload the original).
+ */
+export async function toWebp(buf: Buffer, mime: string): Promise<Buffer | null> {
+  if (!/^image\/(png|jpe?g|bmp)$/.test(mime)) return null;
+  let ctx;
+  try {
+    const b = await getBrowser();
+    ctx = await b.newContext();
+    await ctx.addInitScript("window.__name = window.__name || ((f) => f);");
+    const page = await ctx.newPage();
+    const dataUrl = await Promise.race([
+      page.evaluate(async (src: string) => {
+        const img = new Image();
+        await new Promise<void>((res, rej) => { img.onload = () => res(); img.onerror = () => rej(new Error("decode")); img.src = src; });
+        const scale = Math.min(1, 2400 / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(img.naturalWidth * scale)); c.height = Math.max(1, Math.round(img.naturalHeight * scale));
+        c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
+        return c.toDataURL("image/webp", 0.85);
+      }, `data:${mime};base64,${buf.toString("base64")}`),
+      new Promise<null>((r) => setTimeout(() => r(null), 15_000)),
+    ]);
+    if (!dataUrl || !dataUrl.startsWith("data:image/webp")) return null;
+    const out = Buffer.from(dataUrl.split(",")[1], "base64");
+    return out.length && out.length < buf.length * 1.2 ? out : null; // keep the original if WebP is not smaller
+  } catch { return null; }
+  finally { await ctx?.close().catch(() => {}); }
+}
