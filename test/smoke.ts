@@ -97,7 +97,9 @@ console.log("\n3) the widget signs in per person; changes are credited to that p
 
   const H = { "X-Livecrafts-Widget": token };
   assert.equal((await http("GET", "/integrations", undefined, H)).status, 403); ok("the widget cannot reach admin routes (integrations, keys)");
-  assert.equal((await http("GET", "/sites", undefined, { "X-Livecrafts-Widget": token + "x" })).status, 401); ok("a bad token gets 401");
+  const BAD = { "X-Livecrafts-Widget": token + "x" };
+  assert.equal((await http("GET", "/sites", undefined, BAD)).status, 200); ok("no sign-in: a bad / expired / missing widget token still lets the chat work (unnamed)");
+  assert.equal((await http("GET", "/integrations", undefined, BAD)).status, 403); ok("...but it still cannot reach admin routes (integrations, keys)");
   const other = sites.put({ id: "site_other", name: "Other", url: "https://other.example", username: "a", appPassword: "b", createdAt: new Date().toISOString() });
   const listed = await http("GET", "/sites", undefined, H);
   assert.deepEqual(listed.body.map((x: any) => x.id), [site.id]); ok("the widget sees only its own site");

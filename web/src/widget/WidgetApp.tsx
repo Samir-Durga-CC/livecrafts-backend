@@ -45,7 +45,7 @@ function readConfig(): WidgetConfig | null {
     if (!raw) return null;
     const c = JSON.parse(raw);
     if (!c.siteUrl || !c.parentOrigin) return null;
-    if (c.widgetToken) setWidgetToken(c.widgetToken);
+    setWidgetToken(c.widgetToken || "open"); // no sign-in: without a token the chat simply works unnamed
     connectParent(c.parentOrigin);
     return c;
   } catch { return null; }

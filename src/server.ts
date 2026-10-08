@@ -96,15 +96,19 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       let caller: Caller = { via: "admin" };
       const widgetToken = String(req.headers["x-livecrafts-widget"] ?? "");
       if (widgetToken) {
-        const w = verifyWidgetToken(widgetToken, sites.list());
-        if (!w) return send(res, 401, { error: "Your sign-in to the assistant expired. Reload the page." });
-        if (!w.user.edit) return send(res, 403, { error: "Your WordPress account may not edit with Livecrafts." });
+        // No sign-in (owner's decision): the chat works with or without the plugin's token. A valid token only adds who
+        // made the change (credit in the history); a missing, expired or invalid one is NOT an error. The widget still
+        // only gets the chat routes. Access control is the network: keep the backend on localhost or behind a tunnel.
         if (!WIDGET_ROUTES.test(route)) return send(res, 403, { error: "Not available from the widget." });
-        caller = { via: "widget", site: w.site, user: w.user, token: widgetToken };
-        const jm = url.pathname.match(/^\/jobs\/([\w-]+)/);
-        if (jm) { const j = runner.get(jm[1]); if (j && !canUseSite(caller, j.siteId)) return send(res, 404, { error: "Unknown job" }); }
-        const sm = url.pathname.match(/^\/sites\/([\w-]+)/);
-        if (sm && !canUseSite(caller, sm[1])) return send(res, 404, { error: "Unknown site" });
+        const w = verifyWidgetToken(widgetToken, sites.list());
+        if (w) {
+          if (!w.user.edit) return send(res, 403, { error: "Your WordPress account may not edit with Livecrafts." });
+          caller = { via: "widget", site: w.site, user: w.user, token: widgetToken };
+          const jm = url.pathname.match(/^\/jobs\/([\w-]+)/);
+          if (jm) { const j = runner.get(jm[1]); if (j && !canUseSite(caller, j.siteId)) return send(res, 404, { error: "Unknown job" }); }
+          const sm = url.pathname.match(/^\/sites\/([\w-]+)/);
+          if (sm && !canUseSite(caller, sm[1])) return send(res, 404, { error: "Unknown site" });
+        }
       } else if (config.apiToken && route !== "GET /health" && req.headers.authorization !== `Bearer ${config.apiToken}`) {
         return send(res, 401, { error: "Unauthorized" });
       }
