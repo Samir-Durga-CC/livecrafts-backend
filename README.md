@@ -162,6 +162,16 @@ use the microphone). Without an OpenAI key the browser's own speech recognition 
 | `web/` | React UI: the app, and the widget (chat, click panel without AI, site history). |
 | `test/` | `fakeSite.ts` (plugin 0.10 API in memory), `smoke.ts`, `features.ts`, `verify-browser.ts`, `demo.ts`. |
 
+## Template library (phase 5)
+The plugin (0.14+) ships 25 ready sections as shortcodes. The assistant never writes their markup:
+1. `analyze_design` now returns `layout` (width, height, padding and content width of the page's own sections, plus page background / text colour).
+2. `find_components` lists matching templates (`source: "template"`); `get_component source "template"` shows attributes and row fields.
+3. `place_component source "template" id attrs items fit` builds ONE shortcode (`src/library/templates.ts`), measured `fit: "auto"` adapts it
+   (content width, padding, radius, button colour, background; only when they read well together), places it as a draft (Elementor shortcode widget or shortcode block)
+   and the real-browser check fails if the `data-lc-template` marker is not on the draft page.
+4. `template_usage` answers which templates are used where; the result of `place_component` has `usedTemplate` (shortcode, fit + why, proof, `?lc_templates=1` link).
+Skill: `skills/templates`. Tests: `test/templates.ts` (pure) and scenario 2b in `test/components.ts`. In the chat the change reads "Add the faq template".
+
 ## Known limits
 * Storage is JSON files (`data/`), and site Application Passwords and secrets sit in `data/` - fine for one server;
   move to a database with encrypted secrets before multi-tenant use.

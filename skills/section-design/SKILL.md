@@ -8,7 +8,7 @@ description: "Use before creating or restyling any section (testimonials, contac
 A section is a small system: one job, one message, one action. Build it the way a good front-end developer would: reuse what exists, match the site, check it on a phone.
 
 ## 1. Reuse before you build
-Search first (`find_components`): the site's own sections and templates, ACF layouts, block patterns, Elementor widgets, then the Livecrafts library. A copied-and-adapted section is always more consistent than a new one. Hand-written markup is the last resort.
+Search first (`find_components`): the site's own sections and templates, ACF layouts, block patterns, Elementor widgets, then the template library (`load_skill("templates")`) and the Livecrafts library. A copied-and-adapted section is always more consistent than a new one. Hand-written markup is the last resort.
 
 ## 2. Match the site (measure, do not guess)
 `analyze_design` gives heading sizes and fonts, text and background colours, button style, container width, section spacing and CSS variables.

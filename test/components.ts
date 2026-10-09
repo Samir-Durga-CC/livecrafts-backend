@@ -96,6 +96,47 @@ console.log("\n2) find -> place (library) -> undo, without a model for the undo"
   ok("a second undo says there is nothing to undo");
 }
 
+console.log("\n2b) template library: find -> usage -> place (fit auto, no browser) -> proof");
+{
+  let step = 0, findResult: any, getResult: any, placeResult: any, badResult: any, usage: any;
+  const model = mockModel(async ({ prompt }: any) => {
+    const results = prompt.filter((m: any) => m.role === "tool").flatMap((m: any) => m.content).filter((p: any) => p.type === "tool-result");
+    const last = (name: string) => results.filter((r: any) => r.toolName === name).at(-1)?.output?.value;
+    step++;
+    if (step === 1) return call("find_components", { query: "add an FAQ with questions" });
+    if (step === 2) { findResult = last("find_components"); return call("get_component", { source: "template", id: "faq" }); }
+    if (step === 3) { getResult = last("get_component"); return call("place_component", { source: "template", id: "faq", attrs: { heading: "Questions", bogus: "x" }, reason: "FAQ" }); }
+    if (step === 4) { badResult = last("place_component"); return call("place_component", { source: "template", id: "faq", attrs: { heading: "Questions" }, items: [{ title: "Do you ship?", text: "Yes, worldwide." }], fit: { max: "1140px", brand: "#0f766e" }, reason: "FAQ" }); }
+    if (step === 5) { placeResult = last("place_component"); return call("template_usage", {}); }
+    if (step === 6) { usage = last("template_usage"); return say("Added the FAQ template as a draft."); }
+    return say("ok");
+  });
+  const runner = new JobRunner(jobs, sites, buildAgent(new FileStore(), { model, hostinger: null, browser: null }));
+  const job = runner.create(site.id, "add an FAQ", undefined, [], { approvalMode: "request" });
+  const done = await runAll(runner, job.id);
+  assert.equal(done.status, "completed");
+
+  const tpl = findResult.results.find((r: any) => r.source === "template");
+  assert.equal(tpl.id, "faq"); assert.match(findResult.templateRule, /prefer it/);
+  ok("find_components lists the matching template (FAQ for 'questions') with a rule to prefer it");
+  assert.equal(getResult.takesListRows, true); assert.equal(getResult.rowFields, "title, text");
+  ok("get_component shows the template's attributes and row fields");
+  assert.equal(badResult.ok, false); assert.match(badResult.error, /no attribute "bogus"/);
+  ok("an unknown attribute is refused with the list of valid ones (nothing written)");
+
+  assert.equal(placeResult.ok, true, JSON.stringify(placeResult).slice(0, 300));
+  const insert = wp.changes.filter((c) => c.kind === "el.insert").at(-1)!;
+  const node = JSON.parse(String(insert.payload.after));
+  assert.equal(node.elements[0].widgetType, "shortcode");
+  assert.equal(node.elements[0].settings.shortcode, '[ai_faq heading="Questions" max="1140px" brand="#0f766e"][ai_item title="Do you ship?" text="Yes, worldwide."][/ai_faq]');
+  assert.ok(wp.changes.some((c) => c.kind === "css.block" && c.target === "lc-tpl"));
+  ok("the section is ONE shortcode in an Elementor container (+ the wrapper CSS), with the explicit fit inside it");
+  assert.equal(placeResult.usedTemplate.id, "faq"); assert.match(placeResult.usedTemplate.seeIt, /lc_templates=1$/);
+  ok("the result says which template was used and where to see it outlined (?lc_templates=1)");
+  assert.equal(usage.active, true); assert.equal(usage.used[0].template, "faq"); assert.equal(usage.used[0].usedOn[0].page, "Home");
+  ok("template_usage answers which templates are used on which pages");
+}
+
 console.log("\n3) Hindi undo, wording and reply language");
 {
   let step = 0, modelCalls = 0;

@@ -88,7 +88,7 @@ export function measureComponent(selector: string): ComponentReport {
 }
 
 /** The report as checks the verifier shows to the model and the person. */
-export function componentChecks(r: ComponentReport, device: string): Check[] {
+export function componentChecks(r: ComponentReport, device: string, opts: { softH1?: boolean } = {}): Check[] {
   const name = (n: string) => `component ${n} (${device})`;
   if (!r.found) return [{ name: `component (${device})`, ok: false, detail: "The new section is not on the draft page (nothing matches its class)." }];
   const out: Check[] = [];
@@ -97,7 +97,7 @@ export function componentChecks(r: ComponentReport, device: string): Check[] {
   out.push({ name: name("covered"), ok: !r.covered.length, detail: r.covered.length ? `Something is drawn on top of the section on ${device}: ${r.covered.join("; ")}. Check headers, banners and negative margins around it.` : `No text is covered on ${device}.` });
   if (r.smallTargets.length) out.push({ name: name("tap size"), ok: false, detail: `Buttons smaller than 44px on ${device}: ${r.smallTargets.join("; ")}.` });
   if (r.smallText.length) out.push({ name: name("text size"), ok: null, detail: `Small text on ${device}: ${r.smallText.join("; ")}.` });
-  if (r.h1) out.push({ name: name("headings"), ok: false, detail: "The section contains an h1; the page already has one." });
+  if (r.h1) out.push({ name: name("headings"), ok: opts.softH1 ? null : false, detail: opts.softH1 ? "This template carries the page's h1: make sure no other h1 is on the page." : "The section contains an h1; the page already has one." });
   if (r.imagesWithoutAlt) out.push({ name: name("images"), ok: false, detail: `${r.imagesWithoutAlt} image(s) without an alt attribute.` });
   return out;
 }

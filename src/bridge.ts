@@ -131,6 +131,8 @@ export class Bridge {
   siteProfile() { return this.request<any>("GET", "livecrafts/v1/site-profile"); }
   /** What the site already has that matches the terms (Elementor templates / sections / widgets, patterns, ACF layouts). */
   components(terms: string[]) { return this.request<any>("GET", "livecrafts/v1/components", { query: { terms: terms.join(",") } }); }
+  /** The template library: every template with its attributes, and where each one is used (Livecrafts plugin 0.14+). */
+  templates() { return this.request<any>("GET", "livecrafts/v1/templates"); }
   componentSource(id: string) { return this.request<any>("GET", "livecrafts/v1/components/source", { query: { id } }); }
   /** One Media Library image (url + alt) from the core REST API. */
   mediaInfo(id: number) { return this.request<any>("GET", `wp/v2/media/${id}`, { query: { _fields: "id,source_url,alt_text,mime_type" } }); }

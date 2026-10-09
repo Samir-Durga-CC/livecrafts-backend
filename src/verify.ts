@@ -69,7 +69,7 @@ export class Verifier {
   }
 
   /** opts.component = CSS selector of a library component that was just placed: it is also measured on desktop, tablet and mobile. */
-  async after(url: string, change: any, before: PageAudit | null, opts: { component?: string } = {}): Promise<Verification> {
+  async after(url: string, change: any, before: PageAudit | null, opts: { component?: string; softH1?: boolean } = {}): Promise<Verification> {
     const checks: Check[] = [{ name: "stored", ok: true, detail: "The site stored the draft and read it back." }];
     const exp = expectationOf(change);
     let preview: string;
@@ -98,13 +98,13 @@ export class Verifier {
       }
     }
     checks.push(...health(main, before, device));
-    if (opts.component && main.component) checks.push(...componentChecks(main.component, device));
+    if (opts.component && main.component) checks.push(...componentChecks(main.component, device, opts));
     const others: Device[] = opts.component ? ["desktop", "tablet", "mobile"] : ["desktop", "mobile"];
     for (const other of others.filter((x) => x !== device)) {
       try {
         const a = await this.audit(this.d.siteUrl, { url, device: other, component: opts.component }, { preview });
         checks.push(...health(a, null, other).filter((c) => c.ok === false));
-        if (opts.component && a.component) { const cc = componentChecks(a.component, other); checks.push(...cc.filter((c) => c.ok === false)); if (cc.every((c) => c.ok !== false)) checks.push({ name: `component (${other})`, ok: true, detail: `Fits, nothing overlaps or is covered on ${other}.` }); }
+        if (opts.component && a.component) { const cc = componentChecks(a.component, other, opts); checks.push(...cc.filter((c) => c.ok === false)); if (cc.every((c) => c.ok !== false)) checks.push({ name: `component (${other})`, ok: true, detail: `Fits, nothing overlaps or is covered on ${other}.` }); }
       } catch { /* reported by the main audit */ }
     }
 

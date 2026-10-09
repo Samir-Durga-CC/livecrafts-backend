@@ -166,10 +166,41 @@ export async function analyzeDesign(siteUrl: string, a: { url?: string; device?:
           }
         }
       }
+      // The page's own rhythm: how wide the content of its sections is, how tall they are, how much padding they have.
+      const vw = document.documentElement.clientWidth;
+      const rawSections = Array.from(document.querySelectorAll("main section, body > section, .elementor-top-section, .e-con.e-parent, .wp-block-group.alignfull, .wp-block-cover.alignfull, [class*='section']"))
+        .filter((e, i, a) => !e.closest("[data-livecrafts]") && !e.closest("header, footer, nav") && !a.some((o) => o !== e && o.contains(e) && o.getBoundingClientRect().width >= vw * 0.9 && o.getBoundingClientRect().height >= 120 && a.indexOf(o) < i && (o.matches("section, .elementor-top-section, .e-con.e-parent, .wp-block-group.alignfull"))));
+      const sections: Array<{ tag: string; width: number; height: number; paddingTop: number; paddingBottom: number; contentWidth: number }> = [];
+      for (const el of rawSections) {
+        const r = el.getBoundingClientRect();
+        if (r.width < vw * 0.85 || r.height < 120) continue;
+        const s = cs(el);
+        let contentWidth = 0;
+        let probe: Element | null = el;
+        for (let depth = 0; depth < 4 && probe; depth++) {
+          const kid: Element | undefined = Array.from(probe.children).find((k) => { const w = k.getBoundingClientRect().width; return w >= 280 && w < r.width - 24; });
+          if (kid) { contentWidth = Math.round(kid.getBoundingClientRect().width); break; }
+          probe = probe.children.length === 1 ? probe.children[0] : null;
+        }
+        sections.push({ tag: el.tagName.toLowerCase(), width: Math.round(r.width), height: Math.round(r.height), paddingTop: parseFloat(s.paddingTop) || 0, paddingBottom: parseFloat(s.paddingBottom) || 0, contentWidth });
+        if (sections.length >= 12) break;
+      }
+      const med = (n: number[]) => { const a = n.filter((x) => x > 0).sort((x, y) => x - y); return a.length ? a[Math.floor(a.length / 2)] : null; };
+      const layout = {
+        sections,
+        typicalContentWidth: med(sections.map((x) => x.contentWidth)),
+        typicalPaddingY: med(sections.map((x) => Math.max(x.paddingTop, x.paddingBottom))),
+        typicalSectionHeight: med(sections.map((x) => x.height)),
+        viewportWidth: vw,
+      };
+      const solid = (c: string) => (/rgba\(0, 0, 0, 0\)|transparent/.test(c) ? null : c);
+      const pageBackground = solid(cs(document.body).backgroundColor) ?? solid(cs(document.documentElement).backgroundColor) ?? "rgb(255, 255, 255)";
+      const pageColor = cs(document.body).color;
+
       const builder = document.querySelector("[data-elementor-id]") ? "elementor" : document.querySelector(".wp-block-group, .wp-site-blocks") ? "blocks" : "classic theme";
       return {
         builder, typography, textColors: top(text, 6), backgrounds: top(bg, 6), radii: top(radius, 4), sectionSpacing: top(gaps, 4),
-        button, containerMaxWidth: container ? container + "px" : null, cssVariables: vars, breakpoints: [...media].slice(0, 12),
+        button, containerMaxWidth: container ? container + "px" : null, layout, pageBackground, pageColor, cssVariables: vars, breakpoints: [...media].slice(0, 12),
       };
     });
     return { ok: true, url: cleanUrl(page.url()), ...data, howToUse: "Reuse these fonts, sizes, colours (prefer the CSS variables), radii, spacing and breakpoints so new work looks native to this site." };

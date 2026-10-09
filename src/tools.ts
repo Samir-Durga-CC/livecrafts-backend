@@ -93,7 +93,7 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     return postCache.get(u)!;
   };
   /** Run a write; for one that changed a page, check it in a real browser before the model hears back. */
-  const checked = async (pageUrl: string | undefined, write: () => Promise<any>, opts: { component?: string } = {}) => {
+  const checked = async (pageUrl: string | undefined, write: () => Promise<any>, opts: { component?: string; softH1?: boolean } = {}) => {
     const v = extras.verifier;
     const before = v && pageUrl ? await v.before(pageUrl) : null;
     const res = await write();
@@ -319,7 +319,7 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     }),
     ...(b.design ? {
       analyze_design: tool({
-        description: "Measure the site's design language: fonts and sizes per heading level, colours, button style, container width, section spacing, CSS variables, breakpoints and the builder. Call it before designing anything new.",
+        description: "Measure the site's design language: fonts and sizes per heading level, colours, button style, container width, section spacing, CSS variables, breakpoints and the builder, plus `layout`: the width, height, padding and content width of the page's own sections (the rhythm a new section must follow), and the page background / text colour. Call it before designing anything new.",
         inputSchema: z.object({ url: z.string().optional(), device: deviceSchema }),
         execute: async (a) => safe(() => b.design!(a) as Promise<any>),
       }),
@@ -394,7 +394,7 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     }),
   } : {};
 
-  const componentTools = makeComponentTools({ bridge, safe, postIdOf, checked, changeView, parseValue, ref, pageUrl: () => extras.pageUrl?.(), skillsLoaded });
+  const componentTools = makeComponentTools({ bridge, safe, postIdOf, checked, changeView, parseValue, ref, pageUrl: () => extras.pageUrl?.(), skillsLoaded, design: extras.browser?.design ? (url?: string) => extras.browser!.design!({ url, device: "desktop" }) as Promise<any> : undefined });
 
   return { ...reading, ...writing, ...media, ...browser, ...fileTools, ...apiTools, ...skillTools, ...planTools, ...componentTools };
 }

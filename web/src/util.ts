@@ -80,7 +80,7 @@ function changeFor(it: Extract<TimelineItem, { kind: "approval" }>): Change {
     case "set_post_status": return { ...base, icon: "page", title: reason(`Set status to ${i.status}`), target: `${i.type === "posts" ? "post" : "page"} #${i.id}` };
     case "create_menu": return { ...base, icon: "menu", title: reason(`Create menu “${i.name}”`), target: `location: ${i.location}`, to: (i.items ?? []).map((x: any) => x.title).join(" · ") };
     case "add_menu_item": return { ...base, icon: "menu", title: reason(`Add “${i.title}” to the menu`), target: `menu #${i.menuId}` };
-    case "place_component": return { ...base, icon: "page", title: reason(`Add the ${i.id} section`), target: `${i.source}: ${i.id}` };
+    case "place_component": return { ...base, icon: "page", title: reason(i.source === "template" ? `Add the ${i.id} template` : `Add the ${i.id} section`), target: `${i.source}: ${i.id}` };
     case "revert_change": return { ...base, icon: "undo", title: `Revert: ${(it.current as any)?.title ?? i.changeId}`, target: String(i.changeId ?? "") };
     default: return { ...base, icon: "undo", title: reason("Restore a file from its backup"), target: String((it.current as any)?.path ?? i.backupId ?? "") };
   }
