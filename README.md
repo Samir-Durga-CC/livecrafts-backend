@@ -12,6 +12,82 @@ WordPress page ── widget.js ──(cookie + nonce)──► Livecrafts plugi
                                                                                        └─ usage.ts: every model call + tokens, app log
 ```
 
+## Setup (from zero)
+
+Livecrafts has two parts. This repo is the **backend** (the agent + chat app). The WordPress side is the
+**livecrafts-plugin** repo - set that up too (its README has the steps). You need both.
+
+### 1. What you need
+| | |
+|---|---|
+| **Node.js 22 or newer** | `node --version` must print v22+. Get it from https://nodejs.org |
+| **Git** | to clone the repo |
+| **A model API key** | OpenAI by default. Anthropic, OpenRouter, Groq or any OpenAI-compatible server also work. |
+| **Microsoft Edge or Google Chrome** | used for the automatic page checks (already installed on most computers). Optional: set `LC_VERIFY_CHANGES=0` to skip. |
+| **A WordPress site** with the Livecrafts plugin 0.10+ | WordPress 6.2+, PHP 7.4+. |
+
+### 2. Install
+```bash
+git clone <this repo's URL> livecrafts-backend
+cd livecrafts-backend
+npm install            # backend dependencies
+npm run build:web      # installs + builds the chat UI into web/dist (needed once, and after any change in web/)
+```
+
+### 3. Create your `.env`
+```bash
+cp .env.example .env          # Windows PowerShell: Copy-Item .env.example .env
+```
+Open `.env` and fill in at least **one model key** (see "Settings" below). Minimum working file:
+```ini
+LC_MODEL=gpt-5.5
+OPENAI_API_KEY=sk-...
+```
+* `.env` holds secrets and is git-ignored - **never commit it or send it to anyone**. Share `.env.example` instead.
+* Model keys can alternatively be added later inside the app (Integrations -> AI models). A key in `.env` always wins.
+* Running on a server or anywhere other than your own computer? Also set `LC_API_TOKEN` (a long random string) so
+  strangers cannot call the app: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
+
+### 4. Start it
+```bash
+npm start              # http://127.0.0.1:8790   (npm run dev restarts on code changes)
+```
+Open http://127.0.0.1:8790 in a browser. Restart `npm start` after changing `.env` or anything in `src/`.
+
+### 5. Connect your WordPress site
+1. In WordPress install and activate the **Livecrafts plugin** (see its README).
+2. In wp-admin: **Users -> Profile -> Application Passwords**, type a name (e.g. `livecrafts`), click *Add New*, and copy the
+   password (shown once). It must be an **administrator** account. (Application Passwords need HTTPS on a live site;
+   on a local site they work over http.)
+3. In the app, open the site picker in the sidebar and choose **Connect a site**: a name, the site URL, the WordPress username and that Application Password.
+   (Same thing via the API: `POST /sites`.) The backend checks them and fetches the site's widget secret
+   (`POST /livecrafts/v1/connect`).
+4. In WordPress: **Settings -> Livecrafts Assistant**, set *Livecrafts backend address* to where this app runs
+   (`http://127.0.0.1:8790` on your own computer, or its public https address on a server).
+5. Log in to the site as an editor: the Livecrafts chat button appears on every page.
+
+### 6. Check that it works
+```bash
+npm test               # fake site + scripted model; includes the browser checks if Edge/Chrome is installed
+npm run typecheck      # TypeScript, backend and web
+npm run demo           # the UI with a FAKE site and FAKE model (no keys needed): http://127.0.0.1:8791
+```
+`npm run demo` is the quickest way to look at the product without any key or WordPress site.
+
+### Troubleshooting
+| Problem | Fix |
+|---|---|
+| `node: bad option: --env-file-if-exists` | Node is older than 22 - upgrade. |
+| Blank page at http://127.0.0.1:8790 | `npm run build:web` was not run (no `web/dist`). |
+| "No browser available for page checks" | Install Edge/Chrome, set `LC_BROWSER_PATH`, or set `LC_VERIFY_CHANGES=0`. |
+| Model errors / 401 | Wrong or missing key for the provider in `LC_MODEL` (`openai:` -> `OPENAI_API_KEY`, `anthropic:` -> `ANTHROPIC_API_KEY`, ...). |
+| Site connect fails | Wrong Application Password, user is not an administrator, plugin not active, or the site URL is wrong (include `https://`). |
+| Chat button does not open the chat | The *backend address* in Settings -> Livecrafts does not match where the app runs. |
+| Port 8790 busy | Set `PORT=` in `.env` and update the backend address in WordPress. |
+
+Your data (chats, connected sites and their secrets, usage logs) lives in `data/` (override with `LC_DATA_DIR`). It is
+git-ignored; back it up if it matters and do not share it.
+
 ## How a change happens
 1. The assistant (or the person, in the widget's click panel) makes a change. It is a **draft**: the plugin stores it
    in the real source (Elementor, blocks, ACF, post fields, Additional CSS), and logged-in editors see it on the site.
@@ -25,30 +101,24 @@ WordPress page ── widget.js ──(cookie + nonce)──► Livecrafts plugi
    Elementor editor - with who/when/before/after. Each run starts with that context: drafts, conflicts, outside changes
    since the last release, and the assistant's **notes** about the site and the page.
 
-## Run it
-Needs **Node 22+**, a model key (or any AI SDK provider), and on each site the Livecrafts plugin **0.10+** with an
-administrator's **Application Password**.
-
-```bash
-npm install
-npm run build:web           # the chat UI (web/dist)
-cp .env.example .env        # model key(s), LC_MODEL, LC_API_TOKEN for anything not on localhost
-npm test                    # fake site + scripted model, plus the checker in a real browser if Edge/Chrome is installed
-npm start                   # http://127.0.0.1:8790
-npm run demo                # the UI with a FAKE site and a FAKE model: http://127.0.0.1:8791
-```
-
-Connect a site (app → Sites, or `POST /sites`). The backend checks the credentials and fetches the site's widget
-secret (`POST /livecrafts/v1/connect`), which it uses to verify the per-person tokens the widget sends.
-
 ## Settings (.env)
+Copy `.env.example` to `.env`. Everything is optional except one model key.
+
 | Name | |
 |---|---|
-| `LC_MODEL` | Default model, e.g. `gpt-5.5`, `anthropic:claude-sonnet-5-5`, `openrouter:google/gemini-3-pro` |
-| `LC_API_TOKEN` | Required `Authorization: Bearer …` for the app/admin routes. The widget uses its own signed per-person token. |
+| `LC_MODEL` | Default model, e.g. `gpt-5.5`, `anthropic:claude-sonnet-5-5`, `openrouter:google/gemini-3-pro`, `groq:openai/gpt-oss-120b`, `custom:<name>`. A plain id uses OpenAI. |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENROUTER_API_KEY` / `GROQ_API_KEY` | Key for the provider you chose. Only the one you use is needed. `OPENAI_API_KEY` is also used by voice mode. |
+| `LC_CUSTOM_BASE_URL` / `LC_CUSTOM_API_KEY` | Any OpenAI-compatible server (LM Studio, vLLM, Together ...), used with `LC_MODEL=custom:<name>`. |
+| `PORT` / `HOST` | Where the app listens. Default `8790` / `127.0.0.1` (own computer only). |
+| `LC_API_TOKEN` | Required `Authorization: Bearer ...` for the app/admin routes. **Set it for anything not on localhost.** The widget uses its own signed per-person token. |
+| `LC_DATA_DIR` | Where chats, sites, usage and logs are stored. Default `./data`. |
+| `LC_MAX_STEPS` | Max tool steps per assistant run. Default 30. |
+| `LC_JOB_TIMEOUT_MS` / `LC_BRIDGE_TIMEOUT_MS` | Run timeout (default 5 min) / WordPress request timeout (default 30 s). |
+| `HOSTINGER_API_TOKEN` | Optional: hosting info + theme-file access via Hostinger. Can also be pasted in the app (Integrations). |
 | `LC_VERIFY_CHANGES` | `0` turns the browser checks off (e.g. a server without Edge/Chrome). Default on. |
 | `LC_ALLOW_THEME_FILES` | `1` lets the assistant edit theme files. They go **live at once** (cannot be drafts) - off by default. Every edit is still recorded in the site's change ledger (see below). |
 | `LC_BROWSER_PATH` | Edge/Chrome path if neither is found automatically. |
+| `LC_SKILLS_DIR` | Folder with extra assistant skills. Default `./skills`. |
 | `LC_TTS_VOICE` | Default voice of the voice mode (`onyx`, `ash`, `echo`, `fable`, `sage`, `alloy`, `coral`, `nova`, `shimmer`, `ballad`, `verse`). Each person can pick another in the widget. Default `onyx`. |
 | `LC_TTS_MODEL` / `LC_STT_MODEL` | Speech and transcription models. Default `gpt-4o-mini-tts` / `gpt-4o-mini-transcribe`. Voice uses the OpenAI key. |
 
