@@ -44,6 +44,7 @@ export function Sidebar(p: SidebarProps) {
       <nav className="nav">
         <button className="nav-item on"><Icon.Chat size={17} /> Chat</button>
         <button className="nav-item" onClick={p.onManageSites}><Icon.Globe size={17} /> Sites <span className="count">{p.sites.length}</span></button>
+        <a className="nav-item" href={`/templates${p.site ? `?site=${p.site.id}` : ""}`}><Icon.List size={17} /> Templates</a>
         <button className="nav-item" onClick={p.onIntegrations}><Icon.Plug size={17} /> Integrations <span className={`conn-dot ${p.hostingerOk ? "ok" : ""}`} title={p.hostingerOk ? "Hostinger connected" : "Hostinger not connected"} /></button>
       </nav>
       <div className="divider" />

@@ -1,6 +1,7 @@
 import { StrictMode, lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import TemplatesPage from "./TemplatesPage";
 import "./styles.css";
 import "./phase2.css";
 
@@ -11,6 +12,6 @@ if (embed) document.documentElement.classList.add("embed");
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    {embed ? <Suspense fallback={null}><WidgetApp /></Suspense> : <App />}
+    {embed ? <Suspense fallback={null}><WidgetApp /></Suspense> : /^\/templates\/?$/.test(location.pathname) ? <TemplatesPage /> : <App />}
   </StrictMode>,
 );

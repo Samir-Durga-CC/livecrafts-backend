@@ -74,3 +74,7 @@ export type TimelineItem =
   | { kind: "tool"; seq: number; tool: string; input: any; state: "running" | "ok" | "failed"; error?: string; ui?: Record<string, any>; changeId?: string }
   | { kind: "approval"; seq: number; approvalId: string; tool: string; input: any; current?: unknown; answer?: { approved: boolean; reason?: string } }
   | { kind: "error"; seq: number; text: string };
+
+export interface TemplateUse { post: number; title: string; url: string; status: string; count: number; in: string[] }
+export interface TemplateRow { id: string; shortcode: string; title: string; params: string; list: boolean; usedOn: TemplateUse[]; renderedAt: Array<{ path: string; last: string }> }
+export interface TemplatesReport { ok: boolean; active: boolean; version?: string; components: TemplateRow[]; note?: string; error?: string; howToCheck?: string }

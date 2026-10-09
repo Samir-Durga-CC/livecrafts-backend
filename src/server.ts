@@ -4,7 +4,7 @@ import path from "node:path";
 import { config } from "./config.js";
 import { JsonStore, newId } from "./store.js";
 import { FileStore } from "./files.js";
-import { Bridge } from "./bridge.js";
+import { Bridge, BridgeError } from "./bridge.js";
 import { buildAgent } from "./agent.js";
 import { JobRunner } from "./jobs.js";
 import type { Job, Site } from "./types.js";
@@ -152,6 +152,16 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         try { info = await new Bridge(next).ping(); } catch (e) { return send(res, 400, { error: `Could not connect with these details: ${(e as Error).message}` }); }
         sites.put(next); forgetAssistantSettings(next.id);
         return send(res, 200, { ...publicSite(next), plugin: info, widgetNote: await connectWidget(next) });
+      }
+      m = url.pathname.match(/^\/sites\/([\w-]+)\/templates$/);
+      if (m && req.method === "GET") { // which templates of the site's template library exist and where each one is used
+        const s = sites.get(m[1]);
+        if (!s) return send(res, 404, { error: "Unknown site" });
+        try { return send(res, 200, await new Bridge(s).templates()); }
+        catch (e) {
+          if (e instanceof BridgeError && e.status === 404) return send(res, 200, { ok: true, active: false, components: [], note: "The Livecrafts plugin on this site is older than 0.14, so it has no template library. Upload the new plugin zip." });
+          return send(res, 200, { ok: false, active: false, components: [], error: (e as Error).message });
+        }
       }
       m = url.pathname.match(/^\/sites\/([\w-]+)\/status$/);
       if (m && req.method === "GET") { // connection check for the Sites screen
