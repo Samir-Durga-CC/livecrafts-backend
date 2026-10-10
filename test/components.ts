@@ -137,6 +137,31 @@ console.log("\n2b) template library: find -> usage -> place (fit auto, no browse
   ok("template_usage answers which templates are used on which pages");
 }
 
+console.log("\n2c) a template wins over the native library component it replaces");
+{
+  wp.tplExtra = true;
+  let findResult: any, placeResult: any, step = 0;
+  const model = mockModel(async ({ prompt }: any) => {
+    const results = prompt.filter((m: any) => m.role === "tool").flatMap((m: any) => m.content).filter((p: any) => p.type === "tool-result");
+    const last = (name: string) => results.filter((r: any) => r.toolName === name).at(-1)?.output?.value;
+    step++;
+    if (step === 1) return call("find_components", { query: "add a testimonial section" });
+    if (step === 2) { findResult = last("find_components"); return call("place_component", { source: "library", id: "testimonials", reason: "x" }); }
+    if (step === 3) { placeResult = last("place_component"); return say("ok"); }
+    return say("ok");
+  });
+  const runner = new JobRunner(jobs, sites, buildAgent(new FileStore(), { model, hostinger: null, browser: null }));
+  const before = wp.changes.length;
+  const job = runner.create(site.id, "add testimonials", undefined, [], { approvalMode: "request" });
+  await runAll(runner, job.id);
+  assert.ok(findResult.results.some((r: any) => r.source === "template" && r.id === "testimonials"));
+  assert.ok(!findResult.results.some((r: any) => r.source === "library"));
+  assert.equal(placeResult.ok, false); assert.match(placeResult.error, /source "template" id "testimonials"/);
+  assert.equal(wp.changes.length, before);
+  wp.tplExtra = false;
+  ok("find_components hides the library duplicate; placing it anyway is refused with the template to use (nothing written)");
+}
+
 console.log("\n3) Hindi undo, wording and reply language");
 {
   let step = 0, modelCalls = 0;

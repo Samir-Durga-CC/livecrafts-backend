@@ -71,6 +71,9 @@ async function loadTemplates(bridge: Bridge): Promise<{ list: TemplateEntry[]; v
   }
 }
 
+/** Library components that a template of the template library replaces (the template is preferred: measured fit, one shortcode, same on every builder). */
+const LIBRARY_COVERED_BY: Record<string, string> = { testimonials: "testimonials", contact: "contact_form" };
+
 /** Words that point at a template: its id, title and shortcode words. */
 function templateScore(t: TemplateEntry, query: string): number {
   const q = " " + query.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() + " ";
@@ -137,7 +140,7 @@ export function makeComponentTools(h: ComponentHelpers) {
         for (const t of tpl.list.map((x) => ({ t: x, s: templateScore(x, query) })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s).slice(0, 4)) {
           results.push({ source: "template", id: t.t.id, kind: "template", builder: "any (a shortcode: works in Elementor, blocks, Divi, WPBakery, ACF)", name: t.t.title || t.t.id, where: "Livecrafts template library", about: t.t.params, use: `place_component source "template" id "${t.t.id}" attrs {...} items [...] (get_component shows the fields)` });
         }
-        for (const m of lib) results.push({ source: "library", id: m.component.id, kind: "library", builder: page.builder, name: m.component.name, where: "Livecrafts library", about: m.component.description, use: `place_component source "library" id "${m.component.id}" content {...} (get_component shows the fields)` });
+        for (const m of lib.filter((x) => !tpl.list.some((t) => t.id === LIBRARY_COVERED_BY[x.component.id]))) results.push({ source: "library", id: m.component.id, kind: "library", builder: page.builder, name: m.component.name, where: "Livecrafts library", about: m.component.description, use: `place_component source "library" id "${m.component.id}" content {...} (get_component shows the fields)` });
         for (const s of site.filter((x) => x.kind === "elementor-widget")) results.push({ source: "site", id: s.id, kind: s.kind, builder: s.builder, name: s.name, where: s.where, matched: s.matched, use: "a single widget: place_component source \"site\" id, then fill it with make_change el.setting", note: "Only a widget, not a finished section." });
         for (const s of site.filter((x) => !sameBuilder(x.builder) && x.kind !== "elementor-widget")) results.push({ source: "site", id: s.id, kind: s.kind, builder: s.builder, name: s.name, where: s.where, matched: s.matched, note: `Built with ${s.builder}; this page uses ${page.builder}. Look at it for reference (read_page / screenshot), do not copy it.` });
         const skills = missingSkills(h.skillsLoaded);
@@ -271,6 +274,11 @@ export function makeComponentTools(h: ComponentHelpers) {
         } else if (a.source === "library") {
           builder = a.builder === "auto" ? detected.builder : a.builder;
           if (a.builder === "auto" && detected.acfDriven && builder !== "elementor") return { ok: false, error: "This page prints ACF fields from its template, so a section inserted into the page body may not appear. Use an ACF layout (find_components) or the hand-off: get_component builder \"acf\". Pass builder \"blocks\" or \"html\" only if the person confirms the page body is shown." };
+          const covering = LIBRARY_COVERED_BY[a.id];
+          if (covering) {
+            const tl = await loadTemplates(bridge).catch(() => ({ list: [] as TemplateEntry[] }));
+            if (tl.list.some((t) => t.id === covering)) return { ok: false, error: `The template library has "${covering}", which replaces the library component "${a.id}". Use place_component source "template" id "${covering}" (get_component source "template" shows its fields). Do not build this section any other way.` };
+          }
           const comp = getComponent(a.id);
           if (!comp) return { ok: false, error: `Unknown library component "${a.id}". Available: ${COMPONENTS.map((x) => x.id).join(", ")}.` };
           const media: Record<string, { url: string; alt: string }> = {};

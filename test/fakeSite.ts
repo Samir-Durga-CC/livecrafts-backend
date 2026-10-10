@@ -25,6 +25,7 @@ export async function startFakeSite() {
     previewTokens: new Set<string>(),
     seenActors: [] as string[],
     deployAttempts: 0,
+    tplExtra: false,
     nextId: 100,
     url: "",
   };
@@ -75,6 +76,7 @@ export async function startFakeSite() {
     if (lc === "components") return json(200, { ok: true, items: [{ id: "el-section:5:3ac5722", kind: "elementor-section", builder: "elementor", name: "Trusted by Industrial Teams", where: "Page “Home”", post: 5, matched: ["testimonial"], score: 3 }, { id: "el-widget:testimonial", kind: "elementor-widget", builder: "elementor", name: "Testimonial", where: "Elementor widget", matched: ["testimonial"], score: 2 }] });
     if (lc === "templates") return json(200, { ok: true, active: true, version: "1.2.0", components: [
       { id: "hero", shortcode: "ai_hero", title: "hero (split, text left / image right)", params: "eyebrow, heading, text, primary_label, primary_url, image", example: "[ai_hero heading=\"x\"]", attributes: ["eyebrow", "heading", "text", "image", "primary_label", "primary_url", "secondary_label", "secondary_url"], defaults: {}, list: false, item_fields: "", usedOn: [], renderedAt: [] },
+      ...(s.tplExtra ? [{ id: "testimonials", shortcode: "ai_testimonials", title: "testimonials", params: "heading, items [ quote, name, role ]", example: "", attributes: ["heading"], defaults: {}, list: true, item_fields: "quote, name, role", usedOn: [], renderedAt: [] }] : []),
       { id: "faq", shortcode: "ai_faq", title: "faq (accordion)", params: "heading, text, items [ title, text ]", example: "[ai_faq]", attributes: ["heading", "text"], defaults: {}, list: true, item_fields: "title, text", usedOn: [{ post: 5, title: "Home", url: "http://x/", status: "publish", count: 1, in: ["live"] }], renderedAt: [] },
     ] });
     if (lc === "components/source") return json(200, { ok: true, builder: "elementor", kind: "el.insert", node: { elType: "container", settings: { content_width: "full" }, elements: [{ elType: "widget", widgetType: "heading", settings: { title: "Trusted by Industrial Teams" }, elements: [] }] }, dropped: ["container › __globals__"] });
