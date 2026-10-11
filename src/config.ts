@@ -14,4 +14,19 @@ export const config = {
   allowThemeWrites: process.env.LC_ALLOW_THEME_FILES === "1",
   /** Check every change in a real browser (draft view, live view, health, diff). "0" turns it off (e.g. no browser). */
   verifyChanges: process.env.LC_VERIFY_CHANGES !== "0",
+  /**
+   * How the server's browser identifies itself to the site, so a host/CDN/WAF rule can let it through (bot protection
+   * otherwise shows it a "checking your browser" page and the assistant cannot see the page). LC_BROWSER_HEADERS is JSON,
+   * e.g. {"X-Livecrafts-Check":"<secret>"} - add a rule on the host that allows requests carrying that header.
+   */
+  browserHeaders: parseHeaders(process.env.LC_BROWSER_HEADERS),
+  browserUserAgent: process.env.LC_BROWSER_USER_AGENT ?? "",
 };
+
+function parseHeaders(raw?: string): Record<string, string> {
+  if (!raw?.trim()) return {};
+  try {
+    const o = JSON.parse(raw);
+    return Object.fromEntries(Object.entries(o ?? {}).filter(([k, v]) => /^[A-Za-z0-9-]+$/.test(k) && typeof v === "string")) as Record<string, string>;
+  } catch { console.warn("LC_BROWSER_HEADERS is not valid JSON: ignored."); return {}; }
+}

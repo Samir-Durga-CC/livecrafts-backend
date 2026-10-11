@@ -205,6 +205,16 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     }),
   };
 
+  /** A whole section pasted as HTML into one Elementor text-editor / HTML widget: editors could not edit it and it overlays the page. */
+  const handWrittenSection = (kind: string, target: string, value: string): string | null => {
+    const isWidgetHtml = (kind === "el.setting" && /:(editor|html|code|custom_html|content)$/.test(target)) || (kind === "el.insert" && /"(text-editor|html)"/.test(value.slice(0, 400)));
+    if (!isWidgetHtml) return null;
+    const blocks = (value.match(/<(div|section|article|figure|ul|h[1-6]|style)/gi) ?? []).length;
+    if (blocks < 4 && !/<style/i.test(value)) return null;
+    return "Refused: this pastes a whole section as HTML into one Elementor text-editor / HTML widget. Editors could not edit it and it breaks the page layout. " +
+      "Use place_component (source \"template\" first - find_components shows it) or build it from containers, heading, text-editor, image and button widgets with el.insert. A text-editor widget holds paragraphs and lists only.";
+  };
+
   const writing = {
     make_change: tool({
       description:
@@ -233,6 +243,8 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
       }),
       execute: async ({ kind, url, post, target, value, label }) => safe(async () => {
         const isCss = kind.startsWith("css.");
+        const refused = handWrittenSection(kind, target, value);
+        if (refused) return { ok: false, error: refused };
         const pageUrl = url || extras.pageUrl?.() || bridge.homeUrl;
         const postId = isCss ? undefined : await postIdOf(url, post);
         return checked(post && !url ? undefined : pageUrl, () => bridge.makeChange({ kind, post: postId, target, value: parseValue(value), label, ref: ref() }))
@@ -251,7 +263,7 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
       }),
     }),
     revert_change: tool({
-      description: "Revert ONE change by its id (from site_status / site_history). A draft change is dropped from the draft; a live change gets a new draft change that puts the old value back (live after deploy). Needs approval.",
+      description: "Revert ONE change by its id (from site_status / site_history). Only when the person asks to undo / revert / restore a specific change - NOT to \"add\" or \"create\" a section (that is place_component with a template). A draft change is dropped from the draft; a live change gets a new draft change that puts the old value back (live after deploy). Needs approval.",
       inputSchema: z.object({ changeId: z.number().int(), reason: reasonSchema }),
       execute: async ({ changeId }) => safe(async () => {
         const c = await bridge.change(changeId).then((r) => r.change, () => null);

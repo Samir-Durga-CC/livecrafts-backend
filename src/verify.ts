@@ -141,6 +141,8 @@ function health(a: PageAudit, before: PageAudit | null, device: Device): Check[]
   out.push({ name: `loads (${device})`, ok: a.status === null || a.status < 400, detail: `HTTP ${a.status ?? "?"}` });
   if (a.fatal) out.push({ name: `php (${device})`, ok: false, detail: `The page shows a PHP/WordPress error: “${a.fatal}”.` });
   if (a.overflowX > 1) out.push({ name: `layout (${device})`, ok: before ? before.overflowX > 1 ? null : false : false, detail: `The page is ${a.overflowX}px wider than the screen on ${device} (sideways scrolling)${before && before.overflowX > 1 ? " - it already was before" : ""}.` });
+  const newOff = (a.offscreen ?? []).filter((o) => !(before?.offscreen ?? []).includes(o));
+  if (newOff.length) out.push({ name: `off screen (${device})`, ok: false, detail: `Elements stick out past the screen edge on ${device}: ${newOff.slice(0, 3).join("; ")}. Fix the width / padding of that section (no overflow:hidden hack).` });
   const newBroken = a.brokenImages.filter((u) => !before?.brokenImages.includes(u));
   if (newBroken.length) out.push({ name: `images (${device})`, ok: false, detail: `Images that do not load: ${newBroken.slice(0, 3).join(", ")}.` });
   const newErrors = a.consoleErrors.filter((m) => !before?.consoleErrors.includes(m));

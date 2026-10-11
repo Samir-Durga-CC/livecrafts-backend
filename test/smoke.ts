@@ -171,7 +171,7 @@ console.log("\n6) every change is checked in a browser; the model hears the resu
     siteUrl: fake.url, previewToken: async () => "tok", liveText: async () => "Old Title",
     audit: (async (_s: string, a: any, view: any) => {
       audits.push({ ...a, view });
-      return { url: fake.url, device: a.device ?? "desktop", status: 200, fatal: null, overflowX: a.device === "mobile" ? 40 : 0, brokenImages: [], consoleErrors: [], lines: ["New Hero"],
+      return { url: fake.url, device: a.device ?? "desktop", status: 200, fatal: null, overflowX: a.device === "mobile" ? 40 : 0, offscreen: [], brokenImages: [], consoleErrors: [], lines: ["New Hero"],
         element: a.selector ? { selector: a.selector, found: true, visible: true, text: "", styles: [{ prop: "color", expected: "rgb(11, 61, 145)", actual: "rgb(0, 0, 0)", ok: false }] } : undefined };
     }) as any,
     compare: (async () => ({ changed: 0, bands: [] })) as any,

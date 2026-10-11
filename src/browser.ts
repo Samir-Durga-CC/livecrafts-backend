@@ -53,7 +53,19 @@ export interface View { preview?: string }
 
 async function openPage(siteUrl: string, url: string | undefined, device: Device, view: View = {}, before?: (page: Page) => void) {
   const b = await getBrowser();
-  const ctx = await b.newContext({ viewport: DEVICES[device], deviceScaleFactor: 1, ignoreHTTPSErrors: true });
+  const ctx = await b.newContext({
+    viewport: DEVICES[device], deviceScaleFactor: 1, ignoreHTTPSErrors: true,
+    // An allow-list header / user agent the site owner configured (LC_BROWSER_HEADERS / LC_BROWSER_USER_AGENT), only sent to the site's own origin.
+    userAgent: config.browserUserAgent || undefined,
+  });
+  const origin = new URL(siteUrl + "/").origin;
+  if (Object.keys(config.browserHeaders).length) {
+    await ctx.route("**/*", (route) => {
+      const req = route.request();
+      if (new URL(req.url()).origin !== origin) return route.continue();
+      return route.continue({ headers: { ...req.headers(), ...config.browserHeaders } });
+    });
+  }
   // The server runs through tsx/esbuild, which wraps named functions in __name(); code sent to the page needs it too.
   await ctx.addInitScript("window.__name = window.__name || ((f) => f);");
   const page = await ctx.newPage();
@@ -65,7 +77,7 @@ async function openPage(siteUrl: string, url: string | undefined, device: Device
   const check = await page.evaluate(() => ({ title: document.title, text: (document.body?.innerText ?? "").slice(0, 600), size: document.body?.innerText.length ?? 0 })).catch(() => null);
   if (check && /just a moment|checking (your|the) browser|verify(ing)? (that )?you are (a )?human|attention required|ddos protection|security check|enable javascript and cookies/i.test(check.title + " " + check.text) && check.size < 3000) {
     await ctx.close();
-    throw new Error("BOT_CHECK: the site's bot protection showed a 'checking your browser' page to the server's browser, so it cannot see the page. Ask the person to open the Livecrafts widget on this page (then you look through their own browser), or to allow this computer in their hosting security settings.");
+    throw new Error("BOT_CHECK: the site's bot protection showed a 'checking your browser' page to the server's browser, so it cannot see the page. Fix for the site owner: in the host's security settings (WAF / bot protection) add a rule that allows requests carrying a secret header, then set LC_BROWSER_HEADERS={\"X-Livecrafts-Check\":\"<secret>\"} in the backend .env and restart it. Until then ask the person to open the Livecrafts widget on this page (then you look through their own browser). Nothing was checked: do not claim the page looks right.");
   }
   return { ctx, page, status };
 }
@@ -255,6 +267,8 @@ export interface PageAudit {
   fatal: string | null;
   /** How many pixels the page is wider than the screen (0 = no sideways scrolling). */
   overflowX: number;
+  /** Visible elements that stick out past the screen edge and are not clipped by a scroller (a slider, a table wrapper). */
+  offscreen: string[];
   brokenImages: string[];
   consoleErrors: string[];
   /** Visible text, one line per block of text. */
@@ -284,6 +298,21 @@ export async function auditPage(siteUrl: string, a: { url?: string; device?: Dev
       const fatal = /(Fatal error|Parse error|There has been a critical error on this website)/i.exec(document.documentElement.innerHTML.slice(0, 400000));
       const broken = Array.from(document.images).filter((i) => i.complete && i.naturalWidth === 0 && i.src && !i.closest("[data-livecrafts]")).map((i) => i.currentSrc || i.src).slice(0, 10);
       const overflowX = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+      const vw = document.documentElement.clientWidth;
+      const offscreen: string[] = [];
+      const clipped = (el: Element) => { for (let p = el.parentElement; p && p !== document.body && p !== document.documentElement; p = p.parentElement) { const o = getComputedStyle(p).overflowX; if (o !== "visible") return true; } return false; };
+      for (const el of Array.from(body?.querySelectorAll("*") ?? [])) {
+        if (offscreen.length >= 5) break;
+        if (/^(SCRIPT|STYLE|NOSCRIPT|BR|HEAD|META|LINK|PATH|SVG|DEFS)$/i.test(el.tagName) || el.closest("[aria-hidden=true], svg")) continue;
+        const s = getComputedStyle(el);
+        if (s.display === "none" || s.visibility === "hidden" || s.position === "fixed") continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2 || (r.right <= vw + 1 && r.left >= -1)) continue;
+        if (r.left > vw || r.right < 0) continue; // parked off-canvas (menus, sliders), not a layout bug
+        if (clipped(el)) continue;
+        const cls = typeof (el as HTMLElement).className === "string" ? (el as HTMLElement).className.trim().split(/\s+/)[0] : "";
+        offscreen.push(`${el.tagName.toLowerCase()}${cls ? "." + cls : ""} ${Math.round(r.left)}..${Math.round(r.right)}px of ${vw}px`);
+      }
       let element: any;
       if (selector) {
         let el: Element | null = null;
@@ -312,12 +341,12 @@ export async function auditPage(siteUrl: string, a: { url?: string; device?: Dev
           element = { selector, found: true, visible: r.width > 0 && r.height > 0 && cs.display !== "none" && cs.visibility !== "hidden", text: (el.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 200), styles };
         }
       }
-      return { text, fatal: fatal ? fatal[1] : null, broken, overflowX, element };
+      return { text, fatal: fatal ? fatal[1] : null, broken, overflowX, offscreen, element };
     }, { selector: a.selector, declarations: a.declarations });
     const component = a.component ? await page.evaluate(measureComponent, a.component).catch(() => undefined) : undefined;
     const shot = a.shot ? await page.screenshot({ fullPage: true, type: "jpeg", quality: 50, timeout: 20_000 }).catch(() => undefined) : undefined;
     return {
-      url: cleanUrl(page.url()), device, status, fatal: data.fatal, overflowX: data.overflowX, brokenImages: data.broken, consoleErrors,
+      url: cleanUrl(page.url()), device, status, fatal: data.fatal, overflowX: data.overflowX, offscreen: data.offscreen, brokenImages: data.broken, consoleErrors,
       lines: data.text.split(/\n+/).map((l: string) => l.replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 2000),
       element: data.element, component, shot,
     };

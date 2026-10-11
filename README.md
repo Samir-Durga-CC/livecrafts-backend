@@ -115,6 +115,7 @@ Copy `.env.example` to `.env`. Everything is optional except one model key.
 | `LC_MAX_STEPS` | Max tool steps per assistant run. Default 30. |
 | `LC_JOB_TIMEOUT_MS` / `LC_BRIDGE_TIMEOUT_MS` | Run timeout (default 5 min) / WordPress request timeout (default 30 s). |
 | `HOSTINGER_API_TOKEN` | Optional: hosting info + theme-file access via Hostinger. Can also be pasted in the app (Integrations). |
+| `LC_BROWSER_HEADERS` / `LC_BROWSER_USER_AGENT` | JSON headers (and a user agent) the server's browser sends to the site only, so a host WAF / bot-protection allow rule can let it through (otherwise page checks report BOT_CHECK). |
 | `LC_VERIFY_CHANGES` | `0` turns the browser checks off (e.g. a server without Edge/Chrome). Default on. |
 | `LC_ALLOW_THEME_FILES` | `1` lets the assistant edit theme files. They go **live at once** (cannot be drafts) - off by default. Every edit is still recorded in the site's change ledger (see below). |
 | `LC_BROWSER_PATH` | Edge/Chrome path if neither is found automatically. |
