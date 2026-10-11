@@ -60,11 +60,11 @@ function applyReplacements<T>(value: T, reps: Array<{ find: string; replace: str
 }
 
 /** The site's templates, or why there are none. */
-async function loadTemplates(bridge: Bridge): Promise<{ list: TemplateEntry[]; version?: string; note?: string }> {
+async function loadTemplates(bridge: Bridge): Promise<{ list: TemplateEntry[]; version?: string; note?: string; contactAction?: string }> {
   try {
     const r = await bridge.templates();
     if (!r?.active) return { list: [], note: "The template library is not active on this site." };
-    return { list: (r.components ?? []) as TemplateEntry[], version: r.version };
+    return { list: (r.components ?? []) as TemplateEntry[], version: r.version, contactAction: r.contactAction };
   } catch (e) {
     if (e instanceof BridgeError && e.status === 404) return { list: [], note: "The site's Livecrafts plugin is older than 0.14: it has no template library. Update the plugin." };
     throw e;
@@ -246,6 +246,21 @@ export function makeComponentTools(h: ComponentHelpers) {
           const entry = t.list.find((x) => x.id === a.id);
           if (!entry) return { ok: false, error: t.note ?? `Unknown template "${a.id}". Available: ${t.list.map((x) => x.id).join(", ")}.` };
           builder = a.builder === "auto" ? detected.builder : a.builder;
+          // A template is its own section on the page: never inside another section's container (it would sit in the middle of it).
+          const pos = a.position ?? "";
+          if (builder === "elementor" && pos && !/^root:(\d+|end)$/.test(pos)) return { ok: false, error: `A template is a section of its own: position must be "root:<index>" (or "root:end"), not "${pos}", which is inside another section. get_page_map shows the order of the page's sections; testimonials usually go after the products / services section, a contact form last, above the footer.` };
+          // Real content only: sample text must never reach the page.
+          const SAMPLE = /\b(placeholder|lorem ipsum|client name|your name here|sample (text|quote)|replace this)\b/i;
+          const texts = [...Object.values(a.attrs ?? {}), ...(a.items ?? []).flatMap((i) => Object.values(i))].map((v) => String(v));
+          if (texts.some((x) => SAMPLE.test(x))) return { ok: false, error: "The content contains sample text (placeholder / client name / replace this ...). Ask the person for the real content (or use what the page already says) and place the template with that. Never publish sample quotes, names or numbers." };
+          if (entry.id === "contact_form") {
+            const action = String((a.attrs ?? {}).action ?? "").trim();
+            if (!action) {
+              if (!t.contactAction) return { ok: false, error: "The contact form needs an action (a form handler). Update the Livecrafts plugin to 0.14.2 (it includes one), or pass attrs.action with the address of the person's own form endpoint." };
+              a.attrs = { ...(a.attrs ?? {}), action: t.contactAction };
+              warnings.push("The form posts to the plugin's built-in handler: messages are e-mailed to the address in Settings > General (option livecrafts_contact_to overrides it).");
+            }
+          }
           // 1) fit: what the site's own sections look like (width, padding, radius, button colour, background)
           let fit: Fit = {}, basis: string[] = [];
           if (a.fit === "auto") {

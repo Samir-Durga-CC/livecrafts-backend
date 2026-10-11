@@ -65,7 +65,7 @@ for (const comp of COMPONENTS) {
     assert.equal(r.kind, builder === "elementor" ? "el.insert" : "block.insert");
     assert.ok(r.placeholders, "sample content is flagged");
     assert.ok(r.warnings.some((w) => /Sample text/.test(w)));
-    if (builder === "elementor") { const node = JSON.parse(r.value); assert.equal(node.elType, "container"); assert.ok(nestingOk(node)); assert.match(node.settings._css_classes, /lc-c/); }
+    if (builder === "elementor") { const node = JSON.parse(r.value); assert.equal(node.elType, "container"); assert.ok(nestingOk(node)); assert.match(node.settings.css_classes, /lc-c/); }
     else { assert.match(r.value, /class="[^"]*lc-c/); if (builder === "html") assert.match(r.value, /^<!-- wp:html -->/); else assert.match(r.value, /^<!-- wp:group/); }
   }
   ok(`${comp.id}: elementor, blocks and html render and pass the library checks`);
@@ -160,7 +160,7 @@ const ELEMENTOR_CSS = `
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 /** Elementor's own output for our tree (class names and wrappers as Elementor prints them). */
 function elementorHtml(n: any, media: Record<string, { url: string }>): string {
-  const cls = String(n.settings?._css_classes ?? "");
+  const cls = String(n.settings?.css_classes ?? n.settings?._css_classes ?? "");
   if (n.elType === "container") return `<div class="e-con e-flex elementor-element ${cls}">${n.elements.map((k: any) => elementorHtml(k, media)).join("")}</div>`;
   const wrap = (inner: string, type: string) => `<div class="elementor-element elementor-widget elementor-widget-${type} ${cls}"><div class="elementor-widget-container">${inner}</div></div>`;
   const s = n.settings;

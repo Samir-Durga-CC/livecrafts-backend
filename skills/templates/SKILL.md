@@ -18,6 +18,9 @@ The site ships ready, responsive, accessible sections as templates (hero, hero_c
 5. **Adjust, do not rebuild.** To change a placed template, change its shortcode text with the same tools you use for text; never copy its HTML out. Wrong spacing or width = change a fit value. Wrong look that no fit value fixes = say so; do not hand-write a replacement section.
 6. **Prove it.** The `place_component` result has `usedTemplate`: the shortcode, the fit that was applied and why (`fitBasis`), and `proof`. The page check fails with "not on the draft page" if the template did not render. Tell the person the `seeIt` link: as an editor it outlines and labels every template section.
 
+## Where a template goes
+A template is a section of its own at page level (`position` "root:<index>"): never inside another section. Testimonials after the products / services / about section, FAQ before the contact form, contact form last above the footer. Read `get_page_map` for the order. A contact form without `action` uses the plugin's handler (e-mail to the admin address).
+
 ## Content rules
 - Plain text only; no HTML, no markdown. Quotes, brackets and line breaks are cleaned for you.
 - Never invent customer quotes, prices, names, numbers, addresses or phone numbers. Use what the person gave or what the page already says; otherwise ask. Empty content is flagged as placeholders.

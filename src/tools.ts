@@ -207,10 +207,11 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
 
   /** A whole section pasted as HTML into one Elementor text-editor / HTML widget: editors could not edit it and it overlays the page. */
   const handWrittenSection = (kind: string, target: string, value: string): string | null => {
+    if (/\[ai_[a-z_]+/.test(value) && /^(el\.|block\.)/.test(kind)) return "Refused: template shortcodes ([ai_...]) are not written by hand. Use place_component source \"template\": it applies the measured fit, checks the section on desktop / tablet / mobile and returns the proof. If place_component returns an error, tell the person the error instead of working around it.";
     const isWidgetHtml = (kind === "el.setting" && /:(editor|html|code|custom_html|content)$/.test(target)) || (kind === "el.insert" && /"(text-editor|html)"/.test(value.slice(0, 400)));
     if (!isWidgetHtml) return null;
-    const blocks = (value.match(/<(div|section|article|figure|ul|h[1-6]|style)/gi) ?? []).length;
-    if (blocks < 4 && !/<style/i.test(value)) return null;
+    const blocks = (value.match(/<(div|section|article|figure|ul|h[1-6]|style)\b/gi) ?? []).length;
+    if (blocks < 4 && !/<style\b/i.test(value)) return null;
     return "Refused: this pastes a whole section as HTML into one Elementor text-editor / HTML widget. Editors could not edit it and it breaks the page layout. " +
       "Use place_component (source \"template\" first - find_components shows it) or build it from containers, heading, text-editor, image and button widgets with el.insert. A text-editor widget holds paragraphs and lists only.";
   };

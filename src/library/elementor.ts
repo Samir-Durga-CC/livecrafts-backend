@@ -10,7 +10,7 @@ import { escapeHtml } from "./engine.js";
 export type ElNode = { elType: "container" | "widget"; widgetType?: string; settings: Record<string, any>; elements: ElNode[] };
 
 export const container = (classes: string, elements: ElNode[], settings: Record<string, any> = {}): ElNode => ({
-  elType: "container", settings: { content_width: "full", flex_direction: "column", _css_classes: classes, ...settings }, elements,
+  elType: "container", settings: { content_width: "full", flex_direction: "column", css_classes: classes, ...settings }, elements,
 });
 
 const widget = (widgetType: string, settings: Record<string, any>): ElNode => ({ elType: "widget", widgetType, settings, elements: [] });

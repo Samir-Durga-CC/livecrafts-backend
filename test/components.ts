@@ -75,7 +75,7 @@ console.log("\n2) find -> place (library) -> undo, without a model for the undo"
   assert.deepEqual(css, ["lc-c-testimonials", "lc-core", "lc-tokens"]);
   const insert = wp.changes.find((c) => c.kind === "el.insert")!;
   assert.ok(insert); const node = JSON.parse(String(insert.payload.after));
-  assert.equal(node.elType, "container"); assert.match(node.settings._css_classes, /lc-testimonials/);
+  assert.equal(node.elType, "container"); assert.match(node.settings.css_classes, /lc-testimonials/);
   assert.ok(JSON.stringify(node).includes("They fixed our site in a day."));
   assert.equal(placeResult.placeholders, false); assert.equal(insert.target, "root:end");
   ok("place_component wrote the core CSS, the component CSS, the brand tokens and the Elementor section (4 drafts)");
@@ -135,6 +135,27 @@ console.log("\n2b) template library: find -> usage -> place (fit auto, no browse
   ok("the result says which template was used and where to see it outlined (?lc_templates=1)");
   assert.equal(usage.active, true); assert.equal(usage.used[0].template, "faq"); assert.equal(usage.used[0].usedOn[0].page, "Home");
   ok("template_usage answers which templates are used on which pages");
+}
+
+console.log("\n2b2) template guards: own section only, real content only, never a hand-written shortcode");
+{
+  let step = 0; const out: any[] = [];
+  const model = mockModel(async ({ prompt }: any) => {
+    const results = prompt.filter((m: any) => m.role === "tool").flatMap((m: any) => m.content).filter((p: any) => p.type === "tool-result");
+    const last = (name: string) => results.filter((r: any) => r.toolName === name).at(-1)?.output?.value;
+    step++;
+    if (step === 1) return call("place_component", { source: "template", id: "faq", position: "9795140:0", attrs: { heading: "Questions" }, items: [{ title: "Q", text: "A" }], reason: "x" });
+    if (step === 2) { out.push(last("place_component")); return call("place_component", { source: "template", id: "faq", attrs: { heading: "Questions" }, items: [{ title: "Do you ship?", text: "Placeholder answer" }], reason: "x" }); }
+    if (step === 3) { out.push(last("place_component")); return call("make_change", { kind: "el.insert", target: "root:end", value: JSON.stringify({ elType: "container", elements: [{ elType: "widget", widgetType: "shortcode", settings: { shortcode: "[ai_faq heading=\"x\"]" } }] }), reason: "x" }); }
+    if (step === 4) { out.push(last("make_change")); return say("done"); }
+    return say("ok");
+  });
+  const runner = new JobRunner(jobs, sites, buildAgent(new FileStore(), { model, hostinger: null, browser: null }));
+  const job = runner.create(site.id, "add faq", undefined, [], { approvalMode: "request" });
+  await runAll(runner, job.id);
+  assert.match(out[0].error, /section of its own/); ok("a template inside another section's container is refused");
+  assert.match(out[1].error, /sample text/); ok("sample / placeholder content is refused: the agent must ask for real content");
+  assert.match(out[2].error, /not written by hand/); ok("a hand-written [ai_...] shortcode is refused");
 }
 
 console.log("\n2c) a template wins over the native library component it replaces");
