@@ -28,7 +28,7 @@ async function safe<T>(fn: () => Promise<T>): Promise<T | { ok: false; error: st
 
 /** The page map can be big; give the model a compact, stable view of it. */
 function compactMap(m: any) {
-  const values = [...(m.acf ?? []).filter((e: any) => e.kind === "acf"), ...(m.elementor ?? [])].slice(0, 200).map((e: any) => ({
+  const values = [...(m.acf ?? []).filter((e: any) => e.kind === "acf"), ...(m.elementor ?? []), ...(m.divi ?? [])].slice(0, 200).map((e: any) => ({
     target: e.tid, label: e.label, type: e.ftype,
     value: e.ftype === "image" ? `[image id ${e.value}] ${e.url}` : String(e.value).slice(0, 200),
   }));
@@ -36,7 +36,8 @@ function compactMap(m: any) {
   return {
     ok: true, view: m.view, post: m.post, builders: m.builders, drafts: m.drafts, values, acfRows: rows.length ? rows : undefined,
     elementorOutline: m.elementor_outline?.length ? m.elementor_outline.slice(0, 250) : undefined,
-    howToChange: "acf:<field key>:<post> → make_change kind acf.field target <field key>; acfv:<meta>:<post> → kind acf.value target <meta>; el:<post>:<id>:<setting> → kind el.setting target <id>:<setting>.",
+    diviOutline: m.divi_outline?.length ? m.divi_outline.slice(0, 250) : undefined,
+    howToChange: "acf:<field key>:<post> → make_change kind acf.field target <field key>; acfv:<meta>:<post> → kind acf.value target <meta>; el:<post>:<id>:<setting> → kind el.setting target <id>:<setting>; divi:<post>:<path>:<field> → kind divi.text (or divi.link) target <path>:<field>.",
   };
 }
 
@@ -73,6 +74,7 @@ export const CHANGE_KINDS = [
   "post.field", "post.meta", "acf.field", "acf.value", "acf.rows",
   "el.setting", "el.insert", "el.remove", "el.duplicate", "el.move",
   "block.text", "block.link", "block.image", "block.class", "block.replace", "block.insert", "block.remove", "block.move", "block.duplicate",
+  "divi.text", "divi.link",
   "css.rule", "css.block",
 ] as const;
 
@@ -230,6 +232,8 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
         "- el.insert: <parent id|root>:<index|end> / ONE element as Elementor JSON {elType, widgetType, settings, elements}. el.remove|el.duplicate: <element id>. el.move: <element id> / up|down|{\"parent\":\"id\",\"index\":n}.\n" +
         "- block.text|block.link|block.image|block.class: block path (0, 2.1 …) / inline HTML | url | attachment id | class. block.replace: path / block markup. block.insert: <parent path>:<index|end> (\":end\" = end of page) / block markup. " +
         "block.remove: path / count. block.move: path / up|down|index. block.duplicate: path.\n" +
+        "- divi.text|divi.link (a Divi page: its modules are shortcodes in the content): <module path>:<field> (e.g. 2.0.0.0:text, 2.0.0.1:button_text, 2.0.0.1:button_url) / text | url. " +
+        "Field \"text\" is the module's own content (a Text module's rich text, so pass its whole HTML); any other field is one of the module's attributes. get_page_map lists every editable Divi field with its exact kind and target - take them from there, never guess a path.\n" +
         "- css.rule (site-wide styles, no target): JSON {\"selector\":\"…\",\"media\":\"\"|\"desktop\"|\"tablet\"|\"mobile\",\"declarations\":{\"color\":\"#0b3d91\"}} - values merge per selector+screen, \"\" removes one. " +
         "Never !important: make the selector more specific than the winning rule (inspect_element shows it). animation-name: lc-fade-in|lc-fade-up|lc-zoom-in|lc-slide-in-left|lc-slide-in-right.\n" +
         "- css.block: block name / raw CSS (for keyframes or several rules that belong together).",
@@ -391,11 +395,19 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
 
   const sk = extras.skills;
   const skillsLoaded = new Set<string>();
+  const filesLoaded = new Set<string>(); // "name/file", so a second read of the SAME skill+file this request is free
   const skillTools = sk && sk.list().length ? {
     load_skill: tool({
-      description: "Load an official WordPress skill (expert instructions) before work in its area. Default file is SKILL.md; its references/*.md files can be loaded too.",
+      description: "Load an official WordPress skill (expert instructions) before work in its area. Default file is SKILL.md; its references/*.md files can be loaded too. Load only the skills that actually apply to THIS request - most requests need just the 3-4 named in your instructions, never the whole catalogue. Loading the same skill+file twice in one request returns a short notice instead of the text again (you already have it).",
       inputSchema: z.object({ name: z.string(), file: z.string().optional().describe("e.g. references/theme-json.md") }),
-      execute: async ({ name, file }) => safe(async () => { const r = sk.load(name, file); skillsLoaded.add(name); return r; }),
+      execute: async ({ name, file }) => safe(async () => {
+        const key = name + "/" + (file || "SKILL.md");
+        if (filesLoaded.has(key)) return { ok: true, name, file: file || "SKILL.md", alreadyLoaded: true, note: "Already loaded earlier in this request - use what you read then, do not load it again." };
+        const r = sk.load(name, file);
+        skillsLoaded.add(name);
+        filesLoaded.add(key);
+        return r;
+      }),
     }),
   } : {};
 

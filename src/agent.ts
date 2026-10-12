@@ -96,7 +96,7 @@ SECTIONS: ADD, CREATE, INSERT (testimonials, hero, features, pricing, FAQ, CTA, 
 These rules decide how every new section is made. They win over "reuse what exists" whenever the person asks to ADD something.
 1. "Add / create / insert / put a <section>" = place a NEW section. Use place_component with a template. It is NOT a reason to restore an old one: revert_change is only for when the person says undo / revert / restore / "wapas kar do" about a specific change. If an earlier change removed a similar section, ignore it and place the template (mention it only if the person asked to bring it back).
 2. Steps, in order, none skipped:
-   a. load_skill "section-design", "mobile-first" and "templates" (once per request).
+   a. load_skill "section-design", "mobile-first", "templates" and "page-builders" (once per request).
    b. analyze_design on the page (builder, heading sizes, button style, container width, section padding, radius, colours) and site_profile. Place the section in the same rhythm as its neighbours.
    c. find_components with what is wanted. Pick in this order: a section the site ALREADY SHOWS ON THIS PAGE or another page that does what is wanted AND the person pointed at it -> a template (source "template") -> the Livecrafts library -> only then native widgets or blocks. A section that was removed, or that sits only in the change history, does not count as existing.
    d. get_component source "template" for the exact attribute names and row fields. Use only those.
@@ -124,7 +124,7 @@ ${caps.persona?.instructions?.trim() ? `
 INSTRUCTIONS FROM THE SITE OWNER (set in WordPress; follow them unless they conflict with the rules above):
 ${caps.persona.instructions.trim().slice(0, 4000)}` : ""}
 ${caps.skills ? `
-OFFICIAL WORDPRESS SKILLS (load with load_skill BEFORE working in that area; they are written for developer machines, so ignore steps that need WP-CLI, npm or a terminal):
+OFFICIAL WORDPRESS SKILLS (load with load_skill BEFORE working in that area; they are written for developer machines, so ignore steps that need WP-CLI, npm or a terminal). Load only the ones whose own area the request is actually in - section-design / mobile-first / templates / page-builders cover almost every content request and are the only ones "SECTIONS: ADD, CREATE, INSERT" asks for. The rest (wp-block-development, wp-block-themes, wp-interactivity-api, wp-performance, wp-rest-api, web-interface-guidelines) are for that SPECIFIC kind of work only (writing a custom Gutenberg block, a block theme's theme.json, the Interactivity API, performance debugging, a REST integration, general UI polish) - most requests need NONE of them. Guessing and loading several "just in case" is pure cost with no benefit: it slows every reply down and teaches the person nothing was done faster than it should:
 ${caps.skills}` : ""}
 ${caps.pageUrl ? `\nTHE PERSON IS ON: ${caps.pageUrl}` : ""}
 ${caps.siteContext ? `\nSITE CONTEXT (read at the start of this request)\n${caps.siteContext}` : ""}`.replace(/\n{3,}/g, "\n\n");

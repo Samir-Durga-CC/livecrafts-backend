@@ -27,7 +27,7 @@ export interface ComponentHelpers {
   design?: (url?: string) => Promise<any>;
 }
 
-const NEEDED_SKILLS = ["section-design", "mobile-first", "templates"];
+const NEEDED_SKILLS = ["section-design", "mobile-first", "templates", "page-builders"];
 const missingSkills = (loaded: Set<string>) => NEEDED_SKILLS.filter((s) => !loaded.has(s));
 
 /** Words to look for on the site for a request: its own words plus what the library knows about the component. */
