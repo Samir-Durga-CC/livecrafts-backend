@@ -17,6 +17,7 @@ const DOING: Record<string, string> = {
   create_menu: "Creating the menu", add_menu_item: "Adding the menu link", upload_media_from_url: "Importing the image",
   view_image: "Looking at the image", create_file: "Creating a theme file", load_skill: "Reading WordPress guidelines",
   list_changes: "Checking the changes", revert_change: "Reverting a change", propose_plan: "Preparing the plan",
+  create_blog_post: "Creating the blog post", generate_image: "Generating the image", find_media: "Searching the Media Library", list_terms: "Reading categories and tags",
 };
 const DONE: Record<string, string> = {
   get_page_map: "Read the page", read_target: "Checked a stored value", find_text: "Searched the database",
@@ -30,6 +31,7 @@ const DONE: Record<string, string> = {
   create_menu: "Created the menu", add_menu_item: "Added the menu link", upload_media_from_url: "Imported the image",
   view_image: "Looked at the image", create_file: "Created a theme file", load_skill: "Read WordPress guidelines",
   list_changes: "Checked the changes", revert_change: "Reverted a change", propose_plan: "Plan approved",
+  create_blog_post: "Created the blog post", generate_image: "Generated the image", find_media: "Searched the Media Library", list_terms: "Read categories and tags",
 };
 
 export function Thumb({ id, size = 56 }: { id: string; size?: number }) {
@@ -66,7 +68,8 @@ function Activity({ items, onOpen }: { items: ToolItem[]; onOpen?: (url: string)
   const labels = [...new Set(items.filter((i) => i.state !== "running").map((i) => DONE[i.tool] ?? i.tool))];
   const shots = items.filter((i) => i.tool === "screenshot_page" && i.ui?.screenshotId);
   const files = items.filter((i) => (i.tool === "edit_file" || i.tool === "restore_file" || i.tool === "create_file") && i.state === "ok" && i.ui?.path);
-  const pages = items.filter((i) => (i.tool === "create_page" || i.tool === "create_post" || i.tool === "edit_post_content" || i.tool === "set_post_status") && i.state === "ok" && i.ui?.link);
+  const pages = items.filter((i) => (i.tool === "create_page" || i.tool === "create_post" || i.tool === "create_blog_post" || i.tool === "edit_post_content" || i.tool === "set_post_status") && i.state === "ok" && i.ui?.link);
+  const images = items.filter((i) => i.tool === "generate_image" && i.state === "ok" && i.ui?.url);
   return (
     <div className={`activity ${running ? "live" : ""} ${failed ? "has-fail" : ""}`}>
       <button className="act-line" onClick={() => setOpen(!open)} aria-expanded={open}>
@@ -102,8 +105,14 @@ function Activity({ items, onOpen }: { items: ToolItem[]; onOpen?: (url: string)
       {pages.map((p) => (
         <div key={p.seq} className="file-done">
           <Icon.Page size={14} /> <a href={p.ui!.link} target="_blank" rel="noreferrer">{String(p.ui!.link).replace(/^https?:\/\/[^/]+/, "") || "/"}</a>
-          <span className="fd-badge ok">{p.tool === "create_page" ? "Page created" : p.tool === "create_post" ? "Post created" : "Updated"}{p.ui!.status && p.ui!.status !== "publish" ? ` · ${p.ui!.status}` : ""}</span>
+          <span className="fd-badge ok">{p.tool === "create_page" ? "Page created" : p.tool === "create_post" || p.tool === "create_blog_post" ? "Post created" : "Updated"}{p.ui!.status && p.ui!.status !== "publish" ? ` · ${p.ui!.status}` : ""}</span>
           {onOpen && <button className="fd-link" onClick={() => onOpen(p.ui!.link)}>Show in preview</button>}
+        </div>
+      ))}
+      {images.map((m) => (
+        <div key={m.seq} className="file-done">
+          <img className="fd-thumb" src={String(m.ui!.url)} alt="" width={56} height={38} />
+          <span className="fd-badge ok">Image added to the Media Library</span>
         </div>
       ))}
       {shots.map((s) => <Shot key={s.seq} id={String(s.ui!.screenshotId)} caption={shotCaption(s.ui!)} />)}
@@ -135,7 +144,7 @@ function Approval({ item, onAnswer, busy }: { item: Extract<TimelineItem, { kind
     create_page: "Create a new page", create_post: "Create a new blog post", edit_post_content: "Change page content",
     set_post_status: "Change page status", create_menu: "Create a navigation menu", add_menu_item: "Add a menu link",
     upload_media_from_url: "Import an image to the Media Library", revert_change: "Revert a change",
-    propose_plan: "Plan for this request",
+    propose_plan: "Plan for this request", create_blog_post: "Create a new blog post (draft)", generate_image: "Generate an image with AI",
   };
   const title = TITLES[item.tool] ?? item.tool;
   const backup = item.current as { path?: string; editedAt?: string } | null | undefined;
@@ -183,6 +192,24 @@ function Approval({ item, onAnswer, busy }: { item: Extract<TimelineItem, { kind
           <div className="ap-row"><span className="ap-label">Title</span><span className="ap-val">{i.title}</span></div>
           <div className="ap-row"><span className="ap-label">Status</span><span className="ap-val">{i.status === "draft" ? "Draft (only you can see it)" : "Published (visible to everyone)"}{i.slug ? ` · /${i.slug}/` : ""}</span></div>
           <div className="ap-row after"><span className="ap-label">Content</span><Collapsible code={String(i.content ?? "")} /></div>
+        </div>
+      )}
+      {item.tool === "create_blog_post" && (
+        <div className="ap-body">
+          <div className="ap-row"><span className="ap-label">Title</span><span className="ap-val">{i.title}</span></div>
+          <div className="ap-row"><span className="ap-label">Status</span><span className="ap-val">Draft - visitors see it only after you deploy</span></div>
+          {(i.categories?.length || i.tags?.length) ? <div className="ap-row"><span className="ap-label">Terms</span><span className="ap-val">{[...(i.categories ?? []), ...(i.tags ?? []).map((t: string) => "#" + t)].map((x: string, n: number) => <span key={n} className="ap-chip">{x}</span>)}</span></div> : null}
+          {i.featuredImageId ? <div className="ap-row"><span className="ap-label">Image</span><span className="ap-val">Media Library #{i.featuredImageId}</span></div> : null}
+          <div className="ap-row"><span className="ap-label">Excerpt</span><span className="ap-val">{i.excerpt}</span></div>
+          <div className="ap-row"><span className="ap-label">SEO</span><span className="ap-val">{i.metaDescription}</span></div>
+          <div className="ap-row after"><span className="ap-label">Article</span><Collapsible code={String(i.content ?? "")} /></div>
+        </div>
+      )}
+      {item.tool === "generate_image" && (
+        <div className="ap-body">
+          <div className="ap-row"><span className="ap-label">Picture</span><span className="ap-val">{i.prompt}</span></div>
+          <div className="ap-row"><span className="ap-label">Alt text</span><span className="ap-val">{i.alt}</span></div>
+          <div className="ap-row"><span className="ap-label">Cost</span><span className="ap-val">One AI image ({i.shape ?? "landscape"}) on your OpenAI key, about $0.04</span></div>
         </div>
       )}
       {item.tool === "edit_post_content" && (

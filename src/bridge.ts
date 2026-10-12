@@ -114,7 +114,9 @@ export class Bridge {
     return this.request<any>("POST", "livecrafts/v1/changes", { json: { source: "assistant", ...c } });
   }
   revert(id: number, ref?: string) { return this.request<any>("POST", `livecrafts/v1/changes/${id}/revert`, { json: { ref, source: "assistant" } }); }
-  createPage(p: { title: string; content?: string; type?: "page" | "post"; slug?: string; parent?: number; template?: string; excerpt?: string; ref?: string }) {
+  /** Blog posts can also carry featured_media, categories / tags (names or ids) and meta_description (plugin 0.15+). */
+  createPage(p: { title: string; content?: string; type?: "page" | "post"; slug?: string; parent?: number; template?: string; excerpt?: string; ref?: string;
+    featured_media?: number; categories?: (string | number)[]; tags?: (string | number)[]; meta_description?: string }) {
     return this.request<any>("POST", "livecrafts/v1/pages", { json: { source: "assistant", ...p } });
   }
   /** Title / content / excerpt / status of a page as editors see it (draft) or as visitors do (live). */
@@ -146,6 +148,14 @@ export class Bridge {
   menuLocations() { return this.request<Record<string, any>>("GET", "wp/v2/menu-locations"); }
   menus() { return this.request<any[]>("GET", "wp/v2/menus", { query: { per_page: 100, context: "edit" } }); }
   menuItems(menuId: number) { return this.request<any[]>("GET", "wp/v2/menu-items", { query: { menus: menuId, per_page: 100, context: "edit" } }); }
+  /** Blog categories or tags, most used first. */
+  terms(taxonomy: "categories" | "tags", search?: string) {
+    return this.request<any[]>("GET", `wp/v2/${taxonomy}`, { query: { per_page: 100, search, orderby: "count", order: "desc", hide_empty: "false", _fields: "id,name,slug,count,parent" } });
+  }
+  /** Images in the Media Library, newest first. */
+  mediaList(search?: string, page = 1) {
+    return this.request<any[]>("GET", "wp/v2/media", { query: { media_type: "image", per_page: 24, page, search, _fields: "id,source_url,alt_text,title,media_details,date" } });
+  }
 
   // ---- active theme files (Livecrafts plugin 0.7+)
   themeFiles() { return this.request("GET", "livecrafts/v1/theme-files"); }

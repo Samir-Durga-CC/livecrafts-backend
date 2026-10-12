@@ -3,6 +3,7 @@ import { PausedBar, type PauseKind } from "./components/PausedBar";
 import { ApiError, api, buildTimeline, followJob, lastStatus, ledgerFrom } from "./api";
 import { ChangesPanel, type PanelTab } from "./components/ChangesPanel";
 import { Composer, type Context } from "./components/Composer";
+import { BlogDialog } from "./components/BlogDialog";
 import { IntegrationsDialog, SiteDialog, TokenDialog } from "./components/Dialogs";
 import { Transcript } from "./components/Messages";
 import { Sidebar } from "./components/Sidebar";
@@ -80,7 +81,7 @@ export default function App() {
       if (e.type === "tool_end" && e.data.ok && WRITE_TOOLS.includes(String(e.data.tool)) && Date.now() - Date.parse(e.ts) < 15_000) {
         setPanelTab("preview"); if (window.innerWidth > 1100) setPanelOpen(true);
         // a new page/post: show that page in the preview
-        if ((e.data.tool === "create_page" || e.data.tool === "create_post") && e.data.ui?.link) setNavigate({ url: String(e.data.ui.link), n: Date.now() });
+        if ((e.data.tool === "create_page" || e.data.tool === "create_post" || e.data.tool === "create_blog_post") && e.data.ui?.link) setNavigate({ url: String(e.data.ui.link), n: Date.now() });
       }
     }, setLive);
   }, [jobId, refreshJobs]);
@@ -123,6 +124,13 @@ export default function App() {
       else { const j = await api.createJob(siteId, args); setJobId(j.id); }
       refreshJobs();
     } catch (e) { guard(e); throw e; }
+  }
+  /** A blog post always starts its own chat. */
+  const [blogOpen, setBlogOpen] = useState(false);
+  async function startBlog(prompt: string, fileIds: string[]) {
+    setProblem("");
+    try { const j = await api.createJob(siteId, { prompt, fileIds, approvalMode: mode }); setJobId(j.id); refreshJobs(); }
+    catch (e) { guard(e); throw e; }
   }
   async function answer(approvalId: string, approved: boolean, reason?: string) {
     setAnswering(true); setProblem("");
@@ -203,6 +211,7 @@ export default function App() {
               notice={paused ? <PausedBar kind={pauseKind} onKind={setPauseKind} onContinue={() => void cont()} /> : undefined}
               placeholder={waiting ? "Waiting for your approval above…" : working ? (stopping ? "Stopping…" : "Working… (press Stop to pause)") : paused ? (pauseKind === "edit" ? "Type your corrected request…" : "Type a note for the assistant…") : site ? "Ask Livecrafts to change anything on your site…" : "Connect a site first"}
               onClearContext={(k) => setCtx((c) => ({ ...c, [k]: undefined }))} onSend={send}
+              tools={<button className="mode" title="New blog post: give a title, the assistant writes the draft" onClick={() => setBlogOpen(true)} disabled={!siteId || working || waiting}><Icon.Page size={17} /></button>}
               extra={<><ApprovalModePicker mode={mode} onChange={(m) => void changeMode(m)} /><span className="model-pill" title="Default model (LC_MODEL). A site can choose its own in WordPress → Settings → Livecrafts Assistant."><Icon.Sparkle size={13} /> {model}</span></>} />
           </section>
         </main>
@@ -217,6 +226,7 @@ export default function App() {
         onSelect={(id) => { setSiteId(id); setJobId(""); }} onAdd={() => setDialog("site")} />}
       {dialog === "integrations" && <IntegrationsDialog sites={sites} onClose={() => { setDialog(""); refreshSites(); }} onSites={refreshSites} />}
       {dialog === "token" && <TokenDialog reason={tokenReason} onClose={() => setDialog("")} />}
+      {blogOpen && siteId && <BlogDialog siteId={siteId} onClose={() => setBlogOpen(false)} onSubmit={startBlog} />}
     </div>
   );
 }

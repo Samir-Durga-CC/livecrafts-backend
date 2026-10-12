@@ -48,7 +48,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     actor: caller.via === "widget" ? { token: caller.token, name: caller.user.name, login: caller.user.login } : undefined,
   });
   // What the chat inside the WordPress widget may call (with its signed per-person token).
-  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/voice\/(transcribe|speak)|GET \/sites\/[\w-]+\/(assistant|eyes)|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
+  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/voice\/(transcribe|speak)|GET \/sites\/[\w-]+\/(assistant|eyes|media)|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
 
   async function readBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
     const chunks: Buffer[] = []; let size = 0;
@@ -122,6 +122,13 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         if (!ps || !canUseSite(caller, ps.id)) return send(res, 404, { error: "Unknown site" });
         const r = await new Bridge(ps, caller.via === "widget" ? caller.token : undefined).previewToken();
         return send(res, 200, { token: r.token, param: r.param });
+      }
+      const md = url.pathname.match(/^\/sites\/([\w-]+)\/media$/);
+      if (md && req.method === "GET") { // the blog form's Media Library picker
+        const ms = sites.get(md[1]);
+        if (!ms || !canUseSite(caller, ms.id)) return send(res, 404, { error: "Unknown site" });
+        const list = await new Bridge(ms).mediaList(url.searchParams.get("search") || undefined, Math.max(1, Number(url.searchParams.get("page")) || 1));
+        return send(res, 200, list.map((m: any) => ({ id: m.id, url: m.media_details?.sizes?.medium?.source_url ?? m.source_url, full: m.source_url, alt: m.alt_text ?? "", title: m.title?.rendered ?? "" })));
       }
       if (route === "GET /sites") return send(res, 200, sites.list().filter((x) => canUseSite(caller, x.id)).map(publicSite));
       if (route === "POST /sites") {

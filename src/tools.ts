@@ -9,6 +9,7 @@ import type { Verifier } from "./verify.js";
 import { downloadImage } from "./net.js";
 import type { Skills } from "./skills.js";
 import { makeComponentTools } from "./componentTools.js";
+import { generateImage, type ImageShape } from "./images.js";
 
 /**
  * The assistant's tools. Every write goes to the site as a DRAFT through the Livecrafts plugin (POST /changes):
@@ -24,6 +25,12 @@ async function safe<T>(fn: () => Promise<T>): Promise<T | { ok: false; error: st
     if (e instanceof BridgeError) return { ok: false, error: e.message, status: e.status, code: e.code };
     return { ok: false, error: (e as Error).message };
   }
+}
+
+/** Words of an article's visible text (block comments and tags removed). */
+export function htmlWords(html: string): number {
+  const t = html.replace(/<!--[\s\S]*?-->/g, " ").replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ").trim();
+  return t ? t.split(/\s+/).length : 0;
 }
 
 /** The page map can be big; give the model a compact, stable view of it. */
@@ -62,6 +69,7 @@ export interface ToolExtras {
   planTool?: boolean;                   // "once per request" approval mode: offer propose_plan
   fetchImpl?: typeof fetch;             // tests: fake the internet for image downloads
   allowPrivateImageHosts?: boolean;     // tests/demo only
+  generateImage?: typeof generateImage; // tests: fake the image model
 }
 
 const deviceSchema = z.enum(["desktop", "tablet", "mobile"]).optional().describe("Screen size (default desktop)");
@@ -203,6 +211,15 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
         return { ok: true, locations: Object.values(locations ?? {}).map((l: any) => ({ location: l.name, description: l.description, menuId: l.menu || null })), menus: withItems };
       }),
     }),
+    list_terms: tool({
+      description: "The blog's categories and tags with how many posts use each (most used first). Call it before create_blog_post and reuse existing names; only suggest a new one when nothing fits.",
+      inputSchema: z.object({ search: z.string().optional() }),
+      execute: async ({ search }) => safe(async () => {
+        const [cats, tags] = await Promise.all([bridge.terms("categories", search), bridge.terms("tags", search)]);
+        const view = (t: any) => ({ id: t.id, name: t.name, posts: t.count });
+        return { ok: true, categories: cats.map(view), tags: tags.slice(0, 60).map(view) };
+      }),
+    }),
   };
 
   /** A whole section pasted as HTML into one Elementor text-editor / HTML widget: editors could not edit it and it overlays the page. */
@@ -263,6 +280,33 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
         return { ...r, change: changeView(r.change), changeId: r.change?.id, note: "Draft page. Preview it with the preview link; it goes live when a person deploys." };
       }),
     }),
+    create_blog_post: tool({
+      description:
+        "Create a NEW blog post as a draft in one step: title, the full article (block markup), excerpt, SEO meta description, categories, tags and the featured image. " +
+        "Visitors cannot see it until a person deploys. Load the skill \"blog-post\" first. Returns the post id and preview link; refine it afterwards with make_change / block.* like any page.",
+      inputSchema: z.object({
+        title: z.string().min(1).max(200),
+        content: z.string().min(1).max(200_000).describe("The article as core block markup: intro paragraph, wp:heading h2/h3 sections, lists, conclusion. No h1 (the title is the h1)."),
+        excerpt: z.string().max(600).describe("1-2 sentences for blog listings"),
+        metaDescription: z.string().max(320).describe("SEO meta description, about 140-155 characters, includes the main keyword"),
+        categories: z.array(z.string().max(80)).max(3).default([]).describe("Category names - existing ones from list_terms where possible"),
+        tags: z.array(z.string().max(60)).max(10).default([]).describe("Tag names - existing ones where possible"),
+        featuredImageId: z.number().int().optional().describe("Media Library attachment id (from generate_image, upload_media_from_chat or find_media)"),
+        slug: z.string().max(100).optional(),
+        reason: reasonSchema,
+      }),
+      execute: async (a) => safe(async () => {
+        if (/<!--\s*wp:heading[^>]*"level":1\b/.test(a.content) || /<h1[\s>]/i.test(a.content)) return { ok: false, error: "The article must not contain an h1: the post title is the page's h1. Use h2 for sections and h3 below them." };
+        const r = await bridge.createPage({
+          type: "post", title: a.title, content: a.content, excerpt: a.excerpt, slug: a.slug, ref: ref(),
+          meta_description: a.metaDescription, categories: a.categories, tags: a.tags, featured_media: a.featuredImageId,
+        });
+        return {
+          ...r, change: changeView(r.change), changeId: r.change?.id, words: htmlWords(a.content),
+          note: "Draft blog post. Give the person the preview link; it is published when a person deploys. Created categories/tags are marked created: true.",
+        };
+      }),
+    }),
     revert_change: tool({
       description: "Revert ONE change by its id (from site_status / site_history). Only when the person asks to undo / revert / restore a specific change - NOT to \"add\" or \"create\" a section (that is place_component with a template). A draft change is dropped from the draft; a live change gets a new draft change that puts the old value back (live after deploy). Needs approval.",
       inputSchema: z.object({ changeId: z.number().int(), reason: reasonSchema }),
@@ -276,7 +320,35 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
 
   // ---------------------------------------------------------------- images: see them, import them
   const fetchOpts = { fetchImpl: extras.fetchImpl, skipHostCheck: !!extras.allowPrivateImageHosts };
+  const makeImage = extras.generateImage ?? generateImage;
   const media = {
+    generate_image: tool({
+      description:
+        "Generate a NEW image with AI (e.g. a blog post's featured image) and add it to the Media Library with title and alt text. Costs money per image: generate ONE, " +
+        "only when the person wants an AI image (not when they attached one or picked one from the Media Library). Returns the attachment id. Needs approval.",
+      inputSchema: z.object({
+        prompt: z.string().min(10).max(2000).describe("What the picture shows: subject, setting, style (e.g. editorial photo, flat illustration), mood, colours. No text or logos in the image."),
+        alt: z.string().min(3).max(200).describe("Alt text describing the image for screen readers"),
+        title: z.string().max(120).optional(),
+        shape: z.enum(["landscape", "square", "portrait"]).default("landscape").describe("landscape for featured images"),
+        reason: reasonSchema,
+      }),
+      execute: async ({ prompt, alt, title, shape }) => safe(async () => {
+        const img = await makeImage(prompt + "\nNo text, letters, watermarks or logos in the image.", shape as ImageShape);
+        const name = (title || alt).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "ai-image";
+        const saved = files.save(img.buf, name + ".png", img.mime);
+        const up = await bridge.uploadMedia(img.buf, name + ".png", img.mime, title ?? alt, alt);
+        return { ok: true, ...up, fileId: saved.id, model: img.model, imageForModel: saved.id, imageCaption: "The generated image (now in the Media Library)" };
+      }),
+    }),
+    find_media: tool({
+      description: "Search the site's Media Library images (newest first): id, url, alt text, size. Use it when the person wants an image that is already on the site.",
+      inputSchema: z.object({ search: z.string().optional() }),
+      execute: async ({ search }) => safe(async () => ({
+        ok: true,
+        images: (await bridge.mediaList(search)).map((m: any) => ({ id: m.id, url: m.source_url, alt: m.alt_text, title: m.title?.rendered, width: m.media_details?.width, height: m.media_details?.height })),
+      })),
+    }),
     upload_media_from_chat: tool({
       description: "Upload an image the person attached in the chat to the Media Library. Returns the attachment id (use it in make_change: block.image, acf image fields, el.setting image controls, _thumbnail_id). Needs approval.",
       inputSchema: z.object({ fileId: z.string().describe("The id of the attached file (file_...)"), title: z.string().max(120).optional(), alt: z.string().max(200).optional() }),
@@ -414,10 +486,10 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
 
 /** Tools that must never run without a human saying yes (in "every" mode; one plan approval in "request" mode). */
 export const APPROVAL_REQUIRED = [
-  "make_change", "create_page", "revert_change", "place_component", "upload_media_from_chat", "upload_media_from_url", "edit_file", "create_file", "restore_file",
+  "make_change", "create_page", "create_blog_post", "generate_image", "revert_change", "place_component", "upload_media_from_chat", "upload_media_from_url", "edit_file", "create_file", "restore_file",
 ] as const;
 
 /** Tools that change the site (they create history entries). */
-export const WRITE_TOOLS = new Set<string>(["make_change", "create_page", "revert_change", "place_component", "edit_file", "create_file", "restore_file"]);
+export const WRITE_TOOLS = new Set<string>(["make_change", "create_page", "create_blog_post", "revert_change", "place_component", "edit_file", "create_file", "restore_file"]);
 
 export type PostTypeName = PostType;

@@ -52,7 +52,7 @@ export function toBlocks(items: TimelineItem[]): Block[] {
 // ---------------------------------------------------------------- the "Changes" side panel: one entry per requested write
 /** Tools that change the site (drafts, except theme files) - each one needs approval. */
 export const WRITE_TOOLS = [
-  "make_change", "create_page", "revert_change", "place_component", "upload_media_from_chat", "upload_media_from_url", "edit_file", "create_file", "restore_file",
+  "make_change", "create_page", "create_blog_post", "generate_image", "revert_change", "place_component", "upload_media_from_chat", "upload_media_from_url", "edit_file", "create_file", "restore_file",
 ];
 
 export type ChangeState = "pending" | "denied" | "applied" | "failed" | "reverted";
@@ -75,6 +75,8 @@ function changeFor(it: Extract<TimelineItem, { kind: "approval" }>): Change {
     case "undo_last_change": return { ...base, icon: "undo", title: "Undo the last change", target: `page #${i.postId}` };
     case "edit_file": return { ...base, icon: "code", title: reason("Edit a theme file"), target: String(i.path ?? ""), from: short(i.find), to: short(i.replace) };
     case "create_file": return { ...base, icon: "code", title: reason("Create a theme file"), target: String(i.path ?? "") };
+    case "create_blog_post": return { ...base, icon: "page", title: reason(`Create the blog post “${i.title}”`), target: ["post · draft", ...(i.categories ?? [])].join(" · ") };
+    case "generate_image": return { ...base, icon: "image", title: reason("Generate an image with AI"), target: short(i.alt, 80), to: short(i.prompt, 120) };
     case "create_page": case "create_post": return { ...base, icon: "page", title: reason(`Create “${i.title}”`), target: `${it.tool === "create_page" ? "page" : "post"} · ${i.status ?? "publish"}` };
     case "edit_post_content": return { ...base, icon: "page", title: reason("Edit page content"), target: `${i.type === "posts" ? "post" : "page"} #${i.id}`, from: short(i.find), to: short(i.replace) };
     case "set_post_status": return { ...base, icon: "page", title: reason(`Set status to ${i.status}`), target: `${i.type === "posts" ? "post" : "page"} #${i.id}` };

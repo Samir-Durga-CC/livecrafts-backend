@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PausedBar, type PauseKind } from "../components/PausedBar";
 import { answerEyes, api, buildTimeline, fileUrl, followEyes, followJob, lastStatus, setWidgetToken } from "../api";
 import { Composer } from "../components/Composer";
+import { BlogDialog } from "../components/BlogDialog";
 import { Transcript } from "../components/Messages";
 import { ApprovalModePicker } from "../components/RequestChanges";
 import { Icon } from "../icons";
@@ -10,6 +11,7 @@ import { titleOf, writeCount } from "../util";
 import { elementContext, type PickedElement } from "./element";
 import { ElementPanel } from "./ElementPanel";
 import { SiteChanges } from "./SiteChanges";
+import { MorePanel } from "./MorePanel";
 import { connectParent, uploadToMedia } from "./parent";
 import { VoiceAgent, type VoiceState } from "./voice";
 import { VoiceBar } from "./VoiceBar";
@@ -37,7 +39,7 @@ interface WidgetConfig {
   /** Plugin 0.11+: images from this computer can be saved into the Media Library (and the account may upload). */
   canUpload?: boolean; maxUpload?: number;
 }
-type Tab = "chat" | "actions" | "changes";
+type Tab = "chat" | "actions" | "changes" | "more";
 
 function readConfig(): WidgetConfig | null {
   try {
@@ -274,6 +276,13 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       refreshJobs();
     } catch (e) { setProblem((e as Error).message); throw e; }
   }
+  /** A blog post always starts its own chat. */
+  const [blogOpen, setBlogOpen] = useState<false | { title: string }>(false);
+  async function startBlog(prompt: string, fileIds: string[]) {
+    setProblem("");
+    try { const j = await api.createJob(site.id, { prompt, fileIds, approvalMode: mode }); freshJob.current = j.id; setJobId(j.id); setTab("chat"); refreshJobs(); }
+    catch (e) { setProblem((e as Error).message); throw e; }
+  }
   async function answer(approvalId: string, ok: boolean, reason?: string) {
     setAnswering(true);
     try { await api.approve(jobId, approvalId, ok, reason); } catch (e) { setProblem((e as Error).message); } finally { setAnswering(false); }
@@ -417,6 +426,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
         <button role="tab" aria-selected={tab === "chat"} className={tab === "chat" ? "on" : ""} onClick={() => setTab("chat")}><Icon.Chat size={15} /> Chat</button>
         <button role="tab" aria-selected={tab === "actions"} className={tab === "actions" ? "on" : ""} onClick={() => setTab("actions")}><Icon.Cursor size={15} /> Edit{selected && <span className="qa-dot" />}</button>
         <button role="tab" aria-selected={tab === "changes"} className={tab === "changes" ? "on" : ""} onClick={() => setTab("changes")}><Icon.List size={15} /> Changes</button>
+        <button role="tab" aria-selected={tab === "more"} className={tab === "more" ? "on" : ""} onClick={() => setTab("more")}><Icon.More size={15} /> More</button>
       </nav>
 
       {problem && <div className="banner error w-banner"><span>{problem}</span><button onClick={() => setProblem("")}><Icon.Close size={13} /></button></div>}
@@ -456,6 +466,11 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
               onEditOnPage={(selector, apply) => { editApply.current = apply; post({ type: "lc:edit-text", selector }); }} />
           </div>
         )}
+        {tab === "more" && (
+          <div className="w-scroll pad">
+            <MorePanel disabled={working || waiting} onBlog={(p) => startBlog(p, [])} onBlogOptions={(title) => setBlogOpen({ title })} />
+          </div>
+        )}
         {tab === "changes" && (
           <div className="w-scroll pad">
             <SiteChanges postId={Number(cfg.postId) || 0} reloadKey={historyKey} canDeploy={!!cfg.canDeploy} onChanged={(m) => { say(m); post({ type: "lc:drafts-changed" }); if (autoRefresh) setTimeout(() => post({ type: "lc:reload", tab }), 600); }} />
@@ -463,6 +478,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
         )}
       </div>
       {toast && <div className="toast">{toast}</div>}
+      {blogOpen && <BlogDialog siteId={site.id} initialTitle={blogOpen.title} onClose={() => setBlogOpen(false)} onSubmit={startBlog} />}
     </div>
   );
 }

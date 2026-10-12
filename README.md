@@ -122,6 +122,7 @@ Copy `.env.example` to `.env`. Everything is optional except one model key.
 | `LC_SKILLS_DIR` | Folder with extra assistant skills. Default `./skills`. |
 | `LC_TTS_VOICE` | Default voice of the voice mode (`onyx`, `ash`, `echo`, `fable`, `sage`, `alloy`, `coral`, `nova`, `shimmer`, `ballad`, `verse`). Each person can pick another in the widget. Default `onyx`. |
 | `LC_TTS_MODEL` / `LC_STT_MODEL` | Speech and transcription models. Default `gpt-4o-mini-tts` / `gpt-4o-mini-transcribe`. Voice uses the OpenAI key. |
+| `LC_IMAGE_MODEL` / `LC_IMAGE_QUALITY` | AI featured images (`generate_image`). Default `gpt-image-1` / `medium` (about $0.04 per landscape image). Uses the OpenAI key. |
 
 ## One record of every change
 
@@ -160,6 +161,7 @@ use the microphone). Without an OpenAI key the browser's own speech recognition 
 | `src/usage.ts` | `data/usage/*.jsonl` (model, tokens per call), `data/logs/*.jsonl` (+ live follow). |
 | `src/eyes.ts` | The person's own browser (widget open) as the assistant's eyes. |
 | `src/voice.ts` | Voice mode: speech to text and text to speech (OpenAI audio API, key stays on the server). |
+| `src/images.ts` | AI image generation (OpenAI image API, key stays on the server). |
 | `web/` | React UI: the app, and the widget (chat, click panel without AI, site history). |
 | `test/` | `fakeSite.ts` (plugin 0.10 API in memory), `smoke.ts`, `features.ts`, `verify-browser.ts`, `demo.ts`. |
 
@@ -172,6 +174,19 @@ The plugin (0.14+) ships 25 ready sections as shortcodes. The assistant never wr
    and the real-browser check fails if the `data-lc-template` marker is not on the draft page.
 4. `template_usage` answers which templates are used where; the result of `place_component` has `usedTemplate` (shortcode, fit + why, proof, `?lc_templates=1` link).
 Skill: `skills/templates`. Tests: `test/templates.ts` (pure) and scenario 2b in `test/components.ts`. In the chat the change reads "Add the faq template".
+
+## Blog posts from a title
+The person gives only a title (widget: **More → New blog post**, or the console's page button next to the mic, or just
+asking in chat / by voice). The assistant loads `skills/blog-post`, reads the blog's categories and tags (`list_terms`),
+writes the post (intro, h2 sections, conclusion; tone and length as asked - default professional, about 800 words),
+the SEO meta description and excerpt, picks categories and tags (existing ones first), and sets ONE featured image:
+* **AI generated** - `generate_image` (OpenAI `gpt-image-1`), uploaded to the Media Library with alt text;
+* **Upload** - the image the person attached (`upload_media_from_chat`);
+* **Media Library** - an image the person picked in the form, or one `find_media` finds;
+* or none.
+`create_blog_post` saves it all as a WordPress draft in one step (plugin 0.15+). Image generation and the post each need
+approval in "every change" mode. The post is refined like any page (click, chat, voice) and published with Deploy.
+Tests: `test/blog.ts`.
 
 ## Known limits
 * Storage is JSON files (`data/`), and site Application Passwords and secrets sit in `data/` - fine for one server;

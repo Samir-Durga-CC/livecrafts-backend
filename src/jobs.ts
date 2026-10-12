@@ -487,12 +487,16 @@ export class JobRunner {
 function uiSummary(tool: string | undefined, v: any): Record<string, unknown> | undefined {
   if (!v || typeof v !== "object" || v.ok === false) return undefined;
   if (tool === "screenshot_page" && v.screenshotId) return { screenshotId: v.screenshotId, device: v.device, target: v.target };
+  if (tool === "create_blog_post") {
+    return { changeId: v.changeId, summary: v.change?.summary, status: "draft", id: v.id, link: v.preview, preview: v.preview, words: v.words, image: v.featured_media?.url,
+      categories: v.categories?.map((t: any) => t.name), tags: v.tags?.map((t: any) => t.name) };
+  }
   if (tool === "make_change" || tool === "create_page" || tool === "revert_change" || tool === "place_component") {
     return { changeId: v.changeId, summary: v.change?.summary, status: v.change?.status, preview: v.preview, checks: v.verification ? { passed: v.verification.passed, summary: v.verification.summary } : undefined };
   }
   if (tool === "edit_file" || tool === "restore_file" || tool === "create_file") return { path: v.path, backupId: v.backupId, verifiedLive: v.verifiedLive, created: v.created };
   if (tool === "create_page" || tool === "create_post" || tool === "edit_post_content" || tool === "set_post_status") return { id: v.id, link: v.link, status: v.status };
-  if (tool === "upload_media_from_chat" || tool === "upload_media_from_url") return { mediaId: v.id, url: v.url };
+  if (tool === "upload_media_from_chat" || tool === "upload_media_from_url" || tool === "generate_image") return { mediaId: v.id, url: v.url };
   if (tool === "view_image" && v.fileId) return { fileId: v.fileId };
   if (tool === "create_menu" || tool === "add_menu_item") return { menuId: v.menuId, itemId: v.itemId };
   if (tool === "inspect_element" && Array.isArray(v.elements)) {

@@ -26,6 +26,8 @@ export async function startFakeSite() {
     seenActors: [] as string[],
     deployAttempts: 0,
     tplExtra: false,
+    created: [] as any[],
+    terms: { categories: [{ id: 1, name: "Uncategorized", slug: "uncategorized", count: 0 }, { id: 2, name: "Performance", slug: "performance", count: 4 }], tags: [{ id: 3, name: "speed", slug: "speed", count: 2 }] } as Record<string, any[]>,
     nextId: 100,
     url: "",
   };
@@ -111,13 +113,24 @@ export async function startFakeSite() {
       if (c.status === "draft") { c.status = "discarded"; return json(200, { ok: true, dropped: c.id, note: "Removed from the draft. The live site was never changed by it." }); }
       return json(200, { ok: true, change: make(req, b, c.kind, c.target, c.payload.before, "Revert: " + c.summary, { reverts: c.id }), note: "The old value is back in the draft. Deploy to put it on the live site." });
     }
-    if (lc === "pages" && post) { const c = make(req, b, "post.create", "", null, `New page “${b.title}”`); return json(200, { ok: true, id: s.nextId++, preview: s.url + "/?page_id=1&preview=true", change: c }); }
+    if (lc === "pages" && post) {
+      s.created.push(b);
+      const c = make(req, b, "post.create", "", null, `New ${b.type === "post" ? "post" : "page"} “${b.title}”`);
+      const id = s.nextId++;
+      const named = (tax: string, list?: unknown[]) => (list ?? []).map((n) => { const t = s.terms[tax].find((x) => x.name.toLowerCase() === String(n).toLowerCase()); return t ? { id: t.id, name: t.name, created: false } : { id: s.nextId++, name: String(n), created: true }; });
+      return json(200, { ok: true, id, preview: `${s.url}/?p=${id}&preview=true`, change: c,
+        ...(b.featured_media ? { featured_media: { id: b.featured_media, url: `${s.url}/wp-content/uploads/${b.featured_media}.webp`, alt: "alt" } } : {}),
+        ...(b.type === "post" ? { categories: named("categories", b.categories), tags: named("tags", b.tags) } : {}),
+        ...(b.meta_description ? { seo: { plugin: "", meta_key: "lc_meta_description", description: b.meta_description } } : {}) });
+    }
     if (lc === "post") return json(200, { ok: true, id: 5, view: u.searchParams.get("view"), title: "Home", status: "publish", content: "<!-- wp:paragraph --><p>Hi</p><!-- /wp:paragraph -->", url: s.url + "/" });
     if (lc === "notes" && get) return json(200, { ok: true, site: { text: s.notes.site }, page: u.searchParams.get("post") ? { text: s.notes.page } : null });
     if (lc === "notes" && post) { if (Number(b.post)) s.notes.page = b.text; else s.notes.site = b.text; return json(200, { ok: true, notes: { text: b.text, updated: new Date().toISOString() } }); }
     if (lc === "deploy") { s.deployAttempts++; return json(403, { code: "rest_forbidden", message: "Sorry, you are not allowed to do that." }); }
     if (u.pathname === "/wp-json/wp/v2/media" && post) { const id = s.nextId++; s.media.push(id); return json(201, { id, source_url: `${s.url}/wp-content/uploads/${id}.png`, mime_type: req.headers["content-type"] }); }
     if (/^\/wp-json\/wp\/v2\/media\/\d+$/.test(u.pathname)) return json(200, { id: 1 });
+    if (u.pathname === "/wp-json/wp/v2/media" && get) return json(200, [{ id: 42, source_url: `${s.url}/wp-content/uploads/team.jpg`, alt_text: "The team at work", title: { rendered: "Team" }, media_details: { width: 1600, height: 900 } }]);
+    if (u.pathname === "/wp-json/wp/v2/categories" || u.pathname === "/wp-json/wp/v2/tags") return json(200, s.terms[u.pathname.endsWith("tags") ? "tags" : "categories"]);
     if (u.pathname === "/wp-json/wp/v2/pages") return json(200, [{ id: 5, link: s.url + "/", title: { rendered: "Home" }, status: "publish" }]);
     if (u.pathname === "/img/logo.png") { res.writeHead(200, { "Content-Type": "image/png" }); return res.end(PNG); }
     if (u.pathname === "/img/not-an-image") { res.writeHead(200, { "Content-Type": "image/png" }); return res.end("<html>nope</html>"); }
