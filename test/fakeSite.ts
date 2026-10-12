@@ -27,6 +27,7 @@ export async function startFakeSite() {
     deployAttempts: 0,
     tplExtra: false,
     created: [] as any[],
+    termUpdates: [] as any[],
     terms: { categories: [{ id: 1, name: "Uncategorized", slug: "uncategorized", count: 0 }, { id: 2, name: "Performance", slug: "performance", count: 4 }], tags: [{ id: 3, name: "speed", slug: "speed", count: 2 }] } as Record<string, any[]>,
     nextId: 100,
     url: "",
@@ -114,6 +115,10 @@ export async function startFakeSite() {
       return json(200, { ok: true, change: make(req, b, c.kind, c.target, c.payload.before, "Revert: " + c.summary, { reverts: c.id }), note: "The old value is back in the draft. Deploy to put it on the live site." });
     }
     if (lc === "pages" && post) {
+      const allowed = new Set((b.create_terms ?? []).map((n: string) => n.toLowerCase()));
+      const unknown = [...(b.categories ?? []).map((n: string) => ["categories", n]), ...(b.tags ?? []).map((n: string) => ["tags", n])]
+        .filter(([tax, n]) => !s.terms[tax].some((t) => t.name.toLowerCase() === String(n).toLowerCase()) && !allowed.has(String(n).toLowerCase()));
+      if (unknown.length) return json(409, { code: "livecrafts_new_terms", message: "These do not exist on the site yet: " + unknown.map((x) => x[1]).join(", ") });
       s.created.push(b);
       const c = make(req, b, "post.create", "", null, `New ${b.type === "post" ? "post" : "page"} “${b.title}”`);
       const id = s.nextId++;
@@ -123,6 +128,7 @@ export async function startFakeSite() {
         ...(b.type === "post" ? { categories: named("categories", b.categories), tags: named("tags", b.tags) } : {}),
         ...(b.meta_description ? { seo: { plugin: "", meta_key: "lc_meta_description", description: b.meta_description } } : {}) });
     }
+    if (lc === "post-terms" && post) { s.termUpdates.push(b); return json(200, { ok: true, id: b.post, categories: (b.categories ?? []).map((n: string) => ({ id: 0, name: n, created: (b.create_terms ?? []).includes(n) })), tags: (b.tags ?? []).map((n: string) => ({ id: 0, name: n, created: (b.create_terms ?? []).includes(n) })) }); }
     if (lc === "post") return json(200, { ok: true, id: 5, view: u.searchParams.get("view"), title: "Home", status: "publish", content: "<!-- wp:paragraph --><p>Hi</p><!-- /wp:paragraph -->", url: s.url + "/" });
     if (lc === "notes" && get) return json(200, { ok: true, site: { text: s.notes.site }, page: u.searchParams.get("post") ? { text: s.notes.page } : null });
     if (lc === "notes" && post) { if (Number(b.post)) s.notes.page = b.text; else s.notes.site = b.text; return json(200, { ok: true, notes: { text: b.text, updated: new Date().toISOString() } }); }

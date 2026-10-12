@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, type MediaItem } from "../api";
+import { api, type MediaItem, type TermItem } from "../api";
 import { Icon } from "../icons";
 import { LENGTHS, TONES, blogPrompt, type BlogRequest } from "../blog";
 
@@ -16,6 +16,12 @@ export function BlogDialog({ siteId, initialTitle = "", onClose, onSubmit }: {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const titleRef = useRef<HTMLInputElement>(null);
+  const [cats, setCats] = useState<TermItem[] | null>(null);
+  useEffect(() => { api.terms(siteId).then((t) => setCats(t.categories), () => setCats([])); }, [siteId]);
+  const toggleCat = (name: string) => setR((x) => {
+    const on = x.categories ?? [];
+    return { ...x, categories: on.includes(name) ? on.filter((n) => n !== name) : [...on, name].slice(-2) };
+  });
   const set = <K extends keyof BlogRequest>(k: K, v: BlogRequest[K]) => setR((x) => ({ ...x, [k]: v }));
   useEffect(() => { titleRef.current?.focus(); }, []);
 
@@ -83,6 +89,22 @@ export function BlogDialog({ siteId, initialTitle = "", onClose, onSubmit }: {
             </div>
           )}
           {r.image === "library" && <MediaPicker siteId={siteId} selected={r.mediaId} onPick={(m) => setR((x) => ({ ...x, mediaId: m.id, mediaAlt: m.alt || m.title }))} />}
+        </fieldset>
+
+        <fieldset className="blog-image">
+          <legend>Category</legend>
+          {cats === null ? <span className="spin" /> : (
+            <div className="seg" role="group" aria-label="Existing categories">
+              {cats.map((c) => (
+                <button type="button" key={c.id} aria-pressed={!!r.categories?.includes(c.name)} className={r.categories?.includes(c.name) ? "on" : ""} onClick={() => toggleCat(c.name)}>
+                  {c.name}{c.count ? <span className="muted"> {c.count}</span> : null}
+                </button>
+              ))}
+            </div>
+          )}
+          <p className="muted small">{r.categories?.length ? "The post goes into the chosen categories." : "None chosen: the assistant picks the most relevant existing category."}</p>
+          <label className="check"><input type="checkbox" checked={!!r.allowNewTerms} onChange={(e) => set("allowNewTerms", e.target.checked)} /> Allow new categories and tags without asking me</label>
+          <p className="muted small">{r.allowNewTerms ? "New ones are added when nothing existing fits." : "If a new category or tag would fit better, the assistant asks you first."}</p>
         </fieldset>
 
         <label>Notes for the writer (optional)

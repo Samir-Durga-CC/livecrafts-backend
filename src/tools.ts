@@ -10,6 +10,7 @@ import { downloadImage } from "./net.js";
 import type { Skills } from "./skills.js";
 import { makeComponentTools } from "./componentTools.js";
 import { generateImage, type ImageShape } from "./images.js";
+import { chooseTerms } from "./terms.js";
 
 /**
  * The assistant's tools. Every write goes to the site as a DRAFT through the Livecrafts plugin (POST /changes):
@@ -289,23 +290,43 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
         content: z.string().min(1).max(200_000).describe("The article as core block markup: intro paragraph, wp:heading h2/h3 sections, lists, conclusion. No h1 (the title is the h1)."),
         excerpt: z.string().max(600).describe("1-2 sentences for blog listings"),
         metaDescription: z.string().max(320).describe("SEO meta description, about 140-155 characters, includes the main keyword"),
-        categories: z.array(z.string().max(80)).max(3).default([]).describe("Category names - existing ones from list_terms where possible"),
-        tags: z.array(z.string().max(60)).max(10).default([]).describe("Tag names - existing ones where possible"),
+        categories: z.array(z.string().max(80)).max(3).default([]).describe("Category names: existing ones from list_terms. A name that does not exist yet is NOT created - it comes back as a suggestion to ask the person about"),
+        tags: z.array(z.string().max(60)).max(10).default([]).describe("Tag names: existing ones; new names come back as suggestions"),
+        approvedNewTerms: z.array(z.string().max(80)).max(10).default([]).describe("ONLY new category / tag names the PERSON explicitly agreed to add (they said yes, or their request allows new ones). Never fill this on your own"),
         featuredImageId: z.number().int().optional().describe("Media Library attachment id (from generate_image, upload_media_from_chat or find_media)"),
         slug: z.string().max(100).optional(),
         reason: reasonSchema,
       }),
       execute: async (a) => safe(async () => {
         if (/<!--\s*wp:heading[^>]*"level":1\b/.test(a.content) || /<h1[\s>]/i.test(a.content)) return { ok: false, error: "The article must not contain an h1: the post title is the page's h1. Use h2 for sections and h3 below them." };
+        const [cats, tags] = await Promise.all([bridge.terms("categories"), bridge.terms("tags")]);
+        const t = chooseTerms({ categories: a.categories, tags: a.tags, approvedNew: a.approvedNewTerms, title: a.title, content: a.content }, { categories: cats, tags });
         const r = await bridge.createPage({
           type: "post", title: a.title, content: a.content, excerpt: a.excerpt, slug: a.slug, ref: ref(),
-          meta_description: a.metaDescription, categories: a.categories, tags: a.tags, featured_media: a.featuredImageId,
+          meta_description: a.metaDescription, categories: t.categories, tags: t.tags, create_terms: t.create, featured_media: a.featuredImageId,
         });
+        const ask = t.suggestedNew.categories.length + t.suggestedNew.tags.length > 0;
+        const named = [...t.suggestedNew.categories.map((n) => "category " + n), ...t.suggestedNew.tags.map((n) => "tag " + n)].join(", ");
         return {
           ...r, change: changeView(r.change), changeId: r.change?.id, words: htmlWords(a.content),
-          note: "Draft blog post. Give the person the preview link; it is published when a person deploys. Created categories/tags are marked created: true.",
+          ...(ask ? { suggestedNewTerms: t.suggestedNew } : {}),
+          ...(t.fallbackCategory ? { categoryUsed: `${t.fallbackCategory} (the most relevant existing category)` } : {}),
+          note: "Draft blog post. Give the person the preview link; it is published when a person deploys." + (ask
+            ? ` NOT created yet (they do not exist on the site): ${named}. ASK the person in your answer whether to add them. If they say yes, call set_post_terms with them in approvedNewTerms; if no, nothing more to do.`
+            : ""),
         };
       }),
+    }),
+    set_post_terms: tool({
+      description: "Change the categories / tags of a NEW blog post that was not deployed yet (e.g. after the person agreed to the suggested new ones). The lists REPLACE the current ones, so include the ones to keep. Needs approval.",
+      inputSchema: z.object({
+        post: z.number().int().describe("The post id from create_blog_post"),
+        categories: z.array(z.string().max(80)).max(3).optional(),
+        tags: z.array(z.string().max(60)).max(10).optional(),
+        approvedNewTerms: z.array(z.string().max(80)).max(10).default([]).describe("New names the PERSON agreed to add"),
+        reason: reasonSchema,
+      }),
+      execute: async ({ post, categories, tags, approvedNewTerms }) => safe(() => bridge.postTerms({ post, categories, tags, create_terms: approvedNewTerms })),
     }),
     revert_change: tool({
       description: "Revert ONE change by its id (from site_status / site_history). Only when the person asks to undo / revert / restore a specific change - NOT to \"add\" or \"create\" a section (that is place_component with a template). A draft change is dropped from the draft; a live change gets a new draft change that puts the old value back (live after deploy). Needs approval.",
@@ -486,7 +507,7 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
 
 /** Tools that must never run without a human saying yes (in "every" mode; one plan approval in "request" mode). */
 export const APPROVAL_REQUIRED = [
-  "make_change", "create_page", "create_blog_post", "generate_image", "revert_change", "place_component", "upload_media_from_chat", "upload_media_from_url", "edit_file", "create_file", "restore_file",
+  "make_change", "create_page", "create_blog_post", "generate_image", "set_post_terms", "revert_change", "place_component", "upload_media_from_chat", "upload_media_from_url", "edit_file", "create_file", "restore_file",
 ] as const;
 
 /** Tools that change the site (they create history entries). */

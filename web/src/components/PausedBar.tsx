@@ -18,3 +18,16 @@ export function PausedBar({ kind, onKind, onContinue, busy }: { kind: PauseKind;
     </div>
   );
 }
+
+/** Shown when a chat stopped on its own (the server restarted, or an error): what happened, and Continue. */
+export function InterruptedBar({ failed, error, onContinue }: { failed: boolean; error?: string; onContinue: () => void }) {
+  return (
+    <div className="paused-bar" role="status">
+      <div className="pb-top">
+        <span className="pb-title"><Icon.Stop size={12} /> {failed ? "Stopped by an error" : "Interrupted"}</span>
+        <span className="pb-hint">{failed ? (error ? error.slice(0, 160) : "Something went wrong.") : "The server restarted while I was working."} Finished work is kept.</span>
+        <button className="btn accent sm" onClick={onContinue}><Icon.Play size={12} /> Continue</button>
+      </div>
+    </div>
+  );
+}

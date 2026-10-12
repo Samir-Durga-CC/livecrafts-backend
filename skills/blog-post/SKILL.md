@@ -23,9 +23,10 @@ whole post as a DRAFT. Nothing is published until a person deploys.
      concrete prompt (subject, setting, style matching the site, mood, colours), no text in the picture. Alt text says
      what the picture shows (not "featured image").
    - The person said no image -> skip.
-5. **Save.** `create_blog_post` with title, content, excerpt, metaDescription, categories, tags, featuredImageId.
-6. **Report** in 3-5 short lines: the title, the length in words, categories / tags (say which are new), the image,
-   the preview link. Say it is a draft: they can refine it by chat, voice or by clicking on it, and Deploy publishes it.
+5. **Save.** `create_blog_post` with title, content, excerpt, metaDescription, categories, tags, featuredImageId
+   (and approvedNewTerms only for new names the person already agreed to).
+6. **Report** in 3-5 short lines: the title, the length in words, the category and tags used, the image, the preview
+   link - and the question about suggested new categories / tags, if any. Say it is a draft: they can refine it by chat, voice or by clicking on it, and Deploy publishes it.
 
 ## Writing
 - **Structure:** a hook intro of 2-3 sentences that says what the reader gets; 3-6 sections with `h2` headings (use
@@ -39,9 +40,14 @@ whole post as a DRAFT. Nothing is published until a person deploys.
 - **SEO:** pick one main keyword from the title. Use it in the first paragraph, in one h2 and in the meta description.
   Meta description: 140-155 characters, a reason to click, no quotes. Excerpt: 1-2 sentences for the blog listing.
   Slug: leave empty unless the title is very long (then a short keyword slug).
-- **Categories:** 1, at most 2. Reuse an existing category whenever one fits; a new one only when nothing does
-  (say so). Never "Uncategorized" when a real one fits.
-- **Tags:** 3-6 short topic tags; reuse existing spellings.
+- **Categories:** 1, at most 2, from the site's EXISTING categories (`list_terms`). Never "Uncategorized" when a real
+  one fits. If no existing category fits well, you may still name a better new one: `create_blog_post` does NOT create
+  it - it saves the post with the most relevant existing category and returns `suggestedNewTerms`.
+- **Tags:** 3-6 short topic tags, existing spellings first. New tag names are handled the same way (suggested, not created).
+- **New categories / tags need the person's yes.** Put a name in `approvedNewTerms` only when the person agreed
+  (the request says new ones are allowed, or they answered yes). After saving, if `suggestedNewTerms` came back, ASK in
+  your answer: "No existing category fits exactly - shall I add the new category X (and tags a, b)? Otherwise it stays in Y."
+  On yes: `set_post_terms` with the full lists and the new names in `approvedNewTerms`.
 
 ## Block markup (core blocks only)
 ```

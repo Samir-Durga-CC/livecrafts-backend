@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PausedBar, type PauseKind } from "../components/PausedBar";
+import { InterruptedBar, PausedBar, type PauseKind } from "../components/PausedBar";
 import { answerEyes, api, buildTimeline, fileUrl, followEyes, followJob, lastStatus, setWidgetToken } from "../api";
 import { Composer } from "../components/Composer";
 import { BlogDialog } from "../components/BlogDialog";
@@ -447,7 +447,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
             )}
             <Composer compact disabled={working || waiting} model={name} context={{}}
               onStop={working && jobId ? stop : undefined} stopping={stopping}
-              notice={paused ? <PausedBar kind={pauseKind} onKind={setPauseKind} onContinue={() => void cont()} /> : undefined}
+              notice={paused ? <PausedBar kind={pauseKind} onKind={setPauseKind} onContinue={() => void cont()} /> : status === "interrupted" || status === "failed" ? <InterruptedBar failed={status === "failed"} error={String([...events].reverse().find((e) => e.type === "status")?.data.error ?? "")} onContinue={() => void cont()} /> : undefined}
               placeholder={voiceOn && !waiting && !working ? "Voice mode is on - just talk, or type here…" : waiting ? "Answer the approval above…" : working ? (stopping ? "Stopping…" : "Working… (Stop to pause)") : paused ? (pauseKind === "edit" ? "Type your corrected request…" : "Type a note…") : "Ask for any change on this page…"}
               voice={<button className={`mode mic ${voiceOn ? "on" : ""}`} aria-pressed={voiceOn} onClick={() => (voiceOn ? endVoice() : void startVoice())}
                 title={voiceOn ? "End voice mode" : "Voice mode: just talk - no need to press Enter. Answers are read aloud."}><Icon.Mic size={17} /></button>}

@@ -67,6 +67,11 @@ export interface Job {
   actorToken?: string;
   /** Tokens used by this chat so far. */
   usage?: { input: number; output: number; calls: number };
+  /**
+   * What the current run finished so far (saved after every step and every tool), so a server restart in the middle of
+   * a run loses nothing: recover() moves it into `messages`, and tools that already ran are not run again.
+   */
+  partial?: { steps: ModelMessage[]; tools: { toolCallId: string; toolName: string; output: unknown; error?: string }[] };
   result?: string;
   error?: string;
   createdAt: string;

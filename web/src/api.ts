@@ -28,12 +28,14 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return data as T;
 }
 
+export interface TermItem { id: number; name: string; count: number }
 export interface MediaItem { id: number; url: string; full: string; alt: string; title: string }
 export interface SendArgs { prompt: string; fileIds: string[]; pageUrl?: string; selectedTarget?: string; approvalMode?: ApprovalMode; model?: string; extraContext?: string; kind?: "new" | "note" | "edit" }
 
 export const api = {
   health: () => request<{ ok: boolean; model: string; authRequired: boolean }>("GET", "/health"),
   sites: () => request<Site[]>("GET", "/sites"),
+  terms: (siteId: string) => request<{ categories: TermItem[]; tags: TermItem[] }>("GET", `/sites/${siteId}/terms`),
   media: (siteId: string, search = "") => request<MediaItem[]>("GET", `/sites/${siteId}/media${search ? `?search=${encodeURIComponent(search)}` : ""}`),
   previewToken: (siteId: string) => request<{ token: string; param: string }>("POST", `/sites/${siteId}/preview-token`, {}),
   addSite: (b: { name: string; url: string; username: string; appPassword: string }) => request<Site & { plugin?: any; reconnected?: boolean; hostingNote?: string | null }>("POST", "/sites", b),

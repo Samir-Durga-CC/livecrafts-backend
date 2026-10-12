@@ -116,8 +116,12 @@ export class Bridge {
   revert(id: number, ref?: string) { return this.request<any>("POST", `livecrafts/v1/changes/${id}/revert`, { json: { ref, source: "assistant" } }); }
   /** Blog posts can also carry featured_media, categories / tags (names or ids) and meta_description (plugin 0.15+). */
   createPage(p: { title: string; content?: string; type?: "page" | "post"; slug?: string; parent?: number; template?: string; excerpt?: string; ref?: string;
-    featured_media?: number; categories?: (string | number)[]; tags?: (string | number)[]; meta_description?: string }) {
+    featured_media?: number; categories?: (string | number)[]; tags?: (string | number)[]; meta_description?: string; create_terms?: string[] }) {
     return this.request<any>("POST", "livecrafts/v1/pages", { json: { source: "assistant", ...p } });
+  }
+  /** Categories / tags of a new post that was not deployed yet (plugin 0.15+). create_terms = new names the person agreed to. */
+  postTerms(p: { post: number; categories?: string[]; tags?: string[]; create_terms?: string[] }) {
+    return this.request<any>("POST", "livecrafts/v1/post-terms", { json: { source: "assistant", ...p } });
   }
   /** Title / content / excerpt / status of a page as editors see it (draft) or as visitors do (live). */
   post(id: number, view: "draft" | "live" = "draft") { return this.request<any>("GET", "livecrafts/v1/post", { query: { id, view } }); }

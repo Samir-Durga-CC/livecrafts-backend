@@ -3,6 +3,10 @@ export type ImageMode = "ai" | "upload" | "library" | "none";
 export interface BlogRequest {
   title: string; tone: string; words: number; image: ImageMode;
   imageIdea?: string; mediaId?: number; mediaAlt?: string; notes?: string;
+  /** Existing categories the person picked (empty = the assistant picks the most relevant one). */
+  categories?: string[];
+  /** The person allows new categories / tags when no existing one fits (otherwise they are asked first). */
+  allowNewTerms?: boolean;
 }
 
 export const TONES = ["Professional", "Friendly", "Casual", "Formal", "Persuasive"] as const;
@@ -21,6 +25,8 @@ export function blogPrompt(r: BlogRequest): string {
     `Length: about ${r.words} words`,
     `Featured image: ${image}`,
     ...(r.notes?.trim() ? [`Notes: ${r.notes.trim()}`] : []),
-    "Add an SEO meta description, an excerpt, a category and tags.",
+    r.categories?.length ? `Category: ${r.categories.join(", ")} (chosen by me)` : "Category: pick the most relevant existing one",
+    r.allowNewTerms ? "New categories and tags: allowed if no existing one fits - I agree to add them." : "New categories and tags: ask me first; until then use existing ones.",
+    "Add an SEO meta description, an excerpt and tags.",
   ].join("\n");
 }

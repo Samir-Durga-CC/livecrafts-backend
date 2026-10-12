@@ -48,7 +48,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     actor: caller.via === "widget" ? { token: caller.token, name: caller.user.name, login: caller.user.login } : undefined,
   });
   // What the chat inside the WordPress widget may call (with its signed per-person token).
-  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/voice\/(transcribe|speak)|GET \/sites\/[\w-]+\/(assistant|eyes|media)|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
+  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/voice\/(transcribe|speak)|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms)|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
 
   async function readBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
     const chunks: Buffer[] = []; let size = 0;
@@ -122,6 +122,15 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         if (!ps || !canUseSite(caller, ps.id)) return send(res, 404, { error: "Unknown site" });
         const r = await new Bridge(ps, caller.via === "widget" ? caller.token : undefined).previewToken();
         return send(res, 200, { token: r.token, param: r.param });
+      }
+      const tm = url.pathname.match(/^\/sites\/([\w-]+)\/terms$/);
+      if (tm && req.method === "GET") { // the blog form's category picker
+        const ts = sites.get(tm[1]);
+        if (!ts || !canUseSite(caller, ts.id)) return send(res, 404, { error: "Unknown site" });
+        const b = new Bridge(ts);
+        const [categories, tags] = await Promise.all([b.terms("categories"), b.terms("tags")]);
+        const view = (t: any) => ({ id: t.id, name: t.name, count: t.count });
+        return send(res, 200, { categories: categories.map(view), tags: tags.slice(0, 60).map(view) });
       }
       const md = url.pathname.match(/^\/sites\/([\w-]+)\/media$/);
       if (md && req.method === "GET") { // the blog form's Media Library picker

@@ -10,6 +10,7 @@ import { Bridge } from "./bridge.js";
 import { log, recordUsage, tokensOf } from "./usage.js";
 import type { ApprovalMode, Job, JobEvent, JobStatus, PendingApproval, Site } from "./types.js";
 import { APPROVAL_MODES } from "./types.js";
+import { WRITE_TOOLS } from "./tools.js";
 
 export interface RequestOptions {
   approvalMode?: ApprovalMode; model?: string; /** "note" / "edit" = said while paused: same request continues */ kind?: "new" | "note" | "edit";
@@ -48,6 +49,7 @@ export class JobRunner {
   recover() {
     for (const j of this.jobs.list()) {
       if (j.status === "running" || j.status === "queued") {
+        if (j.partial) { keepFinished(j, j.partial.steps, j.partial.tools, "The server restarted while you were working."); j.partial = undefined; }
         j.status = "interrupted";
         this.emit(j, "status", { status: "interrupted", note: "Server restarted while this job was running. Resume it to continue." });
       }
@@ -74,7 +76,7 @@ export class JobRunner {
   /** Follow-up message in the same conversation (the model keeps the earlier context). Only when the job is idle. */
   continue(jobId: string, prompt: string, context?: string, fileIds: string[] = [], opts: RequestOptions = {}): Job {
     const job = this.mustGet(jobId);
-    if (job.status !== "completed" && job.status !== "failed" && job.status !== "paused") throw new Error(`Job is ${job.status}; wait for it to finish (or answer the approval) before sending another message.`);
+    if (job.status !== "completed" && job.status !== "failed" && job.status !== "paused" && job.status !== "interrupted") throw new Error(`Job is ${job.status}; wait for it to finish (or answer the approval) before sending another message.`);
     const paused = job.status === "paused";
     const quick = !paused && !fileIds.length ? quickCommand(prompt) : null;
     if (quick && job.pending.every((x) => x.approved !== undefined)) { this.quickUndo(job, prompt, quick.all); return job; }
@@ -369,6 +371,7 @@ export class JobRunner {
         shouldStop: () => ctl.stop,
       };
       const { agent, model } = this.factory(site, ctx);
+      const saveProgress = () => { job.partial = { steps: [...stepMessages], tools: [...toolResults] }; this.jobs.put(job); };
       let step = 0;
       let stepStart = Date.now();
       const result = await agent.stream({
@@ -382,6 +385,7 @@ export class JobRunner {
             ...t, ms: Date.now() - stepStart, finish: typeof s?.finishReason === "string" ? s.finishReason : s?.finishReason?.unified });
           job.usage = { input: (job.usage?.input ?? 0) + t.input, output: (job.usage?.output ?? 0) + t.output, calls: (job.usage?.calls ?? 0) + 1 };
           stepStart = Date.now();
+          saveProgress();
         },
         onToolExecutionStart: (e: any) => { ctl.toolsRunning++; this.emit(job, "tool_start", { tool: e.toolCall?.toolName, input: e.toolCall?.input }); },
         onToolExecutionEnd: (e: any) => {
@@ -407,6 +411,7 @@ export class JobRunner {
             changeId: rec?.id,
           });
           for (const r of recs) this.emit(job, "change", { change: r });
+          saveProgress();
         },
       });
 
@@ -434,6 +439,7 @@ export class JobRunner {
       // Save everything the model and the tools produced during this run. On a streamed run, `responseMessages` also holds
       // the result of a tool that was approved earlier - saving it is what stops that write from ever running twice.
       job.messages.push(...((await result.responseMessages) ?? []));
+      job.partial = undefined;
 
       const requests = ((await result.content) ?? []).filter((p: any) => p.type === "tool-approval-request" && !p.isAutomatic);
       if (requests.length) {
@@ -455,7 +461,13 @@ export class JobRunner {
         return;
       }
 
-      job.result = (await result.text) ?? "";
+      let answer = (await result.text) ?? "";
+      if (!answer.trim()) {
+        // Some models end with a tool call and no words. Never leave the person without an answer.
+        answer = fallbackAnswer(toolResults);
+        if (answer) { this.emit(job, "text", { text: answer }); job.messages.push({ role: "assistant", content: [{ type: "text", text: answer }] } as ModelMessage); }
+      }
+      job.result = answer;
       if (ctl.stop) { this.setStatus(job, "paused"); return; }
       this.emit(job, "done", { text: job.result });
       this.setStatus(job, "completed");
@@ -463,14 +475,8 @@ export class JobRunner {
       if (ctl.stop) {
         // Stopped while the model was writing. Keep every finished step, plus results of changes that ran outside a
         // finished step (an approved change runs before the first step) - otherwise it could run again on Continue.
-        const done = new Set<string>();
-        for (const m of stepMessages) if (m.role === "tool" && Array.isArray(m.content)) for (const p of m.content as any[]) if (p.type === "tool-result") done.add(p.toolCallId);
-        const orphans = toolResults.filter((t) => t.toolCallId && !done.has(t.toolCallId));
-        if (orphans.length) {
-          job.messages.push({ role: "tool", content: orphans.map((t) => ({ type: "tool-result", toolCallId: t.toolCallId, toolName: t.toolName,
-            output: t.error ? { type: "error-text", value: t.error } : { type: "json", value: t.output ?? null } })) } as ModelMessage);
-        }
-        job.messages.push(...stepMessages);
+        keepFinished(job, stepMessages, toolResults, "The person pressed Stop.");
+        job.partial = undefined;
         if (block.trim()) this.emit(job, "text", { text: block.trim() + " …" });
         this.setStatus(job, "paused", { note: "Stopped." });
         return;
@@ -481,6 +487,56 @@ export class JobRunner {
       this.setStatus(job, "failed", { error: job.error });
     }
   }
+}
+
+/**
+ * Keep the finished part of a run that ended early (Stop, or a server restart): finished steps, plus results of tools
+ * whose step did not finish. A result whose tool call is already in the conversation is saved as a tool result;
+ * otherwise (its step was lost) the model gets a note naming it, so a write or a paid image is never done twice.
+ */
+function keepFinished(job: Job, steps: ModelMessage[], tools: { toolCallId: string; toolName: string; output: unknown; error?: string }[], why: string) {
+  const ids = (msgs: ModelMessage[], type: string) => {
+    const out = new Set<string>();
+    for (const m of msgs) if (Array.isArray(m.content)) for (const p of m.content as any[]) if (p.type === type && p.toolCallId) out.add(p.toolCallId);
+    return out;
+  };
+  // Keep finished steps up to the first one with a tool call that has no result (an invalid conversation otherwise).
+  const allResults = ids(steps, "tool-result");
+  let keep = steps.length;
+  for (let i = 0; i < steps.length; i++) {
+    const m = steps[i];
+    if (m.role === "assistant" && Array.isArray(m.content) && (m.content as any[]).some((p) => p.type === "tool-call" && !allResults.has(p.toolCallId))) { keep = i; break; }
+  }
+  const kept = steps.slice(0, keep);
+  const answered = ids(kept, "tool-result");
+  const earlierCalls = ids(job.messages, "tool-call"); // e.g. a change approved before this run
+  const orphans = tools.filter((t) => t.toolCallId && !answered.has(t.toolCallId));
+  const known = orphans.filter((t) => earlierCalls.has(t.toolCallId));
+  if (known.length) {
+    job.messages.push({ role: "tool", content: known.map((t) => ({ type: "tool-result", toolCallId: t.toolCallId, toolName: t.toolName,
+      output: t.error ? { type: "error-text", value: t.error } : { type: "json", value: t.output ?? null } })) } as ModelMessage);
+  }
+  job.messages.push(...kept);
+  const lost = orphans.filter((t) => !earlierCalls.has(t.toolCallId));
+  if (lost.length) {
+    const lines = lost.map((t) => `- ${t.toolName}: ${t.error ? "failed: " + t.error : JSON.stringify(t.output ?? null).slice(0, 600)}`);
+    job.messages.push({ role: "user", content: `[${why} These tools had ALREADY RUN - use their results, do not run them again:\n${lines.join("\n")}]` } as ModelMessage);
+  }
+}
+
+/** A short answer built from what the run did, for when the model ended without one. */
+function fallbackAnswer(tools: { toolName: string; output: any; error?: string }[]): string {
+  const lines: string[] = [];
+  for (const t of tools) {
+    const v = t.output;
+    if (t.error || !v || v.ok === false) continue;
+    if (t.toolName === "create_blog_post") lines.push(`Created the blog post as a draft (${v.words ?? "?"} words)${v.preview ? `: ${v.preview}` : ""}.`);
+    else if (t.toolName === "create_page") lines.push(`Created the page as a draft${v.preview ? `: ${v.preview}` : ""}.`);
+    else if (t.toolName === "generate_image") lines.push("Generated the image and added it to the Media Library.");
+    else if (WRITE_TOOLS.has(t.toolName) && v.change?.summary) lines.push(`${v.change.summary} (draft).`);
+  }
+  if (!lines.length) return "";
+  return `Done.\n${lines.map((l) => "- " + l).join("\n")}\nEverything is a draft: preview it, and Deploy when it looks right.`;
 }
 
 /** Small, safe bits of a tool result the chat UI needs (screenshot ids, which file changed) - never whole file contents. */
