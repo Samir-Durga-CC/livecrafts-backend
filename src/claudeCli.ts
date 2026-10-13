@@ -50,6 +50,37 @@ const OPEN = "<tool_call>";
 const CLOSE = "</tool_call>";
 const id = (p: string) => p + randomBytes(8).toString("hex");
 
+/**
+ * Models do not always write the tag we asked for: <call>…</tool_call>, <tool-call>…</tool-call> and friends all mean
+ * the same thing, so every variant (open and close, even mismatched) counts as a call.
+ */
+const OPENS = ["<tool_call>", "<tool-call>", "<toolcall>", "<call>"];
+const CLOSES = ["</tool_call>", "</tool-call>", "</toolcall>", "</call>"];
+const CALL_RE = /<(?:tool[_-]?call|call)>([\s\S]*?)<\/(?:tool[_-]?call|call)>/gi;
+const first = (list: string[], s: string, from = 0) => {
+  let at = -1, len = 0;
+  for (const t of list) { const i = s.indexOf(t, from); if (i !== -1 && (at === -1 || i < at)) { at = i; len = t.length; } }
+  return { at, len };
+};
+const couldOpen = (tail: string) => OPENS.some((o) => o.startsWith(tail));
+const LONGEST_OPEN = Math.max(...OPENS.map((o) => o.length));
+
+/**
+ * The transcript we send shows past turns and tool results. A model that is not careful CONTINUES that format: it
+ * writes its own "TOOL RESULT (…)" with invented output and then reports success for work that never ran. Everything
+ * from such a line on is thrown away - a reply may never contain a result the model wrote itself.
+ */
+const FABRICATED = /^\s*(?:#{1,3}\s*(?:tool results?|user|assistant|your turn)\b|tool result ?\(|approval: the person\b|the conversation so far\b|<\/?transcript>)/i;
+
+/** Everything before the first line where the model started writing the transcript itself. */
+function cutFabricated(text: string): { text: string; cut: boolean } {
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (FABRICATED.test(lines[i])) return { text: lines.slice(0, i).join("\n"), cut: true };
+  }
+  return { text, cut: false };
+}
+
 /* ------------------------------------------------------------------ the prompt */
 
 function toolSection(tools: LanguageModelV4CallOptions["tools"], choice: LanguageModelV4CallOptions["toolChoice"]): string {
@@ -64,12 +95,18 @@ function toolSection(tools: LanguageModelV4CallOptions["tools"], choice: Languag
     "HOW YOU USE TOOLS (read carefully - this is the only way you can act)",
     "You cannot run anything yourself. To use a tool, write a block exactly like this:",
     `${OPEN}{"name":"tool_name","input":{ ... }}${CLOSE}`,
-    "- One block per call; several blocks = several calls in one step.",
+    `- The tag is exactly ${OPEN} … ${CLOSE}. One block per call; several blocks = several calls in one step.`,
     `- The JSON must be complete and valid: no comments, no trailing commas, no "..." placeholders, and "input" must match the tool's schema.`,
-    `- Any words for the person come BEFORE the first block. Write nothing after the last ${CLOSE}.`,
+    `- Any words for the person come BEFORE the first block. Write nothing after the last ${CLOSE} - STOP there.`,
     `- Never say you are "going to" call a tool, and never show a call as an example: write the block, or do not.`,
-    `- Tool results come back in the next turn as "TOOL RESULT". Then continue.`,
     "- When no tool is needed, reply in plain text only (no blocks).",
+    "",
+    "WHAT YOU MUST NEVER DO (this is how work gets faked)",
+    `- NEVER write a tool's result yourself: no "TOOL RESULT (…)", no "## TOOL RESULTS", no "## USER", no invented output of any kind.`,
+    "- You CANNOT see what a call returned in this turn. The result comes back in the NEXT turn, inside the transcript.",
+    "  So: write the call, stop, and wait. Anything you write after a call is a guess and will be thrown away.",
+    `- NEVER tell the person something was changed, checked, verified or placed unless a real TOOL RESULT in the transcript`,
+    "  shows it succeeded. If you have not called the tool yet, say what you are about to do - or just make the call.",
     must,
     "",
     "TOOLS YOU HAVE",
@@ -152,13 +189,18 @@ function render(o: LanguageModelV4CallOptions, max: number) {
   }
   if (o.responseFormat?.type === "json") warnings.push({ type: "unsupported", feature: "responseFormat json", details: "Ask for JSON in the prompt instead." });
 
+  // The history goes inside <transcript>…</transcript> and the instruction comes after it, so the model can tell what
+  // it is reading (the past, written by us) from what it is writing (its next reply, and nothing more).
   const transcript = [
-    `The conversation so far (oldest first). "ASSISTANT (you)" are your own earlier replies.`,
+    "<transcript>",
+    `Everything in here already happened (oldest first). "ASSISTANT (you)" are your own earlier replies, and every`,
+    `"TOOL RESULT" is real output that was handed to you. You did not write any of it.`,
     "",
     lines.join("\n\n"),
+    "</transcript>",
     "",
-    "## YOUR TURN",
-    `Continue as the assistant: either reply to the person in plain text, or write ${OPEN} blocks for the tools you need now. Nothing else.`,
+    `Now write ONLY your next reply: plain text for the person, and/or ${OPEN} blocks for the tools you need now.`,
+    `Do not write "</transcript>", a "## …" heading, or any "TOOL RESULT" - you have not seen one yet this turn.`,
   ].join("\n");
 
   return { system: system.join("\n\n") + toolSection(o.tools, o.toolChoice), transcript, images, warnings };
@@ -180,17 +222,53 @@ function parseCall(body: string): { name: string; input: unknown } | null {
   } catch { return null; }
 }
 
-export function parseReply(text: string): { text: string; calls: { name: string; input: unknown }[] } {
-  const calls: { name: string; input: unknown }[] = [];
-  const re = new RegExp(`${OPEN}([\\s\\S]*?)${CLOSE}`, "g");
-  const plain = text.replace(re, (_m, body: string) => { const c = parseCall(body); if (c) calls.push(c); return ""; }).trim();
-  // Some replies are the bare JSON of a single call, with no block around it.
-  if (!calls.length && /^\{[\s\S]*\}$/.test(plain)) {
-    const c = parseCall(plain);
-    if (c) return { text: "", calls: [c] };
+/** The JSON object that starts at `from`, by counting braces (for a block whose closing tag never came). */
+function objectAt(s: string, from: number): string | null {
+  const start = s.indexOf("{", from);
+  if (start === -1) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) { if (esc) esc = false; else if (ch === "\\") esc = true; else if (ch === '"') inStr = false; continue; }
+    if (ch === '"') inStr = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}" && --depth === 0) return s.slice(start, i + 1);
   }
-  return { text: plain, calls };
+  return null;
 }
+
+export function parseReply(raw: string): { text: string; calls: { name: string; input: unknown }[]; broken: number } {
+  const { text } = cutFabricated(raw); // anything the model wrote as if it were a tool result is dropped
+  const calls: { name: string; input: unknown }[] = [];
+  let broken = 0;
+
+  let plain = text.replace(CALL_RE, (_m, body: string) => {
+    const c = parseCall(body);
+    if (c) calls.push(c); else broken++;
+    return "";
+  });
+
+  // A block whose closing tag never arrived (the model stopped, or ran out of room).
+  const open = first(OPENS, plain);
+  if (open.at !== -1) {
+    const body = objectAt(plain, open.at + open.len);
+    const c = body ? parseCall(body) : null;
+    if (c) calls.push(c); else broken++;
+    plain = plain.slice(0, open.at);
+  }
+
+  plain = plain.trim();
+  // Some replies are the bare JSON of a single call, with no block around it.
+  if (!calls.length && !broken && /^\{[\s\S]*\}$/.test(plain)) {
+    const c = parseCall(plain);
+    if (c) return { text: "", calls: [c], broken: 0 };
+  }
+  return { text: plain, calls, broken };
+}
+
+/** A malformed call must never pass as a finished answer: say so, so the step is visibly wrong instead of silently empty. */
+export const brokenNote = (broken: number) =>
+  `(${broken} tool call${broken === 1 ? " was" : "s were"} written in the wrong format and did NOT run - nothing was changed. Let me write ${broken === 1 ? "it" : "them"} again correctly.)`;
 
 const usageOf = (u: any, costUsd?: number): LanguageModelV4Usage => {
   const n = (v: any) => (typeof v === "number" ? v : undefined);
@@ -354,9 +432,10 @@ export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}
         if (res.is_error || res.subtype === "error_during_execution") throw cliError(String(res.result ?? res.error ?? out.stderr), out.code);
       } finally { try { fs.unlinkSync(p.file); } catch { /* best effort */ } }
 
-      const { text, calls } = parseReply(String(res.result ?? ""));
+      const { text, calls, broken } = parseReply(String(res.result ?? ""));
       const content: LanguageModelV4Content[] = [];
-      if (text) content.push({ type: "text", text });
+      const say = broken && !calls.length ? `${text}\n\n${brokenNote(broken)}`.trim() : text;
+      if (say) content.push({ type: "text", text: say });
       for (const c of calls) content.push({ type: "tool-call", toolCallId: id("call_"), toolName: c.name, input: JSON.stringify(c.input ?? {}) });
 
       return {
@@ -379,7 +458,8 @@ export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}
           ctrl.enqueue({ type: "stream-start", warnings: p.warnings });
 
           const calls: { name: string; input: unknown }[] = [];
-          let open = false, held = "", full = "", errored = "";
+          let open = false, held = "", full = "", errored = "", line = "", broken = 0;
+          let fabricating = false; // the model started writing its own "tool results": everything after is dropped
           let usage: any = null, cost: number | undefined, stopRaw: string | undefined, sessionId: string | undefined;
 
           const emit = (t: string) => {
@@ -387,25 +467,42 @@ export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}
             if (!open) { ctrl.enqueue({ type: "text-start", id: textId }); open = true; }
             ctrl.enqueue({ type: "text-delta", id: textId, delta: t });
           };
-          /** Text may hold the start of a <tool_call> block: emit what is certainly plain text, keep the rest back. */
+          /**
+           * Text leaves here a whole line at a time: a line is only sent on once it cannot turn out to be the model
+           * writing its own tool result (those always start a line). A half-written tag is held back too.
+           */
+          const feed = (t: string) => {
+            if (fabricating || !t) return;
+            line += t;
+            for (let nl = line.indexOf("\n"); nl !== -1; nl = line.indexOf("\n")) {
+              const done = line.slice(0, nl + 1);
+              line = line.slice(nl + 1);
+              if (FABRICATED.test(done)) { fabricating = true; line = ""; return; }
+              emit(done);
+            }
+          };
+          const flush = () => { if (!fabricating && line && !FABRICATED.test(line)) { emit(line); } line = ""; };
+
+          /** Text may hold the start of a tool-call block: pass on what is certainly plain text, keep the rest back. */
           const push = (delta: string) => {
             full += delta;
+            if (fabricating) return;
             held += delta;
             for (;;) {
-              const s = held.indexOf(OPEN);
-              if (s === -1) break;
-              const e = held.indexOf(CLOSE, s);
-              if (e === -1) { emit(held.slice(0, s)); held = held.slice(s); return; } // the block is still arriving
-              emit(held.slice(0, s));
-              const c = parseCall(held.slice(s + OPEN.length, e));
-              if (c) calls.push(c);
-              held = held.slice(e + CLOSE.length);
+              const s = first(OPENS, held);
+              if (s.at === -1) break;
+              const e = first(CLOSES, held, s.at + s.len);
+              if (e.at === -1) { feed(held.slice(0, s.at)); held = held.slice(s.at); return; } // the block is still arriving
+              feed(held.slice(0, s.at));
+              const c = parseCall(held.slice(s.at + s.len, e.at));
+              if (c) calls.push(c); else broken++;
+              held = held.slice(e.at + e.len);
             }
-            let keep = 0; // whatever could still grow into "<tool_call>"
-            for (let k = Math.min(OPEN.length - 1, held.length); k > 0; k--) {
-              if (OPEN.startsWith(held.slice(held.length - k))) { keep = k; break; }
+            let keep = 0; // whatever could still grow into an opening tag
+            for (let k = Math.min(LONGEST_OPEN - 1, held.length); k > 0; k--) {
+              if (couldOpen(held.slice(held.length - k))) { keep = k; break; }
             }
-            emit(held.slice(0, held.length - keep));
+            feed(held.slice(0, held.length - keep));
             held = held.slice(held.length - keep);
           };
 
@@ -438,7 +535,20 @@ export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}
             const out = await run(bin, p.args, p.stdin, { timeoutMs, abortSignal: o.abortSignal }, onEvent);
             if (errored) throw cliError(errored, out.code);
             if (out.code !== 0 && !full.trim() && !calls.length) throw cliError(out.stderr || "the CLI exited without an answer", out.code);
-            if (held.trim()) emit(held);
+            if (held) {
+              // A block that never closed: take the call out of it by counting braces, and never show the tag as text.
+              const o = first(OPENS, held);
+              if (o.at === -1) feed(held);
+              else {
+                feed(held.slice(0, o.at));
+                const body = objectAt(held, o.at + o.len);
+                const c = body ? parseCall(body) : null;
+                if (c) calls.push(c); else broken++;
+              }
+              held = "";
+            }
+            flush();
+            if (broken && !calls.length) emit((open ? "\n\n" : "") + brokenNote(broken));
             if (open) ctrl.enqueue({ type: "text-end", id: textId });
             for (const c of calls) ctrl.enqueue({ type: "tool-call", toolCallId: id("call_"), toolName: c.name, input: JSON.stringify(c.input ?? {}) });
             ctrl.enqueue({ type: "response-metadata", id: sessionId, modelId, timestamp: new Date() });
