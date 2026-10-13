@@ -4,6 +4,7 @@ import { answerEyes, api, buildTimeline, fileUrl, followEyes, followJob, lastSta
 import { Composer } from "../components/Composer";
 import { Transcript } from "../components/Messages";
 import { ApprovalModePicker } from "../components/RequestChanges";
+import { ModelPicker } from "../components/ModelPicker";
 import { Icon } from "../icons";
 import type { ApprovalMode, AssistantInfo, JobEvent, JobSummary, Resolved, Site, TimelineItem, UploadedFile } from "../types";
 import { titleOf, writeCount } from "../util";
@@ -114,6 +115,8 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   const [events, setEvents] = useState<JobEvent[]>([]);
   const [tab, setTabState] = useState<Tab>(cfg.tab ?? "chat");
   const [mode, setMode] = useState<ApprovalMode>((store.get("lcw_mode") as ApprovalMode) || cfg.approvalMode || "request");
+  // Which model answers this chat: "" = the one WordPress / the backend chose. Remembered in this browser.
+  const [pick, setPick] = useState<string>(store.get("lcw_model") ?? "");
   const [selected, setSelected] = useState<PickedElement | null>(null);
   const [resolved, setResolved] = useState<Resolved | null>(null);
   const [resolving, setResolving] = useState(false);
@@ -266,7 +269,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   async function send(prompt: string, fileIds: string[], extraContext?: string) {
     setProblem("");
     try {
-      const args = { prompt, fileIds, pageUrl: cfg.pageUrl, approvalMode: mode, extraContext };
+      const args = { prompt, fileIds, pageUrl: cfg.pageUrl, approvalMode: mode, extraContext, ...(pick ? { model: pick } : {}) };
       if (jobId && paused) await api.message(jobId, { ...args, kind: pauseKind });
       else if (jobId && (status === "completed" || status === "failed")) await api.message(jobId, args);
       else { const j = await api.createJob(site.id, args); freshJob.current = j.id; setJobId(j.id); }
@@ -444,7 +447,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
               attachNote={cfg.canUpload ? <label className="att-save"><input type="checkbox" checked={saveToLibrary} onChange={(e) => { setSaveToLibrary(e.target.checked); store.set("lcw_save_media", e.target.checked ? "1" : "0"); }} /> Also save to the Media Library</label> : undefined}
               onClearContext={() => {}} onSend={sendFromComposer}
               chips={selected ? <span className="chip"><Icon.Cursor size={12} /> {selected.label}<button aria-label="forget selection" onClick={() => setSelected(null)}><Icon.Close size={11} /></button></span> : undefined}
-              extra={<ApprovalModePicker mode={mode} onChange={(m) => void changeMode(m)} />} />
+              extra={<><ApprovalModePicker mode={mode} onChange={(m) => void changeMode(m)} /><ModelPicker value={pick} fallback={info.model} onChange={(id) => { setPick(id); store.set("lcw_model", id || null); }} /></>} />
           </div>
         )}
         {tab === "actions" && (

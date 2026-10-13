@@ -49,9 +49,15 @@ export interface SiteStatus {
 }
 
 export interface ProviderInfo {
-  id: string; name: string; needsBaseUrl?: boolean; examples: string[]; keyHelp: string;
-  configured: boolean; keySource: "env" | "saved" | "none"; baseUrl?: string;
+  id: string; name: string; needsBaseUrl?: boolean; needsNoKey?: boolean; examples: string[]; keyHelp: string;
+  configured: boolean; keySource: "env" | "saved" | "none" | "cli"; baseUrl?: string;
+  /** Only the Claude CLI provider: whether the CLI on the backend machine is installed and signed in. */
+  cli?: { installed: boolean; version?: string; loggedIn: boolean; authMethod?: string; error?: string };
 }
+
+/** One model the person can pick right now, e.g. "claudecli:sonnet" or "openai:gpt-5.5". */
+export interface ModelChoice { id: string; provider: string; providerName: string; model: string }
+export interface ModelsReport { defaultModel: string; providers: ProviderInfo[]; choices: ModelChoice[] }
 
 export interface AssistantInfo { botName?: string; welcome?: string; instructions?: string; model?: string; approvalMode?: ApprovalMode; accent?: string }
 

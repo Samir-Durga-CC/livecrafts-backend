@@ -11,6 +11,7 @@ import type { Job, Site } from "./types.js";
 import { hostinger, type HostingerHealth } from "./hostinger.js";
 import { secrets, type ProviderId } from "./secrets.js";
 import { PROVIDERS, providerStatus, testModel } from "./models.js";
+import { claudeCliStatus } from "./claudeCli.js";
 import { diffOf } from "./changes.js";
 import { canUseSite, verifyWidgetToken, type Caller } from "./auth.js";
 import { log } from "./usage.js";
@@ -202,7 +203,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       }
 
       // ---- integrations: Hostinger (token + health check). The token is never sent back to the browser.
-      if (route === "GET /integrations") return send(res, 200, { hostinger: lastHealth ?? (await checkHostinger()), models: providerStatus(), defaultModel: config.model });
+      if (route === "GET /integrations") return send(res, 200, { hostinger: lastHealth ?? (await checkHostinger()), models: await providerStatus(), defaultModel: config.model });
 
       // ---- AI providers: keys are stored on the backend only, never sent back
       m = url.pathname.match(/^\/integrations\/models\/(openai|anthropic|openrouter|groq|custom)$/);
@@ -213,24 +214,30 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         const baseUrl = typeof b.baseUrl === "string" ? b.baseUrl.trim().replace(/\/+$/, "") : undefined;
         if (baseUrl && !/^https?:\/\//.test(baseUrl)) return send(res, 400, { error: "The address must start with http:// or https://" });
         if (apiKey && secrets.providerSource(id) === "env") return send(res, 409, { error: "This provider's key is set in the backend .env, which always wins. Change it there." });
-        const before = providerStatus().find((x) => x.id === id);
+        const before = (await providerStatus()).find((x) => x.id === id);
         secrets.setProvider(id, { ...(apiKey ? { apiKey } : {}), ...(baseUrl !== undefined ? { baseUrl } : {}) });
         const testWith = typeof b.testModel === "string" && b.testModel.trim() ? `${id}:${b.testModel.trim()}` : null;
         if (testWith) {
           const t = await testModel(testWith);
           if (!t.ok && apiKey && before?.keySource !== "saved") secrets.setProvider(id, null); // do not keep a key that does not work
           if (!t.ok) return send(res, 400, { error: t.error, test: t });
-          return send(res, 200, { ok: true, test: t, models: providerStatus() });
+          return send(res, 200, { ok: true, test: t, models: await providerStatus() });
         }
-        return send(res, 200, { ok: true, models: providerStatus() });
+        return send(res, 200, { ok: true, models: await providerStatus() });
       }
-      if (m && req.method === "DELETE") { secrets.setProvider(m[1] as ProviderId, null); return send(res, 200, { ok: true, models: providerStatus() }); }
+      if (m && req.method === "DELETE") { secrets.setProvider(m[1] as ProviderId, null); return send(res, 200, { ok: true, models: await providerStatus() }); }
       if (route === "POST /integrations/models/test") {
         const b = await readJson(req);
         if (!b.model) return send(res, 400, { error: "model is required (provider:model)." });
         return send(res, 200, await testModel(String(b.model)));
       }
-      if (route === "GET /models") return send(res, 200, { defaultModel: config.model, providers: PROVIDERS.map((p) => ({ ...p, configured: providerStatus().find((x) => x.id === p.id)?.configured })) });
+      if (route === "GET /models") {
+        const st = await providerStatus();
+        const providers = PROVIDERS.map((p) => ({ ...p, configured: st.find((x) => x.id === p.id)?.configured, cli: (st.find((x) => x.id === p.id) as any)?.cli }));
+        // Ready to pick right now: every example model of a provider that is configured, "provider:model".
+        const choices = providers.filter((p) => p.configured).flatMap((p) => p.examples.map((model) => ({ id: `${p.id}:${model}`, provider: p.id, providerName: p.name, model })));
+        return send(res, 200, { defaultModel: config.model, providers, choices });
+      }
       if (route === "POST /integrations/hostinger/test") return send(res, 200, await checkHostinger());
       if (route === "PUT /integrations/hostinger") {
         const b = await readJson(req);
@@ -381,6 +388,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(im
   server.listen(config.port, config.host, () => {
     console.log(`Livecrafts backend on http://${config.host}:${config.port}  (model: ${config.model})`);
     if (!config.apiToken) console.log("WARNING: LC_API_TOKEN is not set - fine on localhost, set it before exposing this server.");
-    if (!process.env.OPENAI_API_KEY && !config.model.includes("/")) console.log("WARNING: OPENAI_API_KEY is not set - jobs will fail until it is.");
+    if (config.model.startsWith("claudecli:")) {
+      void claudeCliStatus(true).then((c) => console.log(c.installed && c.loggedIn
+        ? `Claude CLI ready (${c.version}, ${c.authMethod ?? "signed in"}) - it answers in the background, no API credit needed.`
+        : `WARNING: LC_MODEL is ${config.model} but the Claude CLI is not usable: ${c.error ?? "unknown reason"}`));
+    } else if (!process.env.OPENAI_API_KEY && !config.model.includes("/") && !config.model.includes(":")) {
+      console.log("WARNING: OPENAI_API_KEY is not set - jobs will fail until it is (or switch the model, e.g. LC_MODEL=claudecli:sonnet).");
+    }
   });
 }

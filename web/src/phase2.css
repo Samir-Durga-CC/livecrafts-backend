@@ -338,3 +338,9 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
 .tpl-pill.ok { background: var(--ok-soft); color: var(--ok); }
 .tpl-sub { color: var(--muted); font-size: 12.5px; } .tpl-use { margin-bottom: 3px; }
 .tpl-use a { color: var(--accent); }
+
+/* Model picker (which brain answers: an API model, or the Claude CLI on the backend machine) */
+.model-pill.model-cli svg:first-child { color: var(--accent); }
+.mode-menu .menu-note { padding: 7px 12px; color: var(--muted); }
+.mode-menu .menu-note b { display: block; font-size: 12.5px; color: var(--text-2); }
+.mode-menu .menu-note small { font-size: 11.5px; line-height: 1.35; display: block; }

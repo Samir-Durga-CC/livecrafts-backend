@@ -7,7 +7,7 @@ import { config } from "./config.js";
  * An environment variable always wins over the file, so production can inject secrets without touching disk.
  * Before real customers: move this to an encrypted store / secret manager.
  */
-export type ProviderId = "openai" | "anthropic" | "openrouter" | "groq" | "custom" | "gateway";
+export type ProviderId = "openai" | "anthropic" | "claudecli" | "openrouter" | "groq" | "custom" | "gateway";
 interface Secrets { hostingerToken?: string; providers?: Partial<Record<ProviderId, { apiKey?: string; baseUrl?: string }>>; sites?: Record<string, { secret?: string }> }
 const file = () => path.join(config.dataDir, "secrets.json");
 
@@ -17,6 +17,8 @@ function write(s: Secrets) { fs.mkdirSync(config.dataDir, { recursive: true }); 
 /** The environment variable each provider's key comes from (it wins over a key saved in the app). */
 export const PROVIDER_ENV: Record<ProviderId, string> = {
   openai: "OPENAI_API_KEY", anthropic: "ANTHROPIC_API_KEY", openrouter: "OPENROUTER_API_KEY",
+  // The local Claude CLI signs in itself ("claude auth login"), so it has no key here.
+  claudecli: "LC_CLAUDE_CLI_UNUSED",
   groq: "GROQ_API_KEY", custom: "LC_CUSTOM_API_KEY", gateway: "AI_GATEWAY_API_KEY",
 };
 
