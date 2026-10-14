@@ -243,12 +243,23 @@ export async function screenshotPage(siteUrl: string, a: { url?: string; selecto
     const id = newId("shot");
     const file = path.join(dir, id + ".png");
     let target = "page";
+    let note = "The screenshot is shown to the person in the chat.";
     if (a.selector || a.text) {
       const loc = a.selector ? page.locator(a.selector).first() : page.getByText(a.text!, { exact: false }).first();
       if (await loc.count()) { await loc.scrollIntoViewIfNeeded().catch(() => {}); await loc.screenshot({ path: file, timeout: 15_000 }); target = a.selector ?? `text "${a.text}"`; }
-      else await page.screenshot({ path: file });
-    } else await page.screenshot({ path: file, fullPage: !!a.fullPage });
-    return { ok: true, screenshotId: id, device, target, url: cleanUrl(page.url()), note: "The screenshot is shown to the person in the chat." };
+      else await page.screenshot({ path: file, timeout: 20_000 });
+    } else if (a.fullPage) {
+      // A long page (a home page with ten sections, lazy images, animations) can take longer than Playwright's own
+      // limit to paint in one piece. Rather than fail the step, fall back to what fits on the screen - a picture of
+      // the top of the page is worth far more to the assistant than an error.
+      try { await page.screenshot({ path: file, fullPage: true, timeout: 45_000 }); }
+      catch {
+        await page.screenshot({ path: file, timeout: 20_000 });
+        target = "page (top only)";
+        note = "The whole page was too slow to capture in one piece, so this is what fits on the screen. Screenshot a single section (selector / text) to see further down.";
+      }
+    } else await page.screenshot({ path: file, timeout: 20_000 });
+    return { ok: true, screenshotId: id, device, target, url: cleanUrl(page.url()), note };
   } finally { await ctx.close(); }
 }
 
