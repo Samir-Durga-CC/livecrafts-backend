@@ -7,6 +7,11 @@ description: "Use before changing or adding anything: which builder this specifi
 
 Livecrafts edits the page's real source, never a copy. Which source depends on the builder, and the builder is a property of the PAGE, not the site - one site can mix an Elementor landing page with classic posts. Detect it every time (`find_components` / `place_component` do this for you via `site_profile` + the page's own data); never assume from a previous page or from what the site "mostly" uses.
 
+## Load the one skill for this page
+Once you know which source the page is, load its own skill - they hold the control names, the change kinds and the
+traps that this file only summarises: `wp-elementor`, `wp-gutenberg`, `wp-divi`, `wp-acf`. For the ORDER of the work
+(read, measure, pick a template, fit, place, prove, record) load `build-pipeline`.
+
 ## The four editable sources
 
 1. **Elementor** (`_elementor_data` on the page) -> `el.*` kinds. Content is a tree of containers/widgets with ids.

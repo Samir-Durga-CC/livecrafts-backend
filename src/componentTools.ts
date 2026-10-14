@@ -5,6 +5,8 @@ import { BridgeError } from "./bridge.js";
 import { COMPONENTS, ContentError, LintError, getComponent, imageIds, renderComponent, searchLibrary, type Builder } from "./library/index.js";
 import { acfExport } from "./library/acf.js";
 import { TEMPLATE_WRAP_CSS, TemplateError, buildShortcode, cleanFit, fitFromDesign, placeShortcode, type Fit, type TemplateEntry } from "./library/templates.js";
+import { RECIPES, recipe, recipeList } from "./library/recipes.js";
+import { log } from "./usage.js";
 
 /**
  * Tools for finding and placing ready-made components, so the assistant builds like a developer who reuses what exists:
@@ -183,6 +185,42 @@ export function makeComponentTools(h: ComponentHelpers) {
       }),
     }),
 
+    page_recipes: tool({
+      description:
+        "The ready page designs (About, Contact, Information), as an ORDERED list of template sections. Use it when a WHOLE page is wanted, before building anything.\n" +
+        "Without an id: the designs to choose from. With an id: every section in order, which template and layout (variant) builds it, and what content the person must provide for each.\n" +
+        "It is a plan, not a page: build it with create_page (a draft) and then one place_component per section, in order, so each section is checked, approved and revertable on its own. Read-only.",
+      inputSchema: z.object({
+        id: z.string().optional().describe("A recipe id from the list (e.g. about_classic)"),
+        kind: z.enum(["about", "contact", "info"]).optional().describe("Only the designs of this kind"),
+      }),
+      execute: async ({ id, kind }) => safe(async () => {
+        if (id) {
+          const r = recipe(id);
+          if (!r) return { ok: false, error: `Unknown page recipe "${id}". Available: ${RECIPES.map((x) => x.id).join(", ")}.` };
+          const t = await loadTemplates(bridge).catch(() => ({ list: [] as TemplateEntry[] }));
+          const have = new Set(t.list.map((x) => x.id));
+          return {
+            ok: true, recipe: { id: r.id, title: r.title, description: r.description, bestFor: r.bestFor },
+            sections: r.steps.map((s, i) => ({
+              order: i + 1, template: s.template, variant: s.variant, role: s.role, contentNeeded: s.needs, note: s.note,
+              available: have.size ? have.has(s.template) : undefined,
+            })),
+            howToBuild: [
+              "1. Ask for the content each section needs that the person has not given. Never invent quotes, numbers, prices or contact details.",
+              "2. create_page with the title and slug (it is a draft).",
+              "3. One place_component per section IN THIS ORDER, source \"template\", with its variant in attrs, fit \"auto\".",
+              "4. After each one, read its checks; fix or revert before moving on.",
+              "5. screenshot_page the finished page on desktop, tablet and phone, then give the preview link and say it is a draft to deploy.",
+            ],
+            skipRule: "Header and footer: skip them when the theme already prints one (nearly every theme does). Check the page first.",
+            missing: have.size ? r.steps.filter((s) => !have.has(s.template)).map((s) => s.template) : undefined,
+          };
+        }
+        return { ok: true, recipes: recipeList().filter((r) => !kind || r.kind === kind), use: "page_recipes id \"<id>\" gives the sections in order." };
+      }),
+    }),
+
     template_usage: tool({
       description:
         "Which parts of the site come from the template library, like `git grep` for templates: every template with the pages/posts it is used on (live or draft) and the URLs where theme code rendered it. " +
@@ -286,6 +324,13 @@ export function makeComponentTools(h: ComponentHelpers) {
           const empty = Object.keys(a.attrs ?? {}).length === 0 && !(a.items ?? []).length;
           if (empty) { placeholders = true; warnings.push("No content was given: the template shows empty areas. Give it real content."); }
           templateUsed = { id: entry.id, shortcode: built.code, fit, fitBasis: basis, seeIt: `${pageUrl}${pageUrl.includes("?") ? "&" : "?"}lc_templates=1` };
+          // One line in the log (and the admin panel's live view) for every template that goes on a page: which
+          // template and layout, where, and what the fit was measured from - so "did it use the library?" is answerable.
+          log("info", `template placed: ${entry.id}${(a.attrs ?? {}).variant ? ` (${(a.attrs ?? {}).variant})` : ""}`, {
+            site: bridge.site.id, page: pageUrl, position: a.position ?? "root:end", builder,
+            variant: (a.attrs ?? {}).variant ?? "default", fit, fitBasis: basis,
+            items: (a.items ?? []).length, ref: h.ref(),
+          });
         } else if (a.source === "library") {
           builder = a.builder === "auto" ? detected.builder : a.builder;
           if (a.builder === "auto" && detected.acfDriven && builder !== "elementor") return { ok: false, error: "This page prints ACF fields from its template, so a section inserted into the page body may not appear. Use an ACF layout (find_components) or the hand-off: get_component builder \"acf\". Pass builder \"blocks\" or \"html\" only if the person confirms the page body is shown." };
