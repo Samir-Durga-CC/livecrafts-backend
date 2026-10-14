@@ -42,6 +42,18 @@ Every template family has layouts - pick by the job, not by taste:
 - `slider`: `hero` (full-width message) | `quote` (quotations) | `cards` (many cards, scrolled sideways)
 Say in your answer which variant you chose and why.
 
+## 3b. When the theme builds the page itself
+Some pages (front pages above all) are built by the theme: `front-page.php` loads a fixed list of template parts and
+never prints what the page holds in WordPress. A section saved into that page would never appear.
+This is NOT a reason to stop and ask for a developer. `get_page_map` reports `sections.themeParts` (the parts the
+theme loaded) and `sections.places`. Place the section at one of those seams:
+`place_component position "theme:before:template-parts/why"` (also `theme:after:…`, `theme:start`, `theme:end`).
+Livecrafts renders it there itself: no theme file is touched, nothing is lost on a theme update, and it stays a draft
+that is checked, previewed, deployed and reverted like any other change. Say it in business words ("it will sit
+between the intro and the products"), never in file names.
+If `sections.places` is empty, the page has not been opened by an editor yet - `screenshot_page` it once and read the
+map again; `theme:start` and `theme:end` always work.
+
 ## 4. Fit it, then place it
 `place_component` with `source: "template"`, the id, the variant, the content, and `fit` from step 2 (`fit: "auto"`
 when the design was measured). Content only - never HTML, never classes, never inline styles. If something is missing
@@ -62,6 +74,11 @@ If `place_component` returns an error, report the error. Never work around it by
 - `write_notes` for the page: which template and variant now provide this section, and the fit you measured.
 - In your answer, name: the template and variant used, where it was placed, what you measured, what the checks said,
   the preview link - and that it is a draft that someone has to deploy.
+
+## Talking to the person while you do all this
+They own the site; they do not write code. Never put PHP, file names, shortcodes or CSS in your answer, never ask
+which builder or which hook, and never hand them a list of things for a developer to do. Decide with your tools, do
+the work, then say what changed, where it sits, and that it is a draft only they can see until they press Deploy.
 
 ## Building a whole page
 Same steps, once per section. `create_page` first (a draft), then place the sections in the order the recipe gives,

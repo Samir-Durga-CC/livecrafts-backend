@@ -97,6 +97,21 @@ export function placeShortcode(code: string, builder: "elementor" | "blocks" | "
   return { kind: "block.insert", value: `<!-- wp:shortcode -->\n${code}\n<!-- /wp:shortcode -->` };
 }
 
+/**
+ * Pages the THEME builds (front-page.php and friends) never print the page body, so a section saved in the page would
+ * not appear. The plugin renders sections at the seams of the theme's own template instead - no theme file is touched.
+ * The place is one of the page map's sections.places ("before:template-parts/why", "after:...", "start", "end").
+ */
+export const placeInTheme = (code: string, place: string) => ({ kind: "theme.section" as const, target: place, value: code });
+
+/** "theme:before:template-parts/why" -> "before:template-parts/why" (the position syntax place_component takes). */
+export function themePlace(position?: string): string | null {
+  const m = /^theme:(.+)$/.exec((position ?? "").trim());
+  if (!m) return null;
+  const place = m[1].trim().toLowerCase();
+  return /^(start|end|(before|after):[a-z0-9/_-]{1,80})$/.test(place) ? place : null;
+}
+
 /** Elementor's flexbox container has default padding/gap; a template brings its own spacing, so the wrapper must add none. */
 export const TEMPLATE_WRAP_CSS = { id: "lc-tpl", label: "Template wrapper (no extra spacing)", css: ".lc-tpl.e-con{--padding-top:0px;--padding-right:0px;--padding-bottom:0px;--padding-left:0px;--gap:0px;--row-gap:0px;--column-gap:0px;}\n.lc-tpl .elementor-widget-shortcode,.lc-tpl .elementor-shortcode{width:100%;}" };
 

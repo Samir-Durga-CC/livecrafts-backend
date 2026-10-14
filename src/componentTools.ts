@@ -4,7 +4,7 @@ import type { Bridge } from "./bridge.js";
 import { BridgeError } from "./bridge.js";
 import { COMPONENTS, ContentError, LintError, getComponent, imageIds, renderComponent, searchLibrary, type Builder } from "./library/index.js";
 import { acfExport } from "./library/acf.js";
-import { TEMPLATE_WRAP_CSS, TemplateError, buildShortcode, cleanFit, fitFromDesign, placeShortcode, type Fit, type TemplateEntry } from "./library/templates.js";
+import { TEMPLATE_WRAP_CSS, TemplateError, buildShortcode, cleanFit, fitFromDesign, placeInTheme, placeShortcode, themePlace, type Fit, type TemplateEntry } from "./library/templates.js";
 import { RECIPES, recipe, recipeList } from "./library/recipes.js";
 import { log } from "./usage.js";
 
@@ -251,6 +251,7 @@ export function makeComponentTools(h: ComponentHelpers) {
         "source \"library\": id = testimonials | contact; content = the fields (see get_component). It also writes the library's protective CSS (Additional CSS blocks lc-core, lc-c-<id>, lc-tokens) so the section cannot overflow, overlap or be broken by the theme, then inserts it, then the page is measured in a real browser on desktop, tablet and mobile.\n" +
         "source \"site\": id from find_components: copies that section / pattern. replacements = text swaps [{find, replace}] to adapt it.\n" +
         "position: Elementor \"<parent id|root>:<index|end>\" (default root:end); blocks \"<parent path>:<index|end>\" (default \":end\" = end of the page).\n" +
+        "position \"theme:<place>\" for a page the THEME builds itself (front-page.php and other templates that never print the page body, so a section saved in the page would not show): the plugin renders the section at that seam of the theme's own template - no theme file is edited, and it stays a draft that is checked and revertable. get_page_map lists the places under sections.places, e.g. theme:before:template-parts/why, theme:after:template-parts/hero, theme:start, theme:end. Use this instead of telling the person to involve a developer.\n" +
         "Never invent customer quotes or contact details. If the checks fail, fix or revert (revert_change) before saying it worked.",
       inputSchema: z.object({
         source: z.enum(["template", "library", "site"]),
@@ -277,7 +278,7 @@ export function makeComponentTools(h: ComponentHelpers) {
         };
 
         let kind: "el.insert" | "block.insert", value: unknown, builder: Builder, warnings: string[] = [], placeholders = false, selector: string | undefined, css: Array<{ id: string; label: string; css: string }> = [], dropped: string[] = [];
-        let templateUsed: Record<string, unknown> | undefined, softH1 = false;
+        let templateUsed: Record<string, unknown> | undefined, softH1 = false, themeTarget: string | undefined;
 
         if (a.source === "template") {
           const t = await loadTemplates(bridge);
@@ -286,7 +287,8 @@ export function makeComponentTools(h: ComponentHelpers) {
           builder = a.builder === "auto" ? detected.builder : a.builder;
           // A template is its own section on the page: never inside another section's container (it would sit in the middle of it).
           const pos = a.position ?? "";
-          if (builder === "elementor" && pos && !/^root:(\d+|end)$/.test(pos)) return { ok: false, error: `A template is a section of its own: position must be "root:<index>" (or "root:end"), not "${pos}", which is inside another section. get_page_map shows the order of the page's sections; testimonials usually go after the products / services section, a contact form last, above the footer.` };
+          if (pos.startsWith("theme:") && !themePlace(pos)) return { ok: false, error: `"${pos}" is not a place in the theme. get_page_map lists them under sections.places (e.g. theme:before:template-parts/why, theme:end).` };
+          if (builder === "elementor" && pos && !pos.startsWith("theme:") && !/^root:(\d+|end)$/.test(pos)) return { ok: false, error: `A template is a section of its own: position must be "root:<index>" (or "root:end"), not "${pos}", which is inside another section. get_page_map shows the order of the page's sections; testimonials usually go after the products / services section, a contact form last, above the footer.` };
           // Real content only: sample text must never reach the page.
           const SAMPLE = /\b(placeholder|lorem ipsum|client name|your name here|sample (text|quote)|replace this)\b/i;
           const texts = [...Object.values(a.attrs ?? {}), ...(a.items ?? []).flatMap((i) => Object.values(i))].map((v) => String(v));
@@ -316,8 +318,16 @@ export function makeComponentTools(h: ComponentHelpers) {
           try { built = buildShortcode(entry, { attrs: a.attrs, items: a.items, fit }); }
           catch (e) { if (e instanceof TemplateError) return { ok: false, error: e.message }; throw e; }
           warnings.push(...built.warnings);
-          const placed = placeShortcode(built.code, builder, entry.id);
-          kind = placed.kind; value = placed.value;
+          const inTheme = themePlace(a.position);
+          if (inTheme) {
+            // The page is built by the theme and never prints the page body: the plugin renders the section at the
+            // seam instead. Still a draft, still checked, still revertable - and no theme file is touched.
+            const t = placeInTheme(built.code, inTheme);
+            kind = t.kind as any; value = t.value; themeTarget = t.target;
+          } else {
+            const placed = placeShortcode(built.code, builder, entry.id);
+            kind = placed.kind; value = placed.value;
+          }
           if (builder === "elementor") css = [TEMPLATE_WRAP_CSS];
           selector = `.ai-t[data-lc-template="${entry.id}"]`;
           softH1 = /^hero/.test(entry.id);
@@ -369,7 +379,7 @@ export function makeComponentTools(h: ComponentHelpers) {
           if (r?.change) extra.push(r.change);
         }
         // 2) the section itself, then the real-browser check
-        const target = a.position || (kind === "el.insert" ? "root:end" : ":end");
+        const target = themeTarget ?? a.position ?? (kind === "el.insert" ? "root:end" : ":end");
         const out = await h.checked(pageUrl, () => write(kind, target, value, templateUsed ? `Template: ${a.id}` : undefined, postId), { component: selector, softH1 });
         if (out?.ok === false) return { ...out, note: extra.length ? "The CSS blocks are saved as drafts (harmless); nothing was inserted." : undefined };
         const skills = missingSkills(h.skillsLoaded);
