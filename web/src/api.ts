@@ -38,6 +38,10 @@ export const api = {
   deleteSite: (id: string) => request("DELETE", `/sites/${id}`),
   updateSite: (id: string, b: { name?: string; username?: string; appPassword?: string }) => request<Site>("PUT", `/sites/${id}`, b),
   templates: (id: string) => request<TemplatesReport>("GET", `/sites/${id}/templates`),
+  /** One template rendered with sample content, for the component gallery. */
+  renderTemplate: (siteId: string, id: string, variant?: string) =>
+    request<{ ok: boolean; html: string; css: string[]; custom?: string }>(
+      "GET", `/sites/${siteId}/templates/render?id=${encodeURIComponent(id)}${variant ? `&variant=${encodeURIComponent(variant)}` : ""}`),
   siteStatus: (id: string) => request<SiteStatus>("GET", `/sites/${id}/status`),
   assistant: (id: string, fresh = false) => request<AssistantInfo>("GET", `/sites/${id}/assistant${fresh ? "?fresh=1" : ""}`),
   deleteJob: (id: string) => request("DELETE", `/jobs/${id}`),

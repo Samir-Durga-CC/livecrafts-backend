@@ -154,6 +154,24 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         sites.put(next); forgetAssistantSettings(next.id);
         return send(res, 200, { ...publicSite(next), plugin: info, widgetNote: await connectWidget(next) });
       }
+      m = url.pathname.match(/^\/sites\/([\w-]+)\/templates\/render$/);
+      if (m && req.method === "GET") { // one template rendered with sample content (the component gallery)
+        const s = sites.get(m[1]);
+        if (!s) return send(res, 404, { error: "Unknown site" });
+        const id = String(url.searchParams.get("id") ?? "");
+        if (!/^[a-z0-9_-]{2,40}$/.test(id)) return send(res, 400, { error: "id must be a template id, e.g. testimonials" });
+        const variant = String(url.searchParams.get("variant") ?? "");
+        try { return send(res, 200, await new Bridge(s).renderTemplate(id, /^[a-z0-9_-]{0,20}$/.test(variant) ? variant : "")); }
+        catch (e) {
+          const msg = String((e as Error).message);
+          // The route only exists from plugin 0.17.3: say that, instead of showing "rest_no_route" in every tile.
+          return send(res, 502, {
+            error: /rest_no_route|404|No route was found/i.test(msg)
+              ? "This site's Livecrafts plugin is older than the gallery. Upload the latest plugin zip in WordPress → Plugins → Add New → Upload, then press Refresh."
+              : msg,
+          });
+        }
+      }
       m = url.pathname.match(/^\/sites\/([\w-]+)\/templates$/);
       if (m && req.method === "GET") { // which templates of the site's template library exist and where each one is used
         const s = sites.get(m[1]);

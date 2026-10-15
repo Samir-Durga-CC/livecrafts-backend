@@ -361,8 +361,13 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
 .cmp-variants button:last-child { border-right: 0; }
 .cmp-variants button.on { background: var(--text); color: var(--surface); font-weight: 600; }
 /* The frame is the real page at a real width: it is scaled to fit the card, never squeezed. */
-.cmp-frame-wrap { overflow: auto; background: repeating-conic-gradient(#f3f4f6 0% 25%, #fff 0% 50%) 50%/16px 16px; display: flex; justify-content: center; }
-.cmp-frame { border: 0; background: #fff; max-width: 100%; }
+/* The frame holds ONLY the component: it is rendered at a real screen width and scaled down to fit the card. */
+.cmp-frame-wrap { overflow: hidden; background: repeating-conic-gradient(#f3f4f6 0% 25%, #fff 0% 50%) 50%/16px 16px; display: flex; justify-content: center; align-items: flex-start; }
+.cmp-frame { border: 0; background: #fff; transform-origin: top center; }
+.cmp-wait { margin: auto; color: var(--muted); font-size: 13px; }
+.cmp-wait.bad { color: var(--bad); padding: 16px; text-align: center; }
+.cmp-code { padding: 14px 16px; }
+.cmp-code pre { margin: 0 0 10px; padding: 12px 14px; background: var(--surface-2, #0f172a0d); border: 1px solid var(--line); border-radius: 10px; font: 12.5px/1.5 Consolas, monospace; overflow-x: auto; white-space: pre-wrap; }
 .cmp-card-foot { padding: 12px 16px; border-top: 1px solid var(--line); }
 .cmp-how { margin-top: 10px; font-size: 13px; color: var(--muted); display: flex; flex-direction: column; gap: 6px; }
 .cmp-params b, .cmp-say i { color: var(--text-2); }

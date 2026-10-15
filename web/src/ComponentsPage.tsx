@@ -1,21 +1,33 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api } from "./api";
-import type { Site, TemplatesReport } from "./types";
+import type { Site, TemplateRow, TemplatesReport } from "./types";
 
 /**
- * The component gallery: every template, every layout, rendered BY THE SITE ITSELF.
+ * The component gallery: every section the assistant can build, each one ISOLATED in its own frame with the code
+ * beside it - the way a component library documents itself.
  *
- * Each tile is a frame onto /?lc_tpl_preview=<id>&lc_tpl_variant=<layout> on the connected site, so what you see is
- * the template in that site's real fonts, colours and container width - not a picture taken somewhere else. The
- * preview needs you to be logged into that site as an editor in this browser; nothing is saved by opening it.
+ * The site renders the component with sample content and hands back the markup and the stylesheets (the library's and
+ * the theme's). The frame holds only that, so a tile shows the COMPONENT - never the site's header, menu or home
+ * page - while still carrying the site's fonts and colours. It is fetched server-to-server, so nobody has to be
+ * logged into WordPress in this browser.
  */
 
 const WIDTHS = { desktop: 1280, tablet: 820, mobile: 390 } as const;
 type Width = keyof typeof WIDTHS;
 
-/** A tile's own height: a full-width band needs more room than a button. */
-const heightOf = (id: string) =>
-  /^(hero|footer|header|contact_form|pricing|slider|blog_grid|testimonials|feature_grid|faq|team|steps)/.test(id) ? 760 : 420;
+const BIG = /^(hero|footer|header|contact_form|pricing|slider|blog_grid|testimonials|feature_grid|faq|team|steps|cta|stats|newsletter)/;
+
+interface Rendered { html: string; css: string[]; custom?: string; error?: string }
+
+/** A whole little document for the frame: the stylesheets, then the component, and nothing else. */
+const docFor = (r: Rendered, width: number) => `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=${width}, initial-scale=1">
+${r.css.map((href) => `<link rel="stylesheet" href="${href.replace(/"/g, "&quot;")}">`).join("")}
+<style>${r.custom ?? ""}
+html,body{margin:0;padding:0;background:#fff;}
+/* the component decides its own spacing; the frame adds none */
+body>*{max-width:100%}</style>
+</head><body>${r.html}</body></html>`;
 
 export default function ComponentsPage() {
   const params = new URLSearchParams(location.search);
@@ -25,8 +37,10 @@ export default function ComponentsPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [width, setWidth] = useState<Width>("desktop");
-  const [open, setOpen] = useState<string>("");
   const [variant, setVariant] = useState<Record<string, string>>({});
+  const [shown, setShown] = useState<Record<string, Rendered>>({});
+  const [code, setCode] = useState<string>("");
+  const asked = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     api.sites()
@@ -38,21 +52,32 @@ export default function ComponentsPage() {
 
   const load = useCallback(() => {
     if (!siteId) return;
-    setLoading(true); setError("");
+    setLoading(true); setError(""); setShown({}); asked.current = new Set();
     api.templates(siteId).then(setReport).catch((e) => setError((e as Error).message)).finally(() => setLoading(false));
   }, [siteId]);
   useEffect(load, [load]);
 
-  const site = sites.find((s) => s.id === siteId);
   const rows = useMemo(() => (report?.components ?? []).slice().sort((a, b) => a.id.localeCompare(b.id)), [report]);
 
-  const previewUrl = (id: string, v: string) => {
-    const base = (report?.components ?? []).find((t) => t.id === id)?.preview
-      ?? `${(site?.url ?? "").replace(/\/+$/, "")}/?lc_tpl_preview=${encodeURIComponent(id)}`;
-    const u = new URL(base);
-    u.searchParams.set("lc_tpl_preview", id);
-    if (v) u.searchParams.set("lc_tpl_variant", v);
-    return u.href;
+  /** Render one template (once per template + layout) and keep the markup. */
+  const render = useCallback((id: string, v: string) => {
+    const key = `${id}:${v}`;
+    if (asked.current.has(key)) return;
+    asked.current.add(key);
+    api.renderTemplate(siteId, id, v)
+      .then((r: any) => setShown((m) => ({ ...m, [key]: { html: r.html, css: r.css ?? [], custom: r.custom } })))
+      .catch((e) => setShown((m) => ({ ...m, [key]: { html: "", css: [], error: (e as Error).message } })));
+  }, [siteId]);
+
+  useEffect(() => {
+    if (!report?.active) return;
+    for (const t of rows) render(t.id, variant[t.id] ?? (t.variants ?? [])[0] ?? "");
+  }, [rows, variant, report, render]);
+
+  const site = sites.find((s) => s.id === siteId);
+  const snippet = (t: TemplateRow, v: string) => {
+    const attrs = v ? ` variant="${v}"` : "";
+    return t.list ? `[${t.shortcode}${attrs} heading="…"]\n  [ai_item …]\n[/${t.shortcode}]` : `[${t.shortcode}${attrs} heading="…"]`;
   };
 
   return (
@@ -82,21 +107,23 @@ export default function ComponentsPage() {
       {report?.active && (
         <>
           <p className="tpl-lead">
-            Every section the assistant can build, rendered by <b>{site?.name ?? "this site"}</b> itself — so these are
-            your fonts, your colours and your container width. Open one in a new tab to see it full size.
-            {" "}If a tile is empty, log in to the site in this browser first: previews are for editors only.
+            Every section the assistant can build, each one on its own with sample content — rendered by{" "}
+            <b>{site?.name ?? "this site"}</b>, so these are your fonts and colours.
+            {rows.some((t) => (t.variants ?? []).length > 0) ? "" : " (Update the Livecrafts plugin to see each template's layouts.)"}
           </p>
 
           <div className="cmp-grid">
             {rows.map((t) => {
               const variants = t.variants ?? [];
               const current = variant[t.id] ?? variants[0] ?? "";
-              const url = previewUrl(t.id, current);
+              const key = `${t.id}:${current}`;
+              const r = shown[key];
+              const tall = BIG.test(t.id);
               return (
                 <section key={t.id} className="cmp-card">
                   <header className="cmp-card-head">
                     <div>
-                      <h2>{t.title || t.id}</h2>
+                      <h2>{(t.title || t.id).replace(/\s*\(.*\)$/, "")}</h2>
                       <code>[{t.shortcode}]</code>
                     </div>
                     <span className="grow" />
@@ -108,31 +135,31 @@ export default function ComponentsPage() {
                         ))}
                       </div>
                     )}
-                    <a className="tpl-btn" href={url} target="_blank" rel="noreferrer">Open ↗</a>
+                    <button className="tpl-btn" onClick={() => setCode(code === key ? "" : key)}>{code === key ? "Preview" : "Code"}</button>
                   </header>
 
-                  <div className="cmp-frame-wrap" style={{ height: heightOf(t.id) }}>
-                    <iframe
-                      key={url}
-                      title={`${t.id} ${current}`}
-                      src={url}
-                      loading="lazy"
-                      className="cmp-frame"
-                      style={{ width: WIDTHS[width], height: heightOf(t.id) / (width === "desktop" ? 1 : 1) }}
-                    />
-                  </div>
-
-                  <footer className="cmp-card-foot">
-                    <button className="tpl-btn" onClick={() => setOpen(open === t.id ? "" : t.id)}>
-                      {open === t.id ? "Hide how to use it" : "How to use it"}
-                    </button>
-                    {open === t.id && (
-                      <div className="cmp-how">
-                        <p className="cmp-params"><b>Content it takes:</b> {t.params || "—"}</p>
-                        <p className="cmp-say">Ask Livecrafts: <i>“add a {(t.title || t.id).toLowerCase()} section{current ? `, ${current} layout` : ""}”</i></p>
-                      </div>
-                    )}
-                  </footer>
+                  {code === key ? (
+                    <div className="cmp-code">
+                      <pre>{snippet(t, current)}</pre>
+                      <p className="cmp-params"><b>Content it takes:</b> {t.params || "—"}</p>
+                      <p className="cmp-say">Or just ask: <i>“add a {(t.title || t.id).replace(/\s*\(.*\)$/, "").toLowerCase()} section{current ? `, ${current} layout` : ""}”</i></p>
+                    </div>
+                  ) : (
+                    <div className="cmp-frame-wrap" style={{ height: tall ? 620 : 300 }}>
+                      {!r && <p className="cmp-wait">Rendering…</p>}
+                      {r?.error && <p className="cmp-wait bad">{r.error}</p>}
+                      {r && !r.error && (
+                        <iframe
+                          key={key + width}
+                          title={`${t.id} ${current}`}
+                          className="cmp-frame"
+                          sandbox="allow-same-origin"
+                          srcDoc={docFor(r, WIDTHS[width])}
+                          style={{ width: WIDTHS[width], height: (tall ? 620 : 300) / scaleFor(width), transform: `scale(${scaleFor(width)})` }}
+                        />
+                      )}
+                    </div>
+                  )}
                 </section>
               );
             })}
@@ -141,4 +168,11 @@ export default function ComponentsPage() {
       )}
     </div>
   );
+}
+
+/** A 1280px desktop page has to be shrunk to sit in a card; a phone frame is shown at its real size. */
+function scaleFor(width: Width): number {
+  if (width === "mobile") return 1;
+  const room = Math.min(window.innerWidth - 120, 1340);
+  return Math.min(1, room / WIDTHS[width]);
 }
