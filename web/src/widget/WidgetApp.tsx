@@ -14,6 +14,7 @@ import { SiteChanges } from "./SiteChanges";
 import { connectParent, uploadToMedia } from "./parent";
 import { VoiceAgent, type VoiceState } from "./voice";
 import { VoiceBar } from "./VoiceBar";
+import { VoiceStage } from "./VoiceStage";
 
 /** Told to the assistant with every spoken request. */
 const VOICE_NOTE = "VOICE MODE: the person is talking to you and hears your replies read aloud. Answer in one to three short, natural spoken sentences - no tables, code, URLs or long lists. Say what you did or found; the details stay visible in the chat. " +
@@ -31,6 +32,10 @@ const sayableOf = (items: TimelineItem[]) => items.filter((i) =>
   || (i.kind === "tool" && i.tool === "ask_person" && i.state === "ok")
   // While it works, say what each change was - otherwise a long build is minutes of silence.
   || (i.kind === "tool" && i.state === "ok" && !!spokenProgress(i)));
+
+/** Tools worth showing as a step on the voice stage (the rest are lookups nobody needs to watch). */
+const WORTH = new Set(["place_component", "create_page", "make_change", "revert_change", "screenshot_page", "analyze_design", "ask_person"]);
+const describeWorth = (i: TimelineItem) => i.kind === "tool" && WORTH.has(i.tool);
 
 /** One short line for a change that just landed, or "" for the tools that are only looking things up. */
 function spokenProgress(i: Extract<TimelineItem, { kind: "tool" }>): string {
@@ -228,6 +233,10 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
 
   // ---- voice mode: talk hands-free and hear the answers; every message still appears in the chat
   const [voiceOn, setVoiceOn] = useState(false);
+  // Voice mode shows its own surface; "show the chat" flips back to the transcript without ending voice.
+  const [voiceView, setVoiceView] = useState(true);
+  useEffect(() => { if (voiceOn) setVoiceView(true); }, [voiceOn]);
+  const [saying, setSaying] = useState("");
   const [voiceState, setVoiceState] = useState<VoiceState>("off");
   const [heard, setHeard] = useState("");
   const [blocked, setBlocked] = useState(false);
@@ -242,12 +251,17 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   }));
   useEffect(() => () => voice.stop(), [voice]);
   const sayable = useMemo(() => sayableOf(timeline), [timeline]);
+  // What the voice stage lists: the real steps of the run, newest last, never the lookups that say nothing.
+  const voiceSteps = useMemo(
+    () => timeline.filter((i) => i.kind === "tool" && i.state !== "running" && !!describeWorth(i)).slice(-4),
+    [timeline],
+  );
 
   // read out what is new in the chat (declared before the reload below: the answer is spoken before the page reloads)
   useEffect(() => {
     const s = spoken.current;
     if (!s || s.job !== jobId || sayable.length < s.count) return;
-    if (voiceOn) for (let k = s.count; k < sayable.length; k++) voice.say(sayText(sayable[k]));
+    if (voiceOn) for (let k = s.count; k < sayable.length; k++) { const line = sayText(sayable[k]); setSaying(line); voice.say(line); }
     s.count = sayable.length;
   }, [sayable, jobId, voiceOn, voice, spokenReady]);
 
@@ -472,7 +486,13 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       {problem && <div className="banner error w-banner"><span>{problem}</span><button onClick={() => setProblem("")}><Icon.Close size={13} /></button></div>}
 
       <div className="w-body">
-        {tab === "chat" && (
+        {tab === "chat" && voiceOn && voiceView && (
+          <VoiceStage agent={voice} state={voiceState} heard={heard} saying={saying} steps={voiceSteps}
+            busy={working} waiting={waiting} queued={queued} blocked={blocked} speak={speakOn}
+            onSpeak={(on) => { setSpeakOn(on); voice.speakReplies = on; store.set("lcw_speak", on ? "1" : "0"); if (!on) voice.stopSpeaking(); }}
+            onChat={() => setVoiceView(false)} onEnd={endVoice} />
+        )}
+        {tab === "chat" && !(voiceOn && voiceView) && (
           <div className="w-chat">
             <Transcript items={timeline} model={name} busy={answering} working={working} welcome={welcome}
               onAsk={(t) => void send(t, [])}
