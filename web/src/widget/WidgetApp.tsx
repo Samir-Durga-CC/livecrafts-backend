@@ -227,8 +227,10 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       baseline.current = writes;
       setHistoryKey((k) => k + 1);
       store.sset(`lcw_reloaded:${jobId}`, String(writes));
-      const reload = () => post({ type: "lc:reload", tab });
-      if (voiceOn) void voice.whenIdle().then(reload); else reload(); // let it finish speaking; voice mode resumes after the reload
+      // Show the change in place: the page is patched where it differs, with no reload, no white flash and no lost
+      // scroll position. The widget only falls back to a full reload if the page says it could not do it.
+      const refresh = () => post({ type: "lc:soft-refresh", tab, selector: lastSection.current });
+      if (voiceOn) void voice.whenIdle().then(refresh); else refresh();
     }
   }, [writes, working, jobId, autoRefresh, post, tab, voiceOn, voice]);
 
@@ -237,9 +239,19 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     say(`Saved as a draft: ${summary.length > 60 ? summary.slice(0, 59) + "…" : summary}`);
     setHistoryKey((k) => k + 1);
     post({ type: "lc:drafts-changed" });
-    if (autoRefresh) setTimeout(() => post({ type: "lc:reload", tab }), 600);
+    if (autoRefresh) setTimeout(() => post({ type: "lc:soft-refresh", tab }), 400);
   }
   // ---- eyes: answer "look at the page" requests from the assistant with THIS browser (plugin 0.9.2+ on the page)
+  // The selector of the section the assistant last placed or changed: the soft refresh scrolls there and outlines it.
+  const lastSection = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    for (let i = timeline.length - 1; i >= 0; i--) {
+      const it: any = timeline[i];
+      const sel = it?.kind === "tool" ? (it.ui?.selector ?? it.ui?.usedTemplate?.selector) : undefined;
+      if (typeof sel === "string" && sel) { lastSection.current = sel; return; }
+    }
+  }, [timeline]);
+
   const [looking, setLooking] = useState(0);
   const eyesWaiting = useRef(new Map<string, (r: { ok: boolean; result?: any; error?: string }) => void>());
   const eyesOk = (() => { const v = (cfg.widgetVersion ?? "").split(".").map(Number); return v[0] > 0 || (v[1] ?? 0) > 9 || ((v[1] ?? 0) === 9 && (v[2] ?? 0) >= 2); })();
@@ -428,6 +440,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
         {tab === "chat" && (
           <div className="w-chat">
             <Transcript items={timeline} model={name} busy={answering} working={working} welcome={welcome}
+              onAsk={(t) => void send(t, [])}
               onAnswer={(a, ok, r) => void answer(a, ok, r)} onCopy={(t) => { navigator.clipboard?.writeText(t); say("Copied"); }}
               onEdit={() => {}} onRetry={(t) => { if (t && (status === "completed" || status === "failed")) void send(t, []); }}
               onOpen={(url) => post({ type: "lc:navigate", url })} />

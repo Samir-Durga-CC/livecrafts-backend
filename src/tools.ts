@@ -419,9 +419,32 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     }),
   } : {};
 
+  const askTools = {
+    ask_person: tool({
+      description:
+        "Ask the person EVERYTHING you still need, in ONE go. The chat shows it as a small form they fill in and send back - so they answer once instead of being asked question after question.\n" +
+        "Only for facts you cannot find or decide: the real words, a phone number, which page, which of two things they meant. NEVER for design (colour, spacing, layout, which template) - decide that yourself from the site.\n" +
+        "Call it once, then STOP and wait for the answer. Do not call it again in the same step, and never ask the same thing in prose as well.",
+      inputSchema: z.object({
+        intro: z.string().max(200).optional().describe("One line of context, e.g. 'To build the home page I need a few facts.'"),
+        questions: z.array(z.object({
+          key: z.string().regex(/^[a-z][a-z0-9_]{0,30}$/).describe("A short name for the answer, e.g. phone"),
+          question: z.string().min(3).max(200),
+          options: z.array(z.string().min(1).max(60)).max(5).optional().describe("Give 2-5 choices when the answer is a pick, not free text"),
+          placeholder: z.string().max(80).optional(),
+          optional: z.boolean().optional(),
+        })).min(1).max(6),
+      }),
+      execute: async ({ intro, questions }) => ({
+        ok: true, asked: questions.length, intro,
+        note: "The person is being shown these as a form. Stop now and wait for their answer; do not repeat the questions in your reply.",
+      }),
+    }),
+  };
+
   const componentTools = makeComponentTools({ bridge, safe, postIdOf, checked, changeView, parseValue, ref, pageUrl: () => extras.pageUrl?.(), skillsLoaded, design: extras.browser?.design ? (url?: string) => extras.browser!.design!({ url, device: "desktop" }) as Promise<any> : undefined });
 
-  return { ...reading, ...writing, ...media, ...browser, ...fileTools, ...apiTools, ...skillTools, ...planTools, ...componentTools };
+  return { ...reading, ...writing, ...media, ...browser, ...fileTools, ...apiTools, ...skillTools, ...planTools, ...askTools, ...componentTools };
 }
 
 /** Tools that must never run without a human saying yes (in "every" mode; one plan approval in "request" mode). */

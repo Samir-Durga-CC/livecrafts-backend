@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { fileUrl } from "../api";
 import { Icon } from "../icons";
+import { AskForm, type AskQuestion } from "./AskForm";
 import type { TimelineItem } from "../types";
 import { toBlocks, type ToolItem } from "../util";
 import { Markdown } from "./Markdown";
@@ -241,10 +242,12 @@ function Approval({ item, onAnswer, busy }: { item: Extract<TimelineItem, { kind
   );
 }
 
-export function Transcript({ items, model, busy, working, welcome, onAnswer, onCopy, onEdit, onRetry, onOpen }: {
+export function Transcript({ items, model, busy, working, welcome, onAnswer, onCopy, onEdit, onRetry, onOpen, onAsk }: {
   items: TimelineItem[]; model: string; busy: boolean; working: boolean; welcome: React.ReactNode; onOpen?: (url: string) => void;
   onAnswer: (approvalId: string, approved: boolean, reason?: string) => void;
   onCopy: (text: string) => void; onEdit: (text: string) => void; onRetry: (text: string) => void;
+  /** The answers to an ask_person form go back as one ordinary message. */
+  onAsk?: (text: string) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true); // follow the stream only while the reader is at the bottom
@@ -252,6 +255,19 @@ export function Transcript({ items, model, busy, working, welcome, onAnswer, onC
   const last = items[items.length - 1];
   const lastUser = [...items].reverse().find((i) => i.kind === "user");
   const toolRunning = items.some((i) => i.kind === "tool" && i.state === "running");
+  // The assistant asked for facts and is waiting: show the form until the person sends something.
+  const asking = (() => {
+    if (working || !onAsk) return null;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "user") return null;                       // already answered
+      if (it.kind === "tool" && it.tool === "ask_person" && it.state !== "failed") {
+        const qs = (it.input?.questions ?? []) as AskQuestion[];
+        return qs.length ? { intro: it.input?.intro as string | undefined, questions: qs } : null;
+      }
+    }
+    return null;
+  })();
   // "Thinking" only while the model is busy and nothing new is on screen yet (no text streaming, no step running).
   const thinking = working && !toolRunning && last?.kind !== "assistant";
   const size = items.reduce((n, i) => n + (i.kind === "assistant" ? i.text.length : 1), 0);
@@ -304,6 +320,7 @@ export function Transcript({ items, model, busy, working, welcome, onAnswer, onC
             case "error": return <div key={b.key} className="banner error">{b.item.text}</div>;
           }
         })}
+        {asking && onAsk && <AskForm intro={asking.intro} questions={asking.questions} busy={busy} onSend={onAsk} />}
         {thinking && <div className="thinking"><span className="dots"><i /><i /><i /></span><span className="shimmer">Thinking</span></div>}
       </div>
     </div>

@@ -372,3 +372,19 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
 .cmp-how { margin-top: 10px; font-size: 13px; color: var(--muted); display: flex; flex-direction: column; gap: 6px; }
 .cmp-params b, .cmp-say i { color: var(--text-2); }
 @media (max-width: 760px) { .cmp-card-head { gap: 8px; } .cmp-widths button { padding: 6px 9px; font-size: 12px; } }
+
+/* ask_person: every open question as one small form in the chat */
+.ask-card { border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface); padding: 14px 16px; margin: 10px 0; animation: rise .15s ease-out; }
+.ask-head { display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--text-2); }
+.ask-head svg { color: var(--accent); }
+.ask-intro { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+.ask-list { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
+.ask-q { display: flex; flex-direction: column; gap: 6px; }
+.ask-label { font-size: 13px; color: var(--text-2); font-weight: 500; }
+.ask-label em { color: var(--muted); font-weight: 400; font-style: normal; }
+.ask-q input { border: 1px solid var(--line-strong); border-radius: 10px; padding: 9px 11px; font: inherit; font-size: 13.5px; background: var(--surface); color: var(--text); }
+.ask-q input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.ask-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.ask-options button { border: 1px solid var(--line-strong); background: var(--surface); border-radius: 999px; padding: 6px 12px; font-size: 13px; color: var(--muted); }
+.ask-options button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.ask-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }

@@ -62,11 +62,37 @@ function applyReplacements<T>(value: T, reps: Array<{ find: string; replace: str
 }
 
 /** The site's templates, or why there are none. */
+/**
+ * The catalogue and the page's measured design, remembered for a short while per site.
+ *
+ * Building a home page places eight sections; without this, each one asked the site for the catalogue again and drove
+ * a real browser to measure the page again - half a minute of waiting per section, for numbers that cannot have
+ * changed in the meantime.
+ */
+const CACHE_MS = 90_000;
+// Keyed by the Bridge itself, so the cache lives exactly as long as the run that made it: one job never reads another
+// job's answers, and nothing survives into the next request (or the next test) to go stale.
+const memo = new WeakMap<object, Map<string, { at: number; value: any }>>();
+const cacheOf = (owner: object) => {
+  let m = memo.get(owner);
+  if (!m) { m = new Map(); memo.set(owner, m); }
+  return m;
+};
+const fresh = (owner: object, key: string) => {
+  const hit = cacheOf(owner).get(key);
+  return hit && Date.now() - hit.at < CACHE_MS ? hit.value : undefined;
+};
+const remember = (owner: object, key: string, value: any) => cacheOf(owner).set(key, { at: Date.now(), value });
+
 async function loadTemplates(bridge: Bridge): Promise<{ list: TemplateEntry[]; version?: string; note?: string; contactAction?: string }> {
+  const hit = fresh(bridge, "catalogue");
+  if (hit) return hit;
   try {
     const r = await bridge.templates();
     if (!r?.active) return { list: [], note: "The template library is not active on this site." };
-    return { list: (r.components ?? []) as TemplateEntry[], version: r.version, contactAction: r.contactAction };
+    const value = { list: (r.components ?? []) as TemplateEntry[], version: r.version, contactAction: r.contactAction };
+    remember(bridge, "catalogue", value);
+    return value;
   } catch (e) {
     if (e instanceof BridgeError && e.status === 404) return { list: [], note: "The site's Livecrafts plugin is older than 0.14: it has no template library. Update the plugin." };
     throw e;
@@ -192,7 +218,7 @@ export function makeComponentTools(h: ComponentHelpers) {
         "It is a plan, not a page: build it with create_page (a draft) and then one place_component per section, in order, so each section is checked, approved and revertable on its own. Read-only.",
       inputSchema: z.object({
         id: z.string().optional().describe("A recipe id from the list (e.g. about_classic)"),
-        kind: z.enum(["about", "contact", "info"]).optional().describe("Only the designs of this kind"),
+        kind: z.enum(["home", "about", "contact", "info"]).optional().describe("Only the designs of this kind"),
       }),
       execute: async ({ id, kind }) => safe(async () => {
         if (id) {
@@ -265,6 +291,7 @@ export function makeComponentTools(h: ComponentHelpers) {
         attrs: z.record(z.string(), z.any()).optional().describe("Template: the template's attributes (heading, text, primary_label, primary_url, image ...), plain text"),
         items: z.array(z.record(z.string(), z.any())).max(24).optional().describe("Template: rows of a list template (faq: title+text, pricing: ..., see get_component rowFields)"),
         fit: z.union([z.literal("auto"), z.literal("none"), z.record(z.string(), z.any())]).default("auto").describe("Template: how it adapts to the site. auto = measure the page's own sections (content width, padding, radius, button colour, background) and apply them; none = neutral defaults; or an object {max, py, py_sm, radius, brand, surface, ink ...}. Explicit values win over auto."),
+        replaceExisting: z.boolean().optional().describe("Templates that exist once per page (footer, header, hero, contact form ...): the page already has one and it should be REPLACED. The old one is reverted first. Without this the call is refused, so a page never ends up with two footers."),
         reason: z.string().max(300).describe("One short sentence for the person approving"),
       }),
       execute: async (a) => safe(async () => {
@@ -289,6 +316,36 @@ export function makeComponentTools(h: ComponentHelpers) {
           const pos = a.position ?? "";
           if (pos.startsWith("theme:") && !themePlace(pos)) return { ok: false, error: `"${pos}" is not a place in the theme. get_page_map lists them under sections.places (e.g. theme:before:template-parts/why, theme:end).` };
           if (builder === "elementor" && pos && !pos.startsWith("theme:") && !/^root:(\d+|end)$/.test(pos)) return { ok: false, error: `A template is a section of its own: position must be "root:<index>" (or "root:end"), not "${pos}", which is inside another section. get_page_map shows the order of the page's sections; testimonials usually go after the products / services section, a contact form last, above the footer.` };
+          // One per page: a second footer, header or contact form on the same page is never what was meant. The
+          // assistant is told to change the one that is there (or revert it first), which is what a person expects
+          // when they say "make the footer bigger" after a footer already exists.
+          const ONCE_PER_PAGE = ["footer", "header", "hero", "hero_centered", "contact_form", "newsletter", "cta", "pricing"];
+          if (ONCE_PER_PAGE.includes(entry.id) && !a.replaceExisting) {
+            const already = (entry.usedOn ?? []).filter((u) => u.post === postId);
+            const times = already.reduce((n, u) => n + (u.count || 1), 0);
+            if (times > 0) {
+              return {
+                ok: false,
+                error: `This page already has a ${entry.id.replace(/_/g, " ")} (${times} on "${already[0]?.title || pageUrl}"). A page has only one.`,
+                whatToDo: [
+                  `Change the one that is there: get_page_map / read_target find it, make_change edits its text, links and settings.`,
+                  `Replace it on purpose: call place_component again with replaceExisting true - the old one is reverted first.`,
+                  `If the person asked for a DIFFERENT section, pick the template that matches what they asked for.`,
+                ],
+              };
+            }
+          }
+          // replaceExisting: take the old one off the page first, so "replace the footer" never leaves two.
+          if (ONCE_PER_PAGE.includes(entry.id) && a.replaceExisting) {
+            const mine = await bridge.changes({ post: postId, limit: 60 }).catch(() => null) as any;
+            const list: any[] = Array.isArray(mine?.changes) ? mine.changes : Array.isArray(mine) ? mine : [];
+            const placed = list.filter((c) => /insert|theme\.section/.test(String(c.kind ?? "")) && new RegExp(`ai_${entry.id}\b|data-lc-template="${entry.id}"|Template: ${entry.id}`).test(JSON.stringify(c)));
+            for (const c of placed.slice(0, 3)) {
+              const r: any = await bridge.revert(Number(c.id), h.ref()).catch((e) => ({ ok: false, error: String(e) }));
+              if (r?.ok !== false) extra.push({ ...c, reverted: true });
+            }
+            if (placed.length) warnings.push(`The ${entry.id.replace(/_/g, " ")} that was there has been reverted first, so the page has only one.`);
+          }
           // Real content only: sample text must never reach the page.
           const SAMPLE = /\b(placeholder|lorem ipsum|client name|your name here|sample (text|quote)|replace this)\b/i;
           const texts = [...Object.values(a.attrs ?? {}), ...(a.items ?? []).flatMap((i) => Object.values(i))].map((v) => String(v));
@@ -305,7 +362,14 @@ export function makeComponentTools(h: ComponentHelpers) {
           let fit: Fit = {}, basis: string[] = [];
           if (a.fit === "auto") {
             let design: any = null;
-            if (h.design) design = await h.design(pageUrl).catch(() => null);
+            const dkey = `design|${pageUrl}`;
+            if (h.design) {
+              design = fresh(bridge, dkey);
+              if (design === undefined) {
+                design = await h.design(pageUrl).catch(() => null);
+                remember(bridge, dkey, design);
+              }
+            }
             ({ fit, basis } = fitFromDesign(design));
             if (!h.design) basis = ["no browser is available to measure the site: templates use their neutral defaults"];
           } else if (a.fit === "none") basis = ["fit switched off: neutral defaults"];
@@ -380,6 +444,7 @@ export function makeComponentTools(h: ComponentHelpers) {
         }
         // 2) the section itself, then the real-browser check
         const target = themeTarget ?? a.position ?? (kind === "el.insert" ? "root:end" : ":end");
+        cacheOf(bridge).delete("catalogue"); // the page is about to change: the catalogue's "used on" is stale
         const out = await h.checked(pageUrl, () => write(kind, target, value, templateUsed ? `Template: ${a.id}` : undefined, postId), { component: selector, softH1 });
         if (out?.ok === false) return { ...out, note: extra.length ? "The CSS blocks are saved as drafts (harmless); nothing was inserted." : undefined };
         const skills = missingSkills(h.skillsLoaded);

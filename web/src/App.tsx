@@ -199,6 +199,7 @@ export default function App() {
           <section className="chat-card">
             {problem && <div className="banner error top"><span>{problem}</span><button onClick={() => setProblem("")}><Icon.Close size={14} /></button></div>}
             <Transcript items={timeline} model={model} busy={answering} working={working} welcome={welcome}
+              onAsk={(t) => void send(t, [])}
               onAnswer={(a, ok, r) => void answer(a, ok, r)} onCopy={copy} onOpen={openInPreview}
               onEdit={(t) => setDraft({ text: t, n: Date.now() })}
               onRetry={(t) => { if (t && (status === "completed" || status === "failed")) void send(t, []); }} />

@@ -23,7 +23,7 @@ export interface RecipeStep {
 
 export interface Recipe {
   id: string;
-  kind: "about" | "contact" | "info";
+  kind: "home" | "about" | "contact" | "info";
   title: string;
   description: string;
   /** What the page is for, so the assistant can pick between the three of a kind. */
@@ -35,6 +35,37 @@ const HEADER: RecipeStep = { template: "header", role: "Site header", needs: "th
 const FOOTER: RecipeStep = { template: "footer", role: "Site footer", needs: "the columns of links, the contact line, the copyright", note: "Skip it when the theme already prints a footer." };
 
 export const RECIPES: Recipe[] = [
+  {
+    id: "home_business",
+    kind: "home",
+    title: "Home - what you do, why you, proof, contact",
+    description: "The order a visitor needs: what this is, what you offer, why you, the numbers, what clients say, questions, and how to reach you.",
+    bestFor: "the main page of a company that sells a service: the default when someone says \"build my home page\".",
+    steps: [
+      { template: "hero", variant: "split", role: "What this company does, in one line", needs: "the headline, one sentence, the button text, and a picture (or none - it then runs full width)" },
+      { template: "logo_cloud", role: "Who already trusts them", needs: "the real client or partner names", note: "Leave it out when there are none to show. Never invent logos." },
+      { template: "feature_grid", variant: "icons", role: "What they offer / why them", needs: "3-6 services or reasons: a short title and one sentence each" },
+      { template: "stats", variant: "band", role: "The figures that prove it", needs: "3-4 real numbers with labels", note: "Only real numbers." },
+      { template: "testimonials", variant: "cards", role: "What clients say", needs: "real quotes with the person's name and role", note: "Never invent a quote. Without real ones, leave this out." },
+      { template: "faq", role: "What people ask before buying", needs: "3-6 real questions with answers" },
+      { template: "cta", role: "Ask for the next step", needs: "one line and the button text + link" },
+      { template: "contact_form", variant: "split", role: "How to reach them", needs: "a heading and the address / phone / e-mail", note: "With no action it posts to the plugin's own handler and e-mails the site's admin address." },
+    ],
+  },
+  {
+    id: "home_portfolio",
+    kind: "home",
+    title: "Home - show the work first",
+    description: "A statement, then the work, how it is done, the people, and one clear way to start.",
+    bestFor: "a studio, an agency or a freelancer whose work does the selling.",
+    steps: [
+      { template: "hero", variant: "spotlight", role: "The statement", needs: "a short headline, one sentence, the button text" },
+      { template: "blog_grid", variant: "featured", role: "The work", needs: "the real projects: title, link, a picture and one line each" },
+      { template: "steps", variant: "cards", role: "How a project runs", needs: "3-4 stages with one line each" },
+      { template: "team", variant: "portraits", role: "Who does it", needs: "name, role and photo of each person" },
+      { template: "cta", role: "Start a project", needs: "one line and the button text + link" },
+    ],
+  },
   {
     id: "about_classic",
     kind: "about",
