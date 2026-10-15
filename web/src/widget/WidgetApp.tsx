@@ -16,16 +16,47 @@ import { VoiceAgent, type VoiceState } from "./voice";
 import { VoiceBar } from "./VoiceBar";
 
 /** Told to the assistant with every spoken request. */
-const VOICE_NOTE = "VOICE MODE: the person is talking to you and hears your replies read aloud. Answer in one to three short, natural spoken sentences - no tables, code, URLs or long lists. Say what you did or found; the details stay visible in the chat.";
+const VOICE_NOTE = "VOICE MODE: the person is talking to you and hears your replies read aloud. Answer in one to three short, natural spoken sentences - no tables, code, URLs or long lists. Say what you did or found; the details stay visible in the chat. " +
+  "If you need something from them, use ask_person - the questions are read out and they answer by speaking. Never ask in prose, and never ask about design: decide it. " +
+  "They cannot see the screen while you work, so make the first sentence the result (\"The testimonials section is on the page\"), not a preamble.";
 const YES = /^(yes|yeah|yep|yup|sure|ok|okay|go ahead|go for it|do it|approve|approved|confirm|confirmed|proceed|sounds good|perfect|please do|of course|absolutely|correct)\b[\s,.!]*/i;
 const NO = /^(no|nope|nah|don'?t|do not|cancel|deny|reject|not now)\b[\s,.!]*/i;
 
 /** What the voice reads out of the chat: finished answers, approval questions, errors. */
-const sayableOf = (items: TimelineItem[]) => items.filter((i) => (i.kind === "assistant" && !i.streaming && i.text.trim() !== "") || i.kind === "approval" || i.kind === "error");
+const sayableOf = (items: TimelineItem[]) => items.filter((i) =>
+  (i.kind === "assistant" && !i.streaming && i.text.trim() !== "")
+  || i.kind === "approval"
+  || i.kind === "error"
+  // The questions the assistant asked in the form: in voice mode they are read out and answered by speaking.
+  || (i.kind === "tool" && i.tool === "ask_person" && i.state === "ok")
+  // While it works, say what each change was - otherwise a long build is minutes of silence.
+  || (i.kind === "tool" && i.state === "ok" && !!spokenProgress(i)));
+
+/** One short line for a change that just landed, or "" for the tools that are only looking things up. */
+function spokenProgress(i: Extract<TimelineItem, { kind: "tool" }>): string {
+  const ui: any = i.ui ?? {};
+  const name = String(i.input?.id ?? "").replace(/_/g, " ");
+  if (i.tool === "place_component") return name ? `Added the ${name} section.` : "Added the section.";
+  if (i.tool === "create_page") return `Created the page${i.input?.title ? ` "${i.input.title}"` : ""}.`;
+  if (i.tool === "revert_change") return "Reverted that.";
+  if (i.tool === "make_change") {
+    const s = String(ui.summary ?? "").replace(/\s+/g, " ").trim();
+    return s ? s.slice(0, 120) : "Changed it.";
+  }
+  return "";
+}
+
 function sayText(i: TimelineItem): string {
   if (i.kind === "assistant") return i.text;
   if (i.kind === "error") return `Sorry, that did not work. ${i.text}`;
   if (i.kind === "approval") return i.tool === "propose_plan" && i.input?.summary ? `Here is my plan: ${i.input.summary}. Shall I go ahead?` : "This needs your OK before I change the site. Shall I go ahead?";
+  if (i.kind === "tool" && i.tool === "ask_person") {
+    const qs: any[] = i.input?.questions ?? [];
+    const intro = String(i.input?.intro ?? "").trim();
+    const asked = qs.map((q, n) => `${qs.length > 1 ? `${n + 1}. ` : ""}${q.question}${q.options?.length ? ` ${q.options.join(", or ")}?` : ""}`).join(" ");
+    return `${intro ? intro + " " : ""}${asked} You can just tell me, or say "you decide".`;
+  }
+  if (i.kind === "tool") return spokenProgress(i);
   return "";
 }
 
@@ -346,6 +377,10 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     const low = text.toLowerCase().replace(/[.!?]+$/, "").trim();
     if (/^(stop listening|goodbye|good bye|bye|that'?s all|that is all|(turn off|end|exit|close) voice( mode)?)$/.test(low)) { voice.say("Goodbye."); void voice.whenIdle(8000).then(endVoice); return; }
     if (/^(stop talking|be quiet|quiet|silence|shut up|enough)$/.test(low)) { voice.stopSpeaking(); return; }
+    if (/^(you decide|your (choice|call)|whatever you think|up to you|anything|surprise me)/.test(low) && !working) {
+      void send("You decide - pick what suits the site and carry on.", [], voiceContext()).catch(() => {});
+      return;
+    }
     if (waiting && pendingApproval) {
       const y = YES.exec(text), n = NO.exec(text);
       if (y) { void answer(pendingApproval.approvalId, true, text.slice(y[0].length).trim() || undefined); voice.say("On it."); }
