@@ -11,6 +11,7 @@ import type { Skills } from "./skills.js";
 import { makeComponentTools } from "./componentTools.js";
 import { generateImage, type ImageShape } from "./images.js";
 import { chooseTerms } from "./terms.js";
+import { sameHost, summarize, type SpeedDevice, type SpeedRuns } from "./pagespeed.js";
 
 /**
  * The assistant's tools. Every write goes to the site as a DRAFT through the Livecrafts plugin (POST /changes):
@@ -29,6 +30,23 @@ async function safe<T>(fn: () => Promise<T>): Promise<T | { ok: false; error: st
 }
 
 /** Words of an article's visible text (block comments and tags removed). */
+/** Inline styling in block markup that would override the site's brand (colours, fonts, sizes). */
+export function brandOverrides(html: string): string[] {
+  const found = new Set<string>();
+  if (/<[a-z][^>]*\sstyle\s*=/i.test(html)) found.add("inline styles");
+  const attrs = [...String(html).matchAll(/<!--\s*wp:[a-z0-9/-]+\s+(\{[\s\S]*?\})\s*\/?-->/gi)].map((m) => m[1]).join(" ");
+  if (/"(textColor|backgroundColor|gradient|borderColor)"\s*:|"color"\s*:\s*\{/.test(attrs)) found.add("colours");
+  if (/"(fontFamily|fontSize)"\s*:|"typography"\s*:\s*\{/.test(attrs)) found.add("fonts / sizes");
+  if (/class="[^"]*\bhas-[a-z0-9-]+-(color|background-color|font-size|font-family)\b/i.test(html)) found.add("colour / font classes");
+  return [...found];
+}
+
+/** Added to a tool's note when the browser check of a new page / post failed. */
+function failedNote(r: any): string {
+  const v = r?.verification;
+  return v && v.passed === false ? ` THE BROWSER CHECK FAILED: ${v.summary} ${v.checks.filter((c: any) => c.ok === false).map((c: any) => c.detail).join(" ")} Tell the person what is wrong instead of reporting success.` : "";
+}
+
 export function htmlWords(html: string): number {
   const t = html.replace(/<!--[\s\S]*?-->/g, " ").replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ").trim();
   return t ? t.split(/\s+/).length : 0;
@@ -36,7 +54,7 @@ export function htmlWords(html: string): number {
 
 /** The page map can be big; give the model a compact, stable view of it. */
 function compactMap(m: any) {
-  const values = [...(m.acf ?? []).filter((e: any) => e.kind === "acf"), ...(m.elementor ?? [])].slice(0, 200).map((e: any) => ({
+  const values = [...(m.acf ?? []).filter((e: any) => e.kind === "acf"), ...(m.elementor ?? []), ...(m.divi ?? [])].slice(0, 200).map((e: any) => ({
     target: e.tid, label: e.label, type: e.ftype,
     value: e.ftype === "image" ? `[image id ${e.value}] ${e.url}` : String(e.value).slice(0, 200),
   }));
@@ -44,7 +62,8 @@ function compactMap(m: any) {
   return {
     ok: true, view: m.view, post: m.post, builders: m.builders, drafts: m.drafts, values, acfRows: rows.length ? rows : undefined,
     elementorOutline: m.elementor_outline?.length ? m.elementor_outline.slice(0, 250) : undefined,
-    howToChange: "acf:<field key>:<post> → make_change kind acf.field target <field key>; acfv:<meta>:<post> → kind acf.value target <meta>; el:<post>:<id>:<setting> → kind el.setting target <id>:<setting>.",
+    diviOutline: m.divi_outline?.length ? m.divi_outline.slice(0, 250) : undefined,
+    howToChange: "acf:<field key>:<post> → make_change kind acf.field target <field key>; acfv:<meta>:<post> → kind acf.value target <meta>; el:<post>:<id>:<setting> → kind el.setting target <id>:<setting>; divi:<post>:<path>:<field> → kind divi.text (or divi.link) target <path>:<field>.",
   };
 }
 
@@ -71,6 +90,10 @@ export interface ToolExtras {
   fetchImpl?: typeof fetch;             // tests: fake the internet for image downloads
   allowPrivateImageHosts?: boolean;     // tests/demo only
   generateImage?: typeof generateImage; // tests: fake the image model
+  /** PageSpeed reports (Google PageSpeed Insights / local Lighthouse); null = off. */
+  speed?: SpeedRuns | null;
+  siteId?: string;
+  siteUrl?: string;
 }
 
 const deviceSchema = z.enum(["desktop", "tablet", "mobile"]).optional().describe("Screen size (default desktop)");
@@ -82,6 +105,7 @@ export const CHANGE_KINDS = [
   "post.field", "post.meta", "acf.field", "acf.value", "acf.rows",
   "el.setting", "el.insert", "el.remove", "el.duplicate", "el.move",
   "block.text", "block.link", "block.image", "block.class", "block.replace", "block.insert", "block.remove", "block.move", "block.duplicate",
+  "divi.text", "divi.link",
   "css.rule", "css.block",
 ] as const;
 
@@ -107,8 +131,14 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     const before = v && pageUrl ? await v.before(pageUrl) : null;
     const res = await write();
     if (res?.ok === false || res?.unchanged || !v || !pageUrl || !res?.change) return res;
-    if (res.change.kind === "post.create") return { ...res, verification: { passed: true, summary: "New pages are drafts: open the preview link to see them; they are published on deploy.", checks: [] } };
     return { ...res, verification: await v.after(pageUrl, res.change, before, opts) };
+  };
+  /** A NEW page / post: open its preview the way the theme / page builder renders it (title, content, image, health). */
+  const checkedNew = async (res: any, e: { title: string; content?: string; imageUrl?: string }) => {
+    const v = extras.verifier;
+    if (!res?.ok || !res?.preview) return res;
+    if (!v) return { ...res, verification: { passed: true, checks: [], summary: "Not checked in a browser (page checks are off). Open the preview link to see it." } };
+    return { ...res, verification: await v.newPost(res.preview, e) };
   };
 
   const reading = {
@@ -248,6 +278,8 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
         "- el.insert: <parent id|root>:<index|end> / ONE element as Elementor JSON {elType, widgetType, settings, elements}. el.remove|el.duplicate: <element id>. el.move: <element id> / up|down|{\"parent\":\"id\",\"index\":n}.\n" +
         "- block.text|block.link|block.image|block.class: block path (0, 2.1 …) / inline HTML | url | attachment id | class. block.replace: path / block markup. block.insert: <parent path>:<index|end> (\":end\" = end of page) / block markup. " +
         "block.remove: path / count. block.move: path / up|down|index. block.duplicate: path.\n" +
+        "- divi.text|divi.link (a Divi page: its modules are shortcodes in the content): <module path>:<field> (e.g. 2.0.0.0:text, 2.0.0.1:button_text, 2.0.0.1:button_url) / text | url. " +
+        "Field \"text\" is the module's own content (a Text module's rich text, so pass its whole HTML); any other field is one of the module's attributes. get_page_map lists every editable Divi field with its exact kind and target - take them from there, never guess a path.\n" +
         "- css.rule (site-wide styles, no target): JSON {\"selector\":\"…\",\"media\":\"\"|\"desktop\"|\"tablet\"|\"mobile\",\"declarations\":{\"color\":\"#0b3d91\"}} - values merge per selector+screen, \"\" removes one. " +
         "Never !important: make the selector more specific than the winning rule (inspect_element shows it). animation-name: lc-fade-in|lc-fade-up|lc-zoom-in|lc-slide-in-left|lc-slide-in-right.\n" +
         "- css.block: block name / raw CSS (for keyframes or several rules that belong together).",
@@ -277,8 +309,8 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
         slug: z.string().max(100).optional(), parent: z.number().int().optional(), template: z.string().max(200).optional(), excerpt: z.string().max(1000).optional(), reason: reasonSchema,
       }),
       execute: async (a) => safe(async () => {
-        const r = await bridge.createPage({ title: a.title, content: a.content, type: a.type, slug: a.slug, parent: a.parent, template: a.template, excerpt: a.excerpt, ref: ref() });
-        return { ...r, change: changeView(r.change), changeId: r.change?.id, note: "Draft page. Preview it with the preview link; it goes live when a person deploys." };
+        const r = await checkedNew(await bridge.createPage({ title: a.title, content: a.content, type: a.type, slug: a.slug, parent: a.parent, template: a.template, excerpt: a.excerpt, ref: ref() }), { title: a.title, content: a.content });
+        return { ...r, change: changeView(r.change), changeId: r.change?.id, note: "Draft page. Preview it with the preview link; it goes live when a person deploys." + failedNote(r) };
       }),
     }),
     create_blog_post: tool({
@@ -299,19 +331,22 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
       }),
       execute: async (a) => safe(async () => {
         if (/<!--\s*wp:heading[^>]*"level":1\b/.test(a.content) || /<h1[\s>]/i.test(a.content)) return { ok: false, error: "The article must not contain an h1: the post title is the page's h1. Use h2 for sections and h3 below them." };
+        const own = brandOverrides(a.content);
+        if (own.length) return { ok: false, error: `The article sets its own ${own.join(", ")}. Remove them: the theme / page builder gives the post the brand's fonts, colours and sizes. Use plain core blocks.` };
         const [cats, tags] = await Promise.all([bridge.terms("categories"), bridge.terms("tags")]);
         const t = chooseTerms({ categories: a.categories, tags: a.tags, approvedNew: a.approvedNewTerms, title: a.title, content: a.content }, { categories: cats, tags });
-        const r = await bridge.createPage({
+        const created = await bridge.createPage({
           type: "post", title: a.title, content: a.content, excerpt: a.excerpt, slug: a.slug, ref: ref(),
           meta_description: a.metaDescription, categories: t.categories, tags: t.tags, create_terms: t.create, featured_media: a.featuredImageId,
         });
+        const r = await checkedNew(created, { title: a.title, content: a.content, imageUrl: created?.featured_media?.url });
         const ask = t.suggestedNew.categories.length + t.suggestedNew.tags.length > 0;
         const named = [...t.suggestedNew.categories.map((n) => "category " + n), ...t.suggestedNew.tags.map((n) => "tag " + n)].join(", ");
         return {
           ...r, change: changeView(r.change), changeId: r.change?.id, words: htmlWords(a.content),
           ...(ask ? { suggestedNewTerms: t.suggestedNew } : {}),
           ...(t.fallbackCategory ? { categoryUsed: `${t.fallbackCategory} (the most relevant existing category)` } : {}),
-          note: "Draft blog post. Give the person the preview link; it is published when a person deploys." + (ask
+          note: "Draft blog post. Give the person the preview link; it is published when a person deploys." + failedNote(r) + (ask
             ? ` NOT created yet (they do not exist on the site): ${named}. ASK the person in your answer whether to add them. If they say yes, call set_post_terms with them in approvedNewTerms; if no, nothing more to do.`
             : ""),
         };
@@ -432,6 +467,26 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     } : {}),
   } : {};
 
+  const sp = extras.speed;
+  const speedTools = sp && extras.siteId ? {
+    pagespeed_report: tool({
+      description: "Run a Google PageSpeed report (Lighthouse) for a page of this site: the 4 scores (performance, accessibility, best practices, SEO), Core Web Vitals " +
+        "(real visitors when Google has data, plus the lab test) and the top fixes with the affected elements. Takes 15-60 seconds. Use it when the person asks about speed, PageSpeed, " +
+        "Core Web Vitals or a slow page, and again after fixing to compare. Sites on localhost are tested in this computer's browser (no real-visitor data).",
+      inputSchema: z.object({ url: z.string().optional().describe("Page address (default: the page the person is on)"), device: z.enum(["mobile", "desktop", "both"]).default("mobile") }),
+      execute: async ({ url, device }) => safe(async () => {
+        const page = url || extras.pageUrl?.() || extras.siteUrl || bridge.homeUrl;
+        if (!sameHost(extras.siteUrl || bridge.homeUrl, page)) return { ok: false, error: "Only pages of this site can be tested." };
+        const devices: SpeedDevice[] = device === "both" ? ["mobile", "desktop"] : [device ?? "mobile"];
+        const started = sp.start(extras.siteId!, page, devices);
+        const run = await sp.wait(started.id);
+        if (!run || run.status !== "done") return { ok: false, error: run?.error ?? "The report did not finish." };
+        return { ok: true, url: page, reportId: run.id, reports: run.reports.map(summarize),
+          note: "Shown to the person in the widget's Speed tab too. Lead with the scores and the 2-3 fixes that matter most; fixes with assistantCanFix you can make as drafts (ask first), the others need plugin / hosting settings - explain where." };
+      }),
+    }),
+  } : {};
+
   const sf = extras.siteFiles;
   const fileTools = sf ? {
     list_files: tool({
@@ -484,11 +539,19 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
 
   const sk = extras.skills;
   const skillsLoaded = new Set<string>();
+  const filesLoaded = new Set<string>(); // "name/file", so a second read of the SAME skill+file this request is free
   const skillTools = sk && sk.list().length ? {
     load_skill: tool({
-      description: "Load an official WordPress skill (expert instructions) before work in its area. Default file is SKILL.md; its references/*.md files can be loaded too.",
+      description: "Load an official WordPress skill (expert instructions) before work in its area. Default file is SKILL.md; its references/*.md files can be loaded too. Load only the skills that actually apply to THIS request - most requests need just the 3-4 named in your instructions, never the whole catalogue. Loading the same skill+file twice in one request returns a short notice instead of the text again (you already have it).",
       inputSchema: z.object({ name: z.string(), file: z.string().optional().describe("e.g. references/theme-json.md") }),
-      execute: async ({ name, file }) => safe(async () => { const r = sk.load(name, file); skillsLoaded.add(name); return r; }),
+      execute: async ({ name, file }) => safe(async () => {
+        const key = name + "/" + (file || "SKILL.md");
+        if (filesLoaded.has(key)) return { ok: true, name, file: file || "SKILL.md", alreadyLoaded: true, note: "Already loaded earlier in this request - use what you read then, do not load it again." };
+        const r = sk.load(name, file);
+        skillsLoaded.add(name);
+        filesLoaded.add(key);
+        return r;
+      }),
     }),
   } : {};
 
@@ -500,9 +563,32 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     }),
   } : {};
 
+  const askTools = {
+    ask_person: tool({
+      description:
+        "Ask the person EVERYTHING you still need, in ONE go. The chat shows it as a small form they fill in and send back - so they answer once instead of being asked question after question.\n" +
+        "Only for facts you cannot find or decide: the real words, a phone number, which page, which of two things they meant. NEVER for design (colour, spacing, layout, which template) - decide that yourself from the site.\n" +
+        "Call it once, then STOP and wait for the answer. Do not call it again in the same step, and never ask the same thing in prose as well.",
+      inputSchema: z.object({
+        intro: z.string().max(200).optional().describe("One line of context, e.g. 'To build the home page I need a few facts.'"),
+        questions: z.array(z.object({
+          key: z.string().regex(/^[a-z][a-z0-9_]{0,30}$/).describe("A short name for the answer, e.g. phone"),
+          question: z.string().min(3).max(200),
+          options: z.array(z.string().min(1).max(60)).max(5).optional().describe("Give 2-5 choices when the answer is a pick, not free text"),
+          placeholder: z.string().max(80).optional(),
+          optional: z.boolean().optional(),
+        })).min(1).max(6),
+      }),
+      execute: async ({ intro, questions }) => ({
+        ok: true, asked: questions.length, intro,
+        note: "The person is being shown these as a form. Stop now and wait for their answer; do not repeat the questions in your reply.",
+      }),
+    }),
+  };
+
   const componentTools = makeComponentTools({ bridge, safe, postIdOf, checked, changeView, parseValue, ref, pageUrl: () => extras.pageUrl?.(), skillsLoaded, design: extras.browser?.design ? (url?: string) => extras.browser!.design!({ url, device: "desktop" }) as Promise<any> : undefined });
 
-  return { ...reading, ...writing, ...media, ...browser, ...fileTools, ...apiTools, ...skillTools, ...planTools, ...componentTools };
+  return { ...reading, ...writing, ...media, ...browser, ...speedTools, ...fileTools, ...apiTools, ...skillTools, ...planTools, ...askTools, ...componentTools };
 }
 
 /** Tools that must never run without a human saying yes (in "every" mode; one plan approval in "request" mode). */

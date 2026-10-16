@@ -8,10 +8,11 @@
     "dev": "node --env-file-if-exists=.env --import tsx --watch src/server.ts",
     "start": "node --env-file-if-exists=.env --import tsx src/server.ts",
     "chat": "node --env-file-if-exists=.env --import tsx src/cli.ts",
-    "test": "node --import tsx test/smoke.ts && node --import tsx test/features.ts && node --import tsx test/library.ts && node --import tsx test/templates.ts && node --import tsx test/components.ts && node --import tsx test/blog.ts && node --import tsx test/files-ledger.ts && node --import tsx test/verify-browser.ts",
+    "test": "node --import tsx test/smoke.ts && node --import tsx test/features.ts && node --import tsx test/library.ts && node --import tsx test/templates.ts && node --import tsx test/components.ts && node --import tsx test/blog.ts && node --import tsx test/pagespeed.ts && node --import tsx test/files-ledger.ts && node --import tsx test/verify-browser.ts && node --import tsx test/claude-cli.ts",
     "typecheck": "tsc --noEmit && cd web && tsc --noEmit",
     "demo": "node --import tsx test/demo.ts",
-    "build:web": "cd web && npm install && npm run build"
+    "build:web": "cd web && npm install && npm run build",
+    "test:wp": "node --env-file-if-exists=.env --import tsx test/blog-real-wp.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.71",
@@ -19,9 +20,11 @@
     "@ai-sdk/mcp": "^2.0.66",
     "@ai-sdk/openai": "^4.0.83",
     "@ai-sdk/openai-compatible": "^3.0.62",
+    "@ai-sdk/provider": "^4.0.21",
     "@hostinger/mcp": "^2.7.0",
     "@modelcontextprotocol/sdk": "^1.32.0",
     "ai": "^7.0.127",
+    "lighthouse": "^12.8.2",
     "playwright-core": "^1.63.0",
     "zod": "^4.6.5"
   },

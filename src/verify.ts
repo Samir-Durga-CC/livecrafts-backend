@@ -26,7 +26,10 @@ export interface VerifyDeps {
   compare?: typeof compareShots;
 }
 
-const norm = (s: unknown) => String(s ?? "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#0?39;|&rsquo;/g, "'").replace(/\s+/g, " ").trim().toLowerCase();
+const norm = (s: unknown) => typo(String(s ?? "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#0?39;|&rsquo;/g, "'")).replace(/\s+/g, " ").trim().toLowerCase();
+/** WordPress prints ' " -- ... as typographic characters (wptexturize): compare both sides in plain form. */
+const typo = (s: string) => s.replace(/&(lsquo|rsquo|sbquo|#8216|#8217|#8218);|[‘’‚′ʼ]/g, "'").replace(/&(ldquo|rdquo|bdquo|#8220|#8221|#8222);|[“”„″]/g, '"')
+  .replace(/&(ndash|mdash|#8211|#8212);|[–—]|-{2,3}/g, "-").replace(/&(hellip|#8230);|…/g, "...").replace(/&(times|#215);|×/g, "x");
 const short = (s: string, n = 70) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 const DEVICE_OF_MEDIA: Record<string, Device> = { "": "desktop", desktop: "desktop", tablet: "tablet", mobile: "mobile" };
 
@@ -67,6 +70,9 @@ export class Verifier {
   async before(url: string): Promise<PageAudit | null> {
     try { return await this.audit(this.d.siteUrl, { url, shot: true }, { preview: await this.d.previewToken() }); } catch { return null; }
   }
+
+  /** A NEW page / post: see NewPostCheck. */
+  newPost(previewUrl: string, e: NewPostExpect): Promise<Verification> { return new NewPostCheck(this.d, this.audit).run(previewUrl, e); }
 
   /** opts.component = CSS selector of a library component that was just placed: it is also measured on desktop, tablet and mobile. */
   async after(url: string, change: any, before: PageAudit | null, opts: { component?: string; softH1?: boolean } = {}): Promise<Verification> {
@@ -133,6 +139,75 @@ export class Verifier {
     }
     return done(checks);
   }
+}
+
+/** What a NEW page / post should show: its title, a sentence of its content and (optionally) its featured image. */
+export interface NewPostExpect { title: string; content?: string; imageUrl?: string }
+
+/** The first real sentence of block markup / HTML (plain text, lower case), to look for on the rendered page. */
+export function firstText(html: string, max = 60): string | undefined {
+  // inline tags (strong, a, em ...) join the words around them without a space, as the browser shows them
+  const plain = (x: string) => norm(x.replace(/<br\s*\/?>/gi, " ").replace(/<[^>]+>/g, ""));
+  const cut = (t: string) => (t.length <= max ? t : t.slice(0, max).replace(/\s+\S*$/, "")).trim();
+  for (const m of String(html ?? "").matchAll(/<(p|li|h[2-4])\b[^>]*>([\s\S]*?)<\/\1>/gi)) {
+    const t = plain(m[2]);
+    if (t.length >= 12) return cut(t);
+  }
+  const t = norm(html);
+  return t.length >= 12 ? cut(t) : undefined;
+}
+
+export class NewPostCheck {
+  constructor(private d: VerifyDeps, private audit: typeof auditPage = d.audit ?? auditPage) {}
+
+  /**
+   * Open the NEW draft (through its preview link and a preview token) the way the theme / page builder renders it, on
+   * desktop and mobile: it loads, shows the title and the article, has no PHP error / sideways scrolling / broken image,
+   * shows the featured image (information only: some themes do not), and visitors still cannot open it.
+   */
+  async run(previewUrl: string, e: NewPostExpect): Promise<Verification> {
+    const checks: Check[] = [{ name: "stored", ok: true, detail: "WordPress saved the new draft." }];
+    let preview: string;
+    try { preview = await this.d.previewToken(); }
+    catch (x) { return done([...checks, { name: "draft", ok: null, detail: "Could not open the draft view: " + (x as Error).message }]); }
+    const title = norm(e.title).slice(0, 80);
+    const body = e.content ? firstText(e.content) : undefined;
+    const img = e.imageUrl ? imageKey(e.imageUrl) : undefined;
+    for (const device of ["desktop", "mobile"] as Device[]) {
+      let a: PageAudit;
+      try { a = await this.audit(this.d.siteUrl, { url: previewUrl, device, selector: device === "desktop" && img ? `img[src*="${img}"], img[srcset*="${img}"]` : undefined }, { preview }); }
+      catch (x) {
+        const msg = (x as Error).message;
+        checks.push({ name: `draft (${device})`, ok: /^BOT_CHECK/.test(msg) ? null : false, detail: "The new draft could not be opened: " + short(msg, 200) });
+        continue;
+      }
+      if (a.status === 404) { checks.push({ name: `draft (${device})`, ok: false, detail: "The new draft answers 404 to the preview link. Is the Livecrafts plugin 0.15.1 or newer active?" }); continue; }
+      const text = norm(a.lines.join(" "));
+      if (device === "desktop") {
+        checks.push({ name: "title", ok: text.includes(title), detail: text.includes(title) ? `The page shows the title “${short(title)}”.` : `The page does NOT show the title “${short(title)}”.` });
+        if (body) checks.push({ name: "content", ok: text.includes(body), detail: text.includes(body)
+          ? "The theme / page builder shows the article content."
+          : `The article content does not appear on the page (looked for “${short(body)}”). The post template of this theme or page builder may not output the post content.` });
+        if (img) checks.push({ name: "featured image", ok: a.element?.found ? !!a.element.visible : null, detail: a.element?.found
+          ? a.element.visible ? "The featured image shows on the post page." : "The featured image is on the page but hidden."
+          : "This theme does not show the featured image on the post page itself; it is still set for blog listings and social previews." });
+      }
+      checks.push(...health(a, null, device));
+    }
+    try {
+      const live = norm(await this.d.liveText(previewUrl));
+      const leak = !!body && live.includes(body);
+      checks.push({ name: "live", ok: !leak, detail: leak ? "Visitors can read the new draft: it must stay hidden until deploy." : "Visitors cannot open the new draft (it is published on deploy)." });
+    } catch (x) { checks.push({ name: "live", ok: null, detail: "Could not open the page as a visitor: " + (x as Error).message }); }
+    return done(checks);
+  }
+}
+
+/** The part of an image address that every resized copy shares: "photo" for .../photo-1024x576.webp. */
+function imageKey(url: string): string | undefined {
+  const file = String(url).split(/[?#]/)[0].split("/").pop() ?? "";
+  const stem = file.replace(/\.[a-z0-9]+$/i, "").replace(/-\d+x\d+$/, "").replace(/-scaled$/, "");
+  return stem.length >= 3 ? stem.replace(/["\\]/g, "") : undefined;
 }
 
 /** Page health, compared with the state before the change when known (only NEW problems fail). */

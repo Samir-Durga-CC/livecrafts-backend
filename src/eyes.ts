@@ -70,13 +70,25 @@ export const eyes = new Eyes();
 
 /** Run through the person's browser when the widget is open, otherwise (or if it cannot) with the fallback. */
 export async function viaEyes<T>(siteId: string, action: string, args: Record<string, unknown>, fallback: () => Promise<T>): Promise<any> {
+  let firstTry = "";
   if (eyes.available(siteId)) {
-    try { return { ...(await eyes.request(siteId, action, args)), seenBy: "the person's browser (Livecrafts widget)" }; }
+    // A screenshot of a heavy page is slow in the person's browser (it loads the page again in a hidden frame and
+    // paints it), so it gets longer than a DOM read before we give up on it.
+    const timeoutMs = action === "screenshot" || action === "design" ? 75_000 : 30_000;
+    try { return { ...(await eyes.request(siteId, action, args, timeoutMs)), seenBy: "the person's browser (Livecrafts widget)" }; }
     catch (e) {
-      const msg = String((e as Error).message);
-      if (!/^eyes-(none|timeout|closed)$/.test(msg)) return { ok: false, error: msg };
+      // ANY failure falls through to the server's own browser. Before, only "the widget is not there" did, so a page
+      // that was slow in the person's browser left the assistant with no picture at all and nothing to fall back on.
+      firstTry = String((e as Error).message).replace(/^eyes-/, "");
     }
   }
   const r: any = await fallback();
-  return r && typeof r === "object" ? { ...r, seenBy: "the server's headless browser" } : r;
+  if (!r || typeof r !== "object") return r;
+  return {
+    ...r,
+    seenBy: "the server's headless browser",
+    ...(firstTry && !/^(none|closed)$/.test(firstTry)
+      ? { note: `The person's own browser could not do it (${firstTry.slice(0, 120)}), so this is the server's browser instead.` }
+      : {}),
+  };
 }

@@ -5,6 +5,7 @@ import { createGroq } from "@ai-sdk/groq";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createGateway } from "ai";
 import { secrets, type ProviderId } from "./secrets.js";
+import { CLAUDE_CLI_MODELS, claudeCliModel, claudeCliStatus } from "./claudeCli.js";
 
 /**
  * One place that turns "provider:model" into a model the agent can use, with the provider's key.
@@ -12,9 +13,10 @@ import { secrets, type ProviderId } from "./secrets.js";
  *   custom:<model>  (any OpenAI-compatible server: set its address + key in Integrations)
  * Backwards compatible: "gpt-5.5" means openai, "vendor/model" without a prefix means the Vercel AI Gateway.
  */
-export const PROVIDERS: { id: ProviderId; name: string; needsBaseUrl?: boolean; examples: string[]; keyHelp: string }[] = [
+export const PROVIDERS: { id: ProviderId; name: string; needsBaseUrl?: boolean; needsNoKey?: boolean; examples: string[]; keyHelp: string }[] = [
   { id: "openai", name: "OpenAI", examples: ["gpt-5.5", "gpt-5.4-mini"], keyHelp: "platform.openai.com → API keys" },
   { id: "anthropic", name: "Anthropic (Claude)", examples: ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-4-5"], keyHelp: "console.anthropic.com → API keys" },
+  { id: "claudecli", name: "Claude CLI (this machine's subscription)", needsNoKey: true, examples: CLAUDE_CLI_MODELS, keyHelp: 'No API key: the Claude Code CLI on the backend machine answers, signed in with "claude auth login".' },
   { id: "openrouter", name: "OpenRouter", examples: ["anthropic/claude-sonnet-5.5", "openai/gpt-5.5", "google/gemini-3-pro"], keyHelp: "openrouter.ai → Keys" },
   { id: "groq", name: "Groq", examples: ["openai/gpt-oss-120b", "llama-3.3-70b-versatile"], keyHelp: "console.groq.com → API Keys" },
   { id: "custom", name: "Custom (OpenAI-compatible)", needsBaseUrl: true, examples: ["your-model-name"], keyHelp: "Any server with an OpenAI-compatible /v1/chat/completions API (LM Studio, vLLM, Together, Fireworks …)" },
@@ -24,7 +26,7 @@ export interface ModelSpec { provider: ProviderId; model: string }
 
 export function parseModelSpec(spec: string): ModelSpec {
   const s = spec.trim();
-  const m = s.match(/^(openai|anthropic|openrouter|groq|custom|gateway):(.+)$/);
+  const m = s.match(/^(openai|anthropic|claudecli|openrouter|groq|custom|gateway):(.+)$/);
   if (m) return { provider: m[1] as ProviderId, model: m[2].trim() };
   if (s.includes("/")) return { provider: "gateway", model: s };
   return { provider: "openai", model: s };
@@ -34,7 +36,7 @@ export const specToString = (m: ModelSpec) => `${m.provider}:${m.model}`;
 
 function need(p: ProviderId): string {
   const key = secrets.providerKey(p);
-  if (!key && p !== "custom") throw new Error(`No API key for ${PROVIDERS.find((x) => x.id === p)?.name ?? p}. Add it in Integrations → AI models.`);
+  if (!key && p !== "custom" && p !== "claudecli") throw new Error(`No API key for ${PROVIDERS.find((x) => x.id === p)?.name ?? p}. Add it in Integrations → AI models.`);
   return key;
 }
 
@@ -44,6 +46,8 @@ export function resolveModel(spec: string): LanguageModel {
   switch (provider) {
     case "openai": return createOpenAI({ apiKey: need("openai") })(model);
     case "anthropic": return createAnthropic({ apiKey: need("anthropic") })(model);
+    // The local CLI: no key, no network call from here - it runs `claude --print` in the background.
+    case "claudecli": return claudeCliModel(model) as unknown as LanguageModel;
     case "groq": return createGroq({ apiKey: need("groq") })(model);
     case "openrouter":
       return createOpenAICompatible({ name: "openrouter", baseURL: "https://openrouter.ai/api/v1", apiKey: need("openrouter"), headers: { "X-Title": "Livecrafts" } })(model);
@@ -57,10 +61,15 @@ export function resolveModel(spec: string): LanguageModel {
 }
 
 /** Status of every provider for the Integrations screen (keys are never sent back). */
-export function providerStatus() {
+export async function providerStatus() {
+  const cli = await claudeCliStatus().catch(() => ({ installed: false, loggedIn: false, error: "the CLI could not be checked" }));
   return PROVIDERS.map((p) => ({
-    ...p, configured: !!secrets.providerKey(p.id) || (p.id === "custom" && !!secrets.providerBaseUrl("custom")),
-    keySource: secrets.providerSource(p.id), baseUrl: p.needsBaseUrl ? secrets.providerBaseUrl(p.id) : undefined,
+    ...p,
+    configured: p.id === "claudecli" ? cli.installed && cli.loggedIn
+      : !!secrets.providerKey(p.id) || (p.id === "custom" && !!secrets.providerBaseUrl("custom")),
+    keySource: p.id === "claudecli" ? (cli.loggedIn ? "cli" : "none") : secrets.providerSource(p.id),
+    baseUrl: p.needsBaseUrl ? secrets.providerBaseUrl(p.id) : undefined,
+    ...(p.id === "claudecli" ? { cli } : {}),
   }));
 }
 

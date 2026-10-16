@@ -56,6 +56,7 @@ export const Icon = {
   Palette: (p: P) => svg(<><path d="M12 3a9 9 0 1 0 0 18c1 0 1.5-.8 1.5-1.5 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.8.7-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-7.8-9-7.8z" /><circle cx="7.5" cy="10.5" r="1" /><circle cx="12" cy="7.5" r="1" /><circle cx="16.5" cy="10.5" r="1" /></>, p),
   Layout: (p: P) => svg(<><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M9 21V9" /></>, p),
   Ruler: (p: P) => svg(<path d="M3 17 17 3l4 4L7 21zM7 13l2 2M10 10l2 2M13 7l2 2" />, p),
+  Gauge: (p: P) => svg(<><path d="M4.5 18a9 9 0 1 1 15 0" /><path d="m12 13 4-4" /><circle cx="12" cy="13" r="1.4" /></>, p),
   Menu: (p: P) => svg(<path d="M4 6h16M4 12h16M4 18h10" />, p),
   Folder: (p: P) => svg(<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />, p),
 };

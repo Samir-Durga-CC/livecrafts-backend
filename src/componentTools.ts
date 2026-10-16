@@ -4,7 +4,9 @@ import type { Bridge } from "./bridge.js";
 import { BridgeError } from "./bridge.js";
 import { COMPONENTS, ContentError, LintError, getComponent, imageIds, renderComponent, searchLibrary, type Builder } from "./library/index.js";
 import { acfExport } from "./library/acf.js";
-import { TEMPLATE_WRAP_CSS, TemplateError, buildShortcode, cleanFit, fitFromDesign, placeShortcode, type Fit, type TemplateEntry } from "./library/templates.js";
+import { TEMPLATE_WRAP_CSS, TemplateError, buildShortcode, cleanFit, fitFromDesign, placeInTheme, placeShortcode, themePlace, type Fit, type TemplateEntry } from "./library/templates.js";
+import { RECIPES, recipe, recipeList } from "./library/recipes.js";
+import { log } from "./usage.js";
 
 /**
  * Tools for finding and placing ready-made components, so the assistant builds like a developer who reuses what exists:
@@ -27,7 +29,7 @@ export interface ComponentHelpers {
   design?: (url?: string) => Promise<any>;
 }
 
-const NEEDED_SKILLS = ["section-design", "mobile-first", "templates"];
+const NEEDED_SKILLS = ["section-design", "mobile-first", "templates", "page-builders"];
 const missingSkills = (loaded: Set<string>) => NEEDED_SKILLS.filter((s) => !loaded.has(s));
 
 /** Words to look for on the site for a request: its own words plus what the library knows about the component. */
@@ -60,11 +62,37 @@ function applyReplacements<T>(value: T, reps: Array<{ find: string; replace: str
 }
 
 /** The site's templates, or why there are none. */
+/**
+ * The catalogue and the page's measured design, remembered for a short while per site.
+ *
+ * Building a home page places eight sections; without this, each one asked the site for the catalogue again and drove
+ * a real browser to measure the page again - half a minute of waiting per section, for numbers that cannot have
+ * changed in the meantime.
+ */
+const CACHE_MS = 90_000;
+// Keyed by the Bridge itself, so the cache lives exactly as long as the run that made it: one job never reads another
+// job's answers, and nothing survives into the next request (or the next test) to go stale.
+const memo = new WeakMap<object, Map<string, { at: number; value: any }>>();
+const cacheOf = (owner: object) => {
+  let m = memo.get(owner);
+  if (!m) { m = new Map(); memo.set(owner, m); }
+  return m;
+};
+const fresh = (owner: object, key: string) => {
+  const hit = cacheOf(owner).get(key);
+  return hit && Date.now() - hit.at < CACHE_MS ? hit.value : undefined;
+};
+const remember = (owner: object, key: string, value: any) => cacheOf(owner).set(key, { at: Date.now(), value });
+
 async function loadTemplates(bridge: Bridge): Promise<{ list: TemplateEntry[]; version?: string; note?: string; contactAction?: string }> {
+  const hit = fresh(bridge, "catalogue");
+  if (hit) return hit;
   try {
     const r = await bridge.templates();
     if (!r?.active) return { list: [], note: "The template library is not active on this site." };
-    return { list: (r.components ?? []) as TemplateEntry[], version: r.version, contactAction: r.contactAction };
+    const value = { list: (r.components ?? []) as TemplateEntry[], version: r.version, contactAction: r.contactAction };
+    remember(bridge, "catalogue", value);
+    return value;
   } catch (e) {
     if (e instanceof BridgeError && e.status === 404) return { list: [], note: "The site's Livecrafts plugin is older than 0.14: it has no template library. Update the plugin." };
     throw e;
@@ -97,7 +125,7 @@ export function makeComponentTools(h: ComponentHelpers) {
   return {
     site_profile: tool({
       description:
-        "What this site is built with, in one call: theme (block theme?), Elementor (version, flexbox containers, free/Pro widgets, global colours and fonts), ACF (flexible-content layouts = the theme's modules), block patterns, and the forms of Contact Form 7 / WPForms with their shortcodes. " +
+        "What this site is built with, in one call: theme (block theme?), Elementor (version, flexbox containers, free/Pro widgets, global colours and fonts), other page builders (Divi, Beaver, WPBakery, Bricks ...), the theme's brand palette and fonts, how the existing blog posts are built, ACF (flexible-content layouts = the theme's modules), block patterns, and the forms of Contact Form 7 / WPForms with their shortcodes. " +
         "Call it before designing a new section: it tells you the builder to use, the brand colours to reuse and which form a contact section can show.",
       inputSchema: z.object({}),
       execute: async () => safe(async () => {
@@ -108,8 +136,10 @@ export function makeComponentTools(h: ComponentHelpers) {
             ok: true, theme: p.theme, wp: p.wp,
             elementor: el.active ? { version: el.version, pro: el.pro, flexboxContainers: el.containers, widgetCount: el.widgets?.length, freeWidgetsUsedByLibrary: ["heading", "text-editor", "image", "button", "shortcode"].filter((w) => el.widgets?.includes(w)), testimonialWidget: el.widgets?.includes("testimonial") ?? false, globalColors: el.colors, globalFonts: el.fonts } : { active: false },
             acf: p.builders?.acf?.active ? { pro: p.builders.acf.pro, flexibleLayouts: (p.builders.acf.flexible ?? []).map((l: any) => ({ field: l.field, layout: l.layout, label: l.label, subFields: l.sub_fields?.map((s: any) => s.name) })) } : { active: false },
-            blocks: p.builders?.blocks, forms: p.forms ?? [],
-            howToUse: "Brand colour: use a global colour or the button colour from analyze_design as `brand` in place_component. Contact form: pass one of `forms[].shortcode` as formShortcode (never invent one).",
+            blocks: p.builders?.blocks, otherBuilders: p.builders?.others ?? [], forms: p.forms ?? [],
+            ...(p.brand ? { brand: p.brand } : {}), ...(p.posts ? { blogPosts: p.posts } : {}),
+            howToUse: "Brand colour: use a global colour or the button colour from analyze_design as `brand` in place_component. Contact form: pass one of `forms[].shortcode` as formShortcode (never invent one). " +
+              "brand = the theme's palette / fonts (theme.json); Elementor globals are under elementor. blogPosts.built_with = how the existing posts are made.",
           };
         } catch (e) {
           if (!(e instanceof BridgeError) || e.status !== 404) throw e;
@@ -183,6 +213,42 @@ export function makeComponentTools(h: ComponentHelpers) {
       }),
     }),
 
+    page_recipes: tool({
+      description:
+        "The ready page designs (About, Contact, Information), as an ORDERED list of template sections. Use it when a WHOLE page is wanted, before building anything.\n" +
+        "Without an id: the designs to choose from. With an id: every section in order, which template and layout (variant) builds it, and what content the person must provide for each.\n" +
+        "It is a plan, not a page: build it with create_page (a draft) and then one place_component per section, in order, so each section is checked, approved and revertable on its own. Read-only.",
+      inputSchema: z.object({
+        id: z.string().optional().describe("A recipe id from the list (e.g. about_classic)"),
+        kind: z.enum(["home", "about", "contact", "info"]).optional().describe("Only the designs of this kind"),
+      }),
+      execute: async ({ id, kind }) => safe(async () => {
+        if (id) {
+          const r = recipe(id);
+          if (!r) return { ok: false, error: `Unknown page recipe "${id}". Available: ${RECIPES.map((x) => x.id).join(", ")}.` };
+          const t = await loadTemplates(bridge).catch(() => ({ list: [] as TemplateEntry[] }));
+          const have = new Set(t.list.map((x) => x.id));
+          return {
+            ok: true, recipe: { id: r.id, title: r.title, description: r.description, bestFor: r.bestFor },
+            sections: r.steps.map((s, i) => ({
+              order: i + 1, template: s.template, variant: s.variant, role: s.role, contentNeeded: s.needs, note: s.note,
+              available: have.size ? have.has(s.template) : undefined,
+            })),
+            howToBuild: [
+              "1. Ask for the content each section needs that the person has not given. Never invent quotes, numbers, prices or contact details.",
+              "2. create_page with the title and slug (it is a draft).",
+              "3. One place_component per section IN THIS ORDER, source \"template\", with its variant in attrs, fit \"auto\".",
+              "4. After each one, read its checks; fix or revert before moving on.",
+              "5. screenshot_page the finished page on desktop, tablet and phone, then give the preview link and say it is a draft to deploy.",
+            ],
+            skipRule: "Header and footer: skip them when the theme already prints one (nearly every theme does). Check the page first.",
+            missing: have.size ? r.steps.filter((s) => !have.has(s.template)).map((s) => s.template) : undefined,
+          };
+        }
+        return { ok: true, recipes: recipeList().filter((r) => !kind || r.kind === kind), use: "page_recipes id \"<id>\" gives the sections in order." };
+      }),
+    }),
+
     template_usage: tool({
       description:
         "Which parts of the site come from the template library, like `git grep` for templates: every template with the pages/posts it is used on (live or draft) and the URLs where theme code rendered it. " +
@@ -213,6 +279,7 @@ export function makeComponentTools(h: ComponentHelpers) {
         "source \"library\": id = testimonials | contact; content = the fields (see get_component). It also writes the library's protective CSS (Additional CSS blocks lc-core, lc-c-<id>, lc-tokens) so the section cannot overflow, overlap or be broken by the theme, then inserts it, then the page is measured in a real browser on desktop, tablet and mobile.\n" +
         "source \"site\": id from find_components: copies that section / pattern. replacements = text swaps [{find, replace}] to adapt it.\n" +
         "position: Elementor \"<parent id|root>:<index|end>\" (default root:end); blocks \"<parent path>:<index|end>\" (default \":end\" = end of the page).\n" +
+        "position \"theme:<place>\" for a page the THEME builds itself (front-page.php and other templates that never print the page body, so a section saved in the page would not show): the plugin renders the section at that seam of the theme's own template - no theme file is edited, and it stays a draft that is checked and revertable. get_page_map lists the places under sections.places, e.g. theme:before:template-parts/why, theme:after:template-parts/hero, theme:start, theme:end. Use this instead of telling the person to involve a developer.\n" +
         "Never invent customer quotes or contact details. If the checks fail, fix or revert (revert_change) before saying it worked.",
       inputSchema: z.object({
         source: z.enum(["template", "library", "site"]),
@@ -226,6 +293,7 @@ export function makeComponentTools(h: ComponentHelpers) {
         attrs: z.record(z.string(), z.any()).optional().describe("Template: the template's attributes (heading, text, primary_label, primary_url, image ...), plain text"),
         items: z.array(z.record(z.string(), z.any())).max(24).optional().describe("Template: rows of a list template (faq: title+text, pricing: ..., see get_component rowFields)"),
         fit: z.union([z.literal("auto"), z.literal("none"), z.record(z.string(), z.any())]).default("auto").describe("Template: how it adapts to the site. auto = measure the page's own sections (content width, padding, radius, button colour, background) and apply them; none = neutral defaults; or an object {max, py, py_sm, radius, brand, surface, ink ...}. Explicit values win over auto."),
+        replaceExisting: z.boolean().optional().describe("Templates that exist once per page (footer, header, hero, contact form ...): the page already has one and it should be REPLACED. The old one is reverted first. Without this the call is refused, so a page never ends up with two footers."),
         reason: z.string().max(300).describe("One short sentence for the person approving"),
       }),
       execute: async (a) => safe(async () => {
@@ -239,7 +307,7 @@ export function makeComponentTools(h: ComponentHelpers) {
         };
 
         let kind: "el.insert" | "block.insert", value: unknown, builder: Builder, warnings: string[] = [], placeholders = false, selector: string | undefined, css: Array<{ id: string; label: string; css: string }> = [], dropped: string[] = [];
-        let templateUsed: Record<string, unknown> | undefined, softH1 = false;
+        let templateUsed: Record<string, unknown> | undefined, softH1 = false, themeTarget: string | undefined;
 
         if (a.source === "template") {
           const t = await loadTemplates(bridge);
@@ -248,7 +316,38 @@ export function makeComponentTools(h: ComponentHelpers) {
           builder = a.builder === "auto" ? detected.builder : a.builder;
           // A template is its own section on the page: never inside another section's container (it would sit in the middle of it).
           const pos = a.position ?? "";
-          if (builder === "elementor" && pos && !/^root:(\d+|end)$/.test(pos)) return { ok: false, error: `A template is a section of its own: position must be "root:<index>" (or "root:end"), not "${pos}", which is inside another section. get_page_map shows the order of the page's sections; testimonials usually go after the products / services section, a contact form last, above the footer.` };
+          if (pos.startsWith("theme:") && !themePlace(pos)) return { ok: false, error: `"${pos}" is not a place in the theme. get_page_map lists them under sections.places (e.g. theme:before:template-parts/why, theme:end).` };
+          if (builder === "elementor" && pos && !pos.startsWith("theme:") && !/^root:(\d+|end)$/.test(pos)) return { ok: false, error: `A template is a section of its own: position must be "root:<index>" (or "root:end"), not "${pos}", which is inside another section. get_page_map shows the order of the page's sections; testimonials usually go after the products / services section, a contact form last, above the footer.` };
+          // One per page: a second footer, header or contact form on the same page is never what was meant. The
+          // assistant is told to change the one that is there (or revert it first), which is what a person expects
+          // when they say "make the footer bigger" after a footer already exists.
+          const ONCE_PER_PAGE = ["footer", "header", "hero", "hero_centered", "contact_form", "newsletter", "cta", "pricing"];
+          if (ONCE_PER_PAGE.includes(entry.id) && !a.replaceExisting) {
+            const already = (entry.usedOn ?? []).filter((u) => u.post === postId);
+            const times = already.reduce((n, u) => n + (u.count || 1), 0);
+            if (times > 0) {
+              return {
+                ok: false,
+                error: `This page already has a ${entry.id.replace(/_/g, " ")} (${times} on "${already[0]?.title || pageUrl}"). A page has only one.`,
+                whatToDo: [
+                  `Change the one that is there: get_page_map / read_target find it, make_change edits its text, links and settings.`,
+                  `Replace it on purpose: call place_component again with replaceExisting true - the old one is reverted first.`,
+                  `If the person asked for a DIFFERENT section, pick the template that matches what they asked for.`,
+                ],
+              };
+            }
+          }
+          // replaceExisting: take the old one off the page first, so "replace the footer" never leaves two.
+          if (ONCE_PER_PAGE.includes(entry.id) && a.replaceExisting) {
+            const mine = await bridge.changes({ post: postId, limit: 60 }).catch(() => null) as any;
+            const list: any[] = Array.isArray(mine?.changes) ? mine.changes : Array.isArray(mine) ? mine : [];
+            const placed = list.filter((c) => /insert|theme\.section/.test(String(c.kind ?? "")) && new RegExp(`ai_${entry.id}\b|data-lc-template="${entry.id}"|Template: ${entry.id}`).test(JSON.stringify(c)));
+            for (const c of placed.slice(0, 3)) {
+              const r: any = await bridge.revert(Number(c.id), h.ref()).catch((e) => ({ ok: false, error: String(e) }));
+              if (r?.ok !== false) extra.push({ ...c, reverted: true });
+            }
+            if (placed.length) warnings.push(`The ${entry.id.replace(/_/g, " ")} that was there has been reverted first, so the page has only one.`);
+          }
           // Real content only: sample text must never reach the page.
           const SAMPLE = /\b(placeholder|lorem ipsum|client name|your name here|sample (text|quote)|replace this)\b/i;
           const texts = [...Object.values(a.attrs ?? {}), ...(a.items ?? []).flatMap((i) => Object.values(i))].map((v) => String(v));
@@ -265,7 +364,14 @@ export function makeComponentTools(h: ComponentHelpers) {
           let fit: Fit = {}, basis: string[] = [];
           if (a.fit === "auto") {
             let design: any = null;
-            if (h.design) design = await h.design(pageUrl).catch(() => null);
+            const dkey = `design|${pageUrl}`;
+            if (h.design) {
+              design = fresh(bridge, dkey);
+              if (design === undefined) {
+                design = await h.design(pageUrl).catch(() => null);
+                remember(bridge, dkey, design);
+              }
+            }
             ({ fit, basis } = fitFromDesign(design));
             if (!h.design) basis = ["no browser is available to measure the site: templates use their neutral defaults"];
           } else if (a.fit === "none") basis = ["fit switched off: neutral defaults"];
@@ -278,14 +384,29 @@ export function makeComponentTools(h: ComponentHelpers) {
           try { built = buildShortcode(entry, { attrs: a.attrs, items: a.items, fit }); }
           catch (e) { if (e instanceof TemplateError) return { ok: false, error: e.message }; throw e; }
           warnings.push(...built.warnings);
-          const placed = placeShortcode(built.code, builder, entry.id);
-          kind = placed.kind; value = placed.value;
+          const inTheme = themePlace(a.position);
+          if (inTheme) {
+            // The page is built by the theme and never prints the page body: the plugin renders the section at the
+            // seam instead. Still a draft, still checked, still revertable - and no theme file is touched.
+            const t = placeInTheme(built.code, inTheme);
+            kind = t.kind as any; value = t.value; themeTarget = t.target;
+          } else {
+            const placed = placeShortcode(built.code, builder, entry.id);
+            kind = placed.kind; value = placed.value;
+          }
           if (builder === "elementor") css = [TEMPLATE_WRAP_CSS];
           selector = `.ai-t[data-lc-template="${entry.id}"]`;
           softH1 = /^hero/.test(entry.id);
           const empty = Object.keys(a.attrs ?? {}).length === 0 && !(a.items ?? []).length;
           if (empty) { placeholders = true; warnings.push("No content was given: the template shows empty areas. Give it real content."); }
           templateUsed = { id: entry.id, shortcode: built.code, fit, fitBasis: basis, seeIt: `${pageUrl}${pageUrl.includes("?") ? "&" : "?"}lc_templates=1` };
+          // One line in the log (and the admin panel's live view) for every template that goes on a page: which
+          // template and layout, where, and what the fit was measured from - so "did it use the library?" is answerable.
+          log("info", `template placed: ${entry.id}${(a.attrs ?? {}).variant ? ` (${(a.attrs ?? {}).variant})` : ""}`, {
+            site: bridge.site.id, page: pageUrl, position: a.position ?? "root:end", builder,
+            variant: (a.attrs ?? {}).variant ?? "default", fit, fitBasis: basis,
+            items: (a.items ?? []).length, ref: h.ref(),
+          });
         } else if (a.source === "library") {
           builder = a.builder === "auto" ? detected.builder : a.builder;
           if (a.builder === "auto" && detected.acfDriven && builder !== "elementor") return { ok: false, error: "This page prints ACF fields from its template, so a section inserted into the page body may not appear. Use an ACF layout (find_components) or the hand-off: get_component builder \"acf\". Pass builder \"blocks\" or \"html\" only if the person confirms the page body is shown." };
@@ -324,7 +445,8 @@ export function makeComponentTools(h: ComponentHelpers) {
           if (r?.change) extra.push(r.change);
         }
         // 2) the section itself, then the real-browser check
-        const target = a.position || (kind === "el.insert" ? "root:end" : ":end");
+        const target = themeTarget ?? a.position ?? (kind === "el.insert" ? "root:end" : ":end");
+        cacheOf(bridge).delete("catalogue"); // the page is about to change: the catalogue's "used on" is stale
         const out = await h.checked(pageUrl, () => write(kind, target, value, templateUsed ? `Template: ${a.id}` : undefined, postId), { component: selector, softH1 });
         if (out?.ok === false) return { ...out, note: extra.length ? "The CSS blocks are saved as drafts (harmless); nothing was inserted." : undefined };
         const skills = missingSkills(h.skillsLoaded);

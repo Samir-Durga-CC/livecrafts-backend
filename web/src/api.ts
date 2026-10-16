@@ -1,4 +1,5 @@
-import type { TemplatesReport, ApprovalMode, AssistantInfo, ChangeRecord, DiffData, HostingerHealth, ProviderInfo, SiteStatus, JobEvent, JobSummary, Site, TimelineItem, UploadedFile } from "./types";
+import type { SpeedRun, SpeedRunSummary } from "./speed";
+import type { TemplatesReport, ApprovalMode, AssistantInfo, ChangeRecord, DiffData, HostingerHealth, ModelsReport, ProviderInfo, SiteStatus, JobEvent, JobSummary, Site, TimelineItem, UploadedFile } from "./types";
 
 const TOKEN_KEY = "lc_token";
 export const getToken = () => localStorage.getItem(TOKEN_KEY) ?? "";
@@ -42,6 +43,10 @@ export const api = {
   deleteSite: (id: string) => request("DELETE", `/sites/${id}`),
   updateSite: (id: string, b: { name?: string; username?: string; appPassword?: string }) => request<Site>("PUT", `/sites/${id}`, b),
   templates: (id: string) => request<TemplatesReport>("GET", `/sites/${id}/templates`),
+  /** One template rendered with sample content, for the component gallery. */
+  renderTemplate: (siteId: string, id: string, variant?: string) =>
+    request<{ ok: boolean; html: string; css: string[]; custom?: string }>(
+      "GET", `/sites/${siteId}/templates/render?id=${encodeURIComponent(id)}${variant ? `&variant=${encodeURIComponent(variant)}` : ""}`),
   siteStatus: (id: string) => request<SiteStatus>("GET", `/sites/${id}/status`),
   assistant: (id: string, fresh = false) => request<AssistantInfo>("GET", `/sites/${id}/assistant${fresh ? "?fresh=1" : ""}`),
   deleteJob: (id: string) => request("DELETE", `/jobs/${id}`),
@@ -50,6 +55,7 @@ export const api = {
   changeDiff: (jobId: string, changeId: string) => request<DiffData>("GET", `/jobs/${jobId}/changes/${changeId}/diff`),
   saveProvider: (id: string, b: { apiKey?: string; baseUrl?: string; testModel?: string }) => request<{ ok: boolean; models: ProviderInfo[]; test?: { ok: boolean; reply?: string; ms: number } }>("PUT", `/integrations/models/${id}`, b),
   removeProvider: (id: string) => request<{ ok: boolean; models: ProviderInfo[] }>("DELETE", `/integrations/models/${id}`),
+  models: () => request<ModelsReport>("GET", "/models"),
   testModel: (model: string) => request<{ ok: boolean; reply?: string; error?: string; ms: number }>("POST", "/integrations/models/test", { model }),
   jobs: () => request<JobSummary[]>("GET", "/jobs"),
   job: (id: string) => request<JobSummary>("GET", `/jobs/${id}`),
@@ -61,7 +67,12 @@ export const api = {
   revertChange: (jobId: string, changeId: string) => request<Record<string, unknown>>("POST", `/jobs/${jobId}/changes/${changeId}/revert`),
   linkHosting: (siteId: string) => request<Site>("POST", `/sites/${siteId}/link-hosting`),
 
-  integrations: () => request<{ hostinger: HostingerHealth; models: ProviderInfo[]; defaultModel: string }>("GET", "/integrations"),
+  integrations: () => request<{ hostinger: HostingerHealth; models: ProviderInfo[]; defaultModel: string; pagespeed?: { keySource: "env" | "saved" | "none" } }>("GET", "/integrations"),
+  savePagespeedKey: (apiKey: string) => request<{ ok: boolean; pagespeed: { keySource: "env" | "saved" | "none" } }>("PUT", "/integrations/pagespeed", { apiKey }),
+  removePagespeedKey: () => request<{ ok: boolean; pagespeed: { keySource: "env" | "saved" | "none" } }>("DELETE", "/integrations/pagespeed"),
+  speedHistory: (siteId: string, url?: string) => request<{ runs: SpeedRunSummary[]; google: { keySource: "env" | "saved" | "none" }; local: boolean }>("GET", `/sites/${siteId}/pagespeed${url ? `?url=${encodeURIComponent(url)}` : ""}`),
+  startSpeed: (siteId: string, url: string, device: "mobile" | "desktop" | "both") => request<SpeedRunSummary>("POST", `/sites/${siteId}/pagespeed`, { url, device }),
+  speedRun: (siteId: string, runId: string) => request<SpeedRun>("GET", `/sites/${siteId}/pagespeed/${runId}`),
   testHostinger: () => request<HostingerHealth>("POST", "/integrations/hostinger/test"),
   saveHostinger: (token: string) => request<HostingerHealth>("PUT", "/integrations/hostinger", { token }),
   removeHostinger: () => request<HostingerHealth>("DELETE", "/integrations/hostinger"),

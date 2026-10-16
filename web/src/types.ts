@@ -49,9 +49,15 @@ export interface SiteStatus {
 }
 
 export interface ProviderInfo {
-  id: string; name: string; needsBaseUrl?: boolean; examples: string[]; keyHelp: string;
-  configured: boolean; keySource: "env" | "saved" | "none"; baseUrl?: string;
+  id: string; name: string; needsBaseUrl?: boolean; needsNoKey?: boolean; examples: string[]; keyHelp: string;
+  configured: boolean; keySource: "env" | "saved" | "none" | "cli"; baseUrl?: string;
+  /** Only the Claude CLI provider: whether the CLI on the backend machine is installed and signed in. */
+  cli?: { installed: boolean; version?: string; loggedIn: boolean; authMethod?: string; error?: string };
 }
+
+/** One model the person can pick right now, e.g. "claudecli:sonnet" or "openai:gpt-5.5". */
+export interface ModelChoice { id: string; provider: string; providerName: string; model: string }
+export interface ModelsReport { defaultModel: string; providers: ProviderInfo[]; choices: ModelChoice[] }
 
 export interface AssistantInfo { botName?: string; welcome?: string; instructions?: string; model?: string; approvalMode?: ApprovalMode; accent?: string }
 
@@ -76,5 +82,11 @@ export type TimelineItem =
   | { kind: "error"; seq: number; text: string };
 
 export interface TemplateUse { post: number; title: string; url: string; status: string; count: number; in: string[] }
-export interface TemplateRow { id: string; shortcode: string; title: string; params: string; list: boolean; usedOn: TemplateUse[]; renderedAt: Array<{ path: string; last: string }> }
+export interface TemplateRow {
+  id: string; shortcode: string; title: string; params: string; list: boolean;
+  usedOn: TemplateUse[]; renderedAt: Array<{ path: string; last: string }>;
+  /** The layouts this template has (its "variant" attribute), and where the site renders one on its own. */
+  variants?: string[];
+  preview?: string;
+}
 export interface TemplatesReport { ok: boolean; active: boolean; version?: string; components: TemplateRow[]; note?: string; error?: string; howToCheck?: string }

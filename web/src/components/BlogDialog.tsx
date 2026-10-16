@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type MediaItem, type TermItem } from "../api";
 import { Icon } from "../icons";
-import { LENGTHS, TONES, blogPrompt, type BlogRequest } from "../blog";
+import { LENGTHS, MAX_CATEGORIES, TONES, blogPrompt, cleanCategoryName, existingCategory, type BlogRequest } from "../blog";
 
 /**
  * "New blog post": the person gives a title (and optionally tone, length, image); the assistant writes the rest.
@@ -18,10 +18,37 @@ export function BlogDialog({ siteId, initialTitle = "", onClose, onSubmit }: {
   const titleRef = useRef<HTMLInputElement>(null);
   const [cats, setCats] = useState<TermItem[] | null>(null);
   useEffect(() => { api.terms(siteId).then((t) => setCats(t.categories), () => setCats([])); }, [siteId]);
+  const [newCat, setNewCat] = useState("");
+  const [newCatNote, setNewCatNote] = useState("");
+  const picked = (x: BlogRequest) => (x.categories?.length ?? 0) + (x.newCategories?.length ?? 0);
   const toggleCat = (name: string) => setR((x) => {
     const on = x.categories ?? [];
-    return { ...x, categories: on.includes(name) ? on.filter((n) => n !== name) : [...on, name].slice(-2) };
+    if (on.includes(name)) return { ...x, categories: on.filter((n) => n !== name) };
+    const nw = x.newCategories ?? [];
+    // keep at most MAX_CATEGORIES in total: drop the oldest pick (new ones first, they are easy to type again)
+    const all = [...nw.map((n) => ({ n, isNew: true })), ...on.map((n) => ({ n, isNew: false })), { n: name, isNew: false }].slice(-MAX_CATEGORIES);
+    return { ...x, categories: all.filter((a) => !a.isNew).map((a) => a.n), newCategories: all.filter((a) => a.isNew).map((a) => a.n) };
   });
+  function addNewCat() {
+    const name = cleanCategoryName(newCat);
+    setNewCatNote("");
+    if (!name) return;
+    const hit = existingCategory(cats ?? [], name);
+    if (hit) { // already on the site: pick it instead of creating a duplicate
+      if (!r.categories?.includes(hit.name)) toggleCat(hit.name);
+      setNewCatNote(`“${hit.name}” already exists, so it is selected.`);
+      setNewCat("");
+      return;
+    }
+    setR((x) => {
+      const nw = (x.newCategories ?? []).filter((n) => n.toLowerCase() !== name.toLowerCase());
+      const on = x.categories ?? [];
+      const all = [...on.map((n) => ({ n, isNew: false })), ...nw.map((n) => ({ n, isNew: true })), { n: name, isNew: true }].slice(-MAX_CATEGORIES);
+      return { ...x, categories: all.filter((a) => !a.isNew).map((a) => a.n), newCategories: all.filter((a) => a.isNew).map((a) => a.n) };
+    });
+    setNewCat("");
+  }
+  const removeNewCat = (name: string) => setR((x) => ({ ...x, newCategories: (x.newCategories ?? []).filter((n) => n !== name) }));
   const set = <K extends keyof BlogRequest>(k: K, v: BlogRequest[K]) => setR((x) => ({ ...x, [k]: v }));
   useEffect(() => { titleRef.current?.focus(); }, []);
 
@@ -102,7 +129,24 @@ export function BlogDialog({ siteId, initialTitle = "", onClose, onSubmit }: {
               ))}
             </div>
           )}
-          <p className="muted small">{r.categories?.length ? "The post goes into the chosen categories." : "None chosen: the assistant picks the most relevant existing category."}</p>
+          {(r.newCategories?.length ?? 0) > 0 && (
+            <div className="seg" role="group" aria-label="New categories">
+              {r.newCategories!.map((n) => (
+                <button type="button" key={n} className="on" aria-label={`Remove new category ${n}`} onClick={() => removeNewCat(n)}>
+                  {n} <span className="muted">new</span> <Icon.Close size={12} />
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="blog-newcat">
+            <input value={newCat} onChange={(e) => setNewCat(e.target.value)} maxLength={60} placeholder="Add a new category…" aria-label="New category name"
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addNewCat(); } }} />
+            <button type="button" className="btn" disabled={!cleanCategoryName(newCat)} onClick={addNewCat}>Add</button>
+          </div>
+          {newCatNote && <p className="muted small" role="status">{newCatNote}</p>}
+          <p className="muted small">{picked(r)
+            ? `The post goes into the chosen categor${picked(r) === 1 ? "y" : "ies"}${r.newCategories?.length ? "; new ones are created with the post" : ""} (at most ${MAX_CATEGORIES}).`
+            : "None chosen: the assistant picks the most relevant existing category."}</p>
           <label className="check"><input type="checkbox" checked={!!r.allowNewTerms} onChange={(e) => set("allowNewTerms", e.target.checked)} /> Allow new categories and tags without asking me</label>
           <p className="muted small">{r.allowNewTerms ? "New ones are added when nothing existing fits." : "If a new category or tag would fit better, the assistant asks you first."}</p>
         </fieldset>

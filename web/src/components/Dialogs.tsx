@@ -41,19 +41,68 @@ export function SiteDialog({ onClose, onAdded }: { onClose: () => void; onAdded:
  * Settings → Integrations → Hostinger. Paste an API token, the backend saves it (never sent back to the browser),
  * connects to the Hostinger MCP server and runs a health check. Sites on the account are linked to their folder.
  */
-export function IntegrationsDialog({ sites, onClose, onSites, initialTab = "models" }: { sites: Site[]; onClose: () => void; onSites: () => void; initialTab?: "models" | "hostinger" }) {
-  const [tab, setTab] = useState(initialTab);
+export function IntegrationsDialog({ sites, onClose, onSites, initialTab = "models" }: { sites: Site[]; onClose: () => void; onSites: () => void; initialTab?: "models" | "hostinger" | "pagespeed" }) {
+  const [tab, setTab] = useState<"models" | "hostinger" | "pagespeed">(initialTab);
   return (
     <div className="overlay" onMouseDown={onClose}>
       <div className="dialog wide" onMouseDown={(e) => e.stopPropagation()}>
         <div className="rtabs dialog-tabs" role="tablist">
           <button role="tab" className={tab === "models" ? "on" : ""} onClick={() => setTab("models")}><Icon.Sparkle size={15} /> AI models</button>
           <button role="tab" className={tab === "hostinger" ? "on" : ""} onClick={() => setTab("hostinger")}><Icon.Plug size={15} /> Hostinger</button>
+          <button role="tab" className={tab === "pagespeed" ? "on" : ""} onClick={() => setTab("pagespeed")}><Icon.Gauge size={15} /> PageSpeed</button>
         </div>
-        {tab === "models" ? <ModelsSection /> : <HostingerSection sites={sites} onSites={onSites} />}
+        {tab === "models" ? <ModelsSection /> : tab === "hostinger" ? <HostingerSection sites={sites} onSites={onSites} /> : <PagespeedSection />}
         <div className="dialog-actions"><button className="btn" onClick={onClose}>Close</button></div>
       </div>
     </div>
+  );
+}
+
+/**
+ * PageSpeed: a Google API key for PageSpeed Insights (free; without one Google allows only a few tests). Stored on the
+ * backend only. Sites on localhost do not need it: they are tested with this computer's Chrome / Edge.
+ */
+function PagespeedSection() {
+  const [source, setSource] = useState<"env" | "saved" | "none" | null>(null);
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [note, setNote] = useState("");
+  useEffect(() => { api.integrations().then((r) => setSource(r.pagespeed?.keySource ?? "none")).catch((e) => setErr(e.message)); }, []);
+  async function run(fn: () => Promise<{ pagespeed: { keySource: "env" | "saved" | "none" } }>, done: string) {
+    setBusy(true); setErr(""); setNote("");
+    try { const r = await fn(); setSource(r.pagespeed.keySource); setKey(""); setNote(done); }
+    catch (e) { setErr((e as Error).message); }
+    finally { setBusy(false); }
+  }
+  const STATE = { env: "From the backend .env file", saved: "Saved on the backend", none: "Not set" } as const;
+  return (
+    <>
+      <div className="int-head">
+        <span className="int-logo"><Icon.Gauge size={18} /></span>
+        <div className="grow"><h2>Google PageSpeed</h2><p className="muted small">Speed reports in the widget's Speed tab and in chat. Free: create an API key in Google Cloud Console and enable the “PageSpeed Insights API” for it.</p></div>
+        <span className={`int-state ${source === "env" || source === "saved" ? "ok" : "off"}`}>{source === null ? <span className="spin" /> : source === "none" ? "No key" : "Key set"}</span>
+      </div>
+      <div className="int-facts">
+        <div><span>API key</span><b>{source ? STATE[source] : "…"}</b></div>
+        <div><span>Without a key</span><b>Works, but Google allows only a few tests</b></div>
+        <div><span>Local sites</span><b>localhost is tested with this computer's Chrome / Edge (no key needed)</b></div>
+      </div>
+      {source !== "env" && (
+        <form className="int-form" onSubmit={(e) => { e.preventDefault(); if (key.trim()) void run(() => api.savePagespeedKey(key.trim()), "Saved. The next report uses this key."); }}>
+          <label>{source === "saved" ? "Replace API key" : "API key"}
+            <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="AIza…" autoComplete="off" />
+          </label>
+          <p className="muted small">Stored only on your backend, never in this browser.</p>
+          <div className="dialog-actions left">
+            <button className="btn primary" disabled={busy || !key.trim()}>{busy ? "Saving…" : "Save key"}</button>
+            {source === "saved" && <button type="button" className="btn ghost danger" disabled={busy} onClick={() => void run(() => api.removePagespeedKey(), "Key removed.")}>Remove</button>}
+          </div>
+        </form>
+      )}
+      {err && <div className="banner error">{err}</div>}
+      {note && <div className="banner ok">{note}</div>}
+    </>
   );
 }
 
@@ -191,7 +240,7 @@ function HostingerSection({ sites, onSites }: { sites: Site[]; onSites: () => vo
             {sites.map((s) => (
               <div key={s.id} className="int-site">
                 <Icon.Globe size={15} />
-                <div className="grow"><b>{s.name}</b><small>{s.hosting ? <><Icon.Folder size={11} /> {s.hosting.domain}/public_html{s.hosting.dir && s.hosting.dir !== "/" ? s.hosting.dir : ""}</> : "Not linked: only content edits (no CSS / theme files)"}</small></div>
+                <div className="grow"><b>{s.name}</b><small>{s.hosting ? <><Icon.Folder size={11} /> {s.hosting.domain}/public_html{s.hosting.dir && s.hosting.dir !== "/" ? "/" + s.hosting.dir.replace(/^\/+/, "") : ""}</> : "Not linked: only content edits (no CSS / theme files)"}</small></div>
                 {s.hosting ? <span className="int-state ok sm">Linked</span>
                   : <button className="btn sm" disabled={!h?.connected || !!busy} onClick={() => void link(s)}>{busy === "link:" + s.id ? "Linking…" : "Link"}</button>}
               </div>

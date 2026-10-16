@@ -5,8 +5,25 @@ export interface BlogRequest {
   imageIdea?: string; mediaId?: number; mediaAlt?: string; notes?: string;
   /** Existing categories the person picked (empty = the assistant picks the most relevant one). */
   categories?: string[];
+  /** New categories the person typed in the form: they asked for them, so they are created. */
+  newCategories?: string[];
   /** The person allows new categories / tags when no existing one fits (otherwise they are asked first). */
   allowNewTerms?: boolean;
+}
+
+/** At most this many categories per post (existing + new). */
+export const MAX_CATEGORIES = 2;
+
+/** A new category name as typed: trimmed, single spaces, at most 60 characters; "" when unusable. */
+export function cleanCategoryName(name: string): string {
+  const n = name.replace(/\s+/g, " ").trim().slice(0, 60);
+  return /[\p{L}\p{N}]/u.test(n) ? n : "";
+}
+
+/** The existing category with this name (ignoring case and spaces), so a typed name is never created twice. */
+export function existingCategory<T extends { name: string; slug?: string }>(list: T[], name: string): T | undefined {
+  const k = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  return list.find((c) => k(c.name) === k(name) || (c.slug != null && k(c.slug) === k(name)));
 }
 
 export const TONES = ["Professional", "Friendly", "Casual", "Formal", "Persuasive"] as const;
@@ -25,7 +42,10 @@ export function blogPrompt(r: BlogRequest): string {
     `Length: about ${r.words} words`,
     `Featured image: ${image}`,
     ...(r.notes?.trim() ? [`Notes: ${r.notes.trim()}`] : []),
-    r.categories?.length ? `Category: ${r.categories.join(", ")} (chosen by me)` : "Category: pick the most relevant existing one",
+    r.categories?.length || r.newCategories?.length
+      ? `Category: ${[...(r.categories ?? []), ...(r.newCategories ?? [])].join(", ")} (chosen by me)`
+      : "Category: pick the most relevant existing one",
+    ...(r.newCategories?.length ? [`New category to create: ${r.newCategories.join(", ")} - I agree to add ${r.newCategories.length === 1 ? "it" : "them"}.`] : []),
     r.allowNewTerms ? "New categories and tags: allowed if no existing one fits - I agree to add them." : "New categories and tags: ask me first; until then use existing ones.",
     "Add an SEO meta description, an excerpt and tags.",
   ].join("\n");

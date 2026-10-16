@@ -5,6 +5,7 @@ import { Composer } from "../components/Composer";
 import { BlogDialog } from "../components/BlogDialog";
 import { Transcript } from "../components/Messages";
 import { ApprovalModePicker } from "../components/RequestChanges";
+import { ModelPicker } from "../components/ModelPicker";
 import { Icon } from "../icons";
 import type { ApprovalMode, AssistantInfo, JobEvent, JobSummary, Resolved, Site, TimelineItem, UploadedFile } from "../types";
 import { titleOf, writeCount } from "../util";
@@ -12,6 +13,7 @@ import { elementContext, type PickedElement } from "./element";
 import { ElementPanel } from "./ElementPanel";
 import { SiteChanges } from "./SiteChanges";
 import { MorePanel } from "./MorePanel";
+import { SpeedPanel } from "./SpeedPanel";
 import { connectParent, uploadToMedia } from "./parent";
 import { VoiceAgent, type VoiceState } from "./voice";
 import { VoiceBar } from "./VoiceBar";
@@ -39,7 +41,7 @@ interface WidgetConfig {
   /** Plugin 0.11+: images from this computer can be saved into the Media Library (and the account may upload). */
   canUpload?: boolean; maxUpload?: number;
 }
-type Tab = "chat" | "actions" | "changes" | "more";
+type Tab = "chat" | "actions" | "speed" | "changes" | "more";
 
 function readConfig(): WidgetConfig | null {
   try {
@@ -115,7 +117,12 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   const [jobId, setJobId] = useState(store.get(jobKey) ?? "");
   const [events, setEvents] = useState<JobEvent[]>([]);
   const [tab, setTabState] = useState<Tab>(cfg.tab ?? "chat");
+  // The Speed tab stays mounted once opened, so a report (or a running scan) survives switching tabs.
+  const [speedSeen, setSpeedSeen] = useState(tab === "speed");
+  useEffect(() => { if (tab === "speed") setSpeedSeen(true); }, [tab]);
   const [mode, setMode] = useState<ApprovalMode>((store.get("lcw_mode") as ApprovalMode) || cfg.approvalMode || "request");
+  // Which model answers this chat: "" = the one WordPress / the backend chose. Remembered in this browser.
+  const [pick, setPick] = useState<string>(store.get("lcw_model") ?? "");
   const [selected, setSelected] = useState<PickedElement | null>(null);
   const [resolved, setResolved] = useState<Resolved | null>(null);
   const [resolving, setResolving] = useState(false);
@@ -226,8 +233,10 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       baseline.current = writes;
       setHistoryKey((k) => k + 1);
       store.sset(`lcw_reloaded:${jobId}`, String(writes));
-      const reload = () => post({ type: "lc:reload", tab });
-      if (voiceOn) void voice.whenIdle().then(reload); else reload(); // let it finish speaking; voice mode resumes after the reload
+      // Show the change in place: the page is patched where it differs, with no reload, no white flash and no lost
+      // scroll position. The widget only falls back to a full reload if the page says it could not do it.
+      const refresh = () => post({ type: "lc:soft-refresh", tab, selector: lastSection.current });
+      if (voiceOn) void voice.whenIdle().then(refresh); else refresh();
     }
   }, [writes, working, jobId, autoRefresh, post, tab, voiceOn, voice]);
 
@@ -236,9 +245,19 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     say(`Saved as a draft: ${summary.length > 60 ? summary.slice(0, 59) + "…" : summary}`);
     setHistoryKey((k) => k + 1);
     post({ type: "lc:drafts-changed" });
-    if (autoRefresh) setTimeout(() => post({ type: "lc:reload", tab }), 600);
+    if (autoRefresh) setTimeout(() => post({ type: "lc:soft-refresh", tab }), 400);
   }
   // ---- eyes: answer "look at the page" requests from the assistant with THIS browser (plugin 0.9.2+ on the page)
+  // The selector of the section the assistant last placed or changed: the soft refresh scrolls there and outlines it.
+  const lastSection = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    for (let i = timeline.length - 1; i >= 0; i--) {
+      const it: any = timeline[i];
+      const sel = it?.kind === "tool" ? (it.ui?.selector ?? it.ui?.usedTemplate?.selector) : undefined;
+      if (typeof sel === "string" && sel) { lastSection.current = sel; return; }
+    }
+  }, [timeline]);
+
   const [looking, setLooking] = useState(0);
   const eyesWaiting = useRef(new Map<string, (r: { ok: boolean; result?: any; error?: string }) => void>());
   const eyesOk = (() => { const v = (cfg.widgetVersion ?? "").split(".").map(Number); return v[0] > 0 || (v[1] ?? 0) > 9 || ((v[1] ?? 0) === 9 && (v[2] ?? 0) >= 2); })();
@@ -268,7 +287,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   async function send(prompt: string, fileIds: string[], extraContext?: string) {
     setProblem("");
     try {
-      const args = { prompt, fileIds, pageUrl: cfg.pageUrl, approvalMode: mode, extraContext };
+      const args = { prompt, fileIds, pageUrl: cfg.pageUrl, approvalMode: mode, extraContext, ...(pick ? { model: pick } : {}) };
       if (jobId && paused) await api.message(jobId, { ...args, kind: pauseKind });
       else if (jobId && (status === "completed" || status === "failed")) await api.message(jobId, args);
       else { const j = await api.createJob(site.id, args); freshJob.current = j.id; setJobId(j.id); }
@@ -426,7 +445,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
         <button role="tab" aria-selected={tab === "chat"} className={tab === "chat" ? "on" : ""} onClick={() => setTab("chat")}><Icon.Chat size={15} /> Chat</button>
         <button role="tab" aria-selected={tab === "actions"} className={tab === "actions" ? "on" : ""} onClick={() => setTab("actions")}><Icon.Cursor size={15} /> Edit{selected && <span className="qa-dot" />}</button>
         <button role="tab" aria-selected={tab === "changes"} className={tab === "changes" ? "on" : ""} onClick={() => setTab("changes")}><Icon.List size={15} /> Changes</button>
-        <button role="tab" aria-selected={tab === "more"} className={tab === "more" ? "on" : ""} onClick={() => setTab("more")}><Icon.More size={15} /> More</button>
+        <button role="tab" aria-selected={tab === "more" || tab === "speed"} className={tab === "more" || tab === "speed" ? "on" : ""} onClick={() => setTab("more")}><Icon.More size={15} /> More</button>
       </nav>
 
       {problem && <div className="banner error w-banner"><span>{problem}</span><button onClick={() => setProblem("")}><Icon.Close size={13} /></button></div>}
@@ -435,6 +454,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
         {tab === "chat" && (
           <div className="w-chat">
             <Transcript items={timeline} model={name} busy={answering} working={working} welcome={welcome}
+              onAsk={(t) => void send(t, [])}
               onAnswer={(a, ok, r) => void answer(a, ok, r)} onCopy={(t) => { navigator.clipboard?.writeText(t); say("Copied"); }}
               onEdit={() => {}} onRetry={(t) => { if (t && (status === "completed" || status === "failed")) void send(t, []); }}
               onOpen={(url) => post({ type: "lc:navigate", url })} />
@@ -454,7 +474,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
               attachNote={cfg.canUpload ? <label className="att-save"><input type="checkbox" checked={saveToLibrary} onChange={(e) => { setSaveToLibrary(e.target.checked); store.set("lcw_save_media", e.target.checked ? "1" : "0"); }} /> Also save to the Media Library</label> : undefined}
               onClearContext={() => {}} onSend={sendFromComposer}
               chips={selected ? <span className="chip"><Icon.Cursor size={12} /> {selected.label}<button aria-label="forget selection" onClick={() => setSelected(null)}><Icon.Close size={11} /></button></span> : undefined}
-              extra={<ApprovalModePicker mode={mode} onChange={(m) => void changeMode(m)} />} />
+              extra={<><ApprovalModePicker mode={mode} onChange={(m) => void changeMode(m)} /><ModelPicker value={pick} fallback={info.model} onChange={(id) => { setPick(id); store.set("lcw_model", id || null); }} /></>} />
           </div>
         )}
         {tab === "actions" && (
@@ -468,7 +488,14 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
         )}
         {tab === "more" && (
           <div className="w-scroll pad">
-            <MorePanel disabled={working || waiting} onBlog={(p) => startBlog(p, [])} onBlogOptions={(title) => setBlogOpen({ title })} />
+            <MorePanel disabled={working || waiting} onBlog={(p) => startBlog(p, [])} onBlogOptions={(title) => setBlogOpen({ title })}
+              siteId={site.id} pageUrl={cfg.pageUrl || cfg.siteUrl} onSpeed={() => setTab("speed")} />
+          </div>
+        )}
+        {speedSeen && (
+          <div className="w-scroll pad" style={tab === "speed" ? undefined : { display: "none" }}>
+            <button type="button" className="sp-back more-back" onClick={() => setTab("more")}><Icon.ChevronRight size={13} /> More</button>
+            <SpeedPanel siteId={site.id} pageUrl={cfg.pageUrl || cfg.siteUrl} siteName={site.name} disabled={working || waiting} onAsk={(p) => void send(p, [])} />
           </div>
         )}
         {tab === "changes" && (

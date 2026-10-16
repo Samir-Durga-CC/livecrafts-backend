@@ -9,6 +9,7 @@ import { Transcript } from "./components/Messages";
 import { Sidebar } from "./components/Sidebar";
 import { SitesDialog } from "./components/SitesDialog";
 import { ApprovalModePicker } from "./components/RequestChanges";
+import { ModelPicker, shortLabel } from "./components/ModelPicker";
 import { Icon } from "./icons";
 import type { ApprovalMode, ChangeRecord, JobEvent, JobSummary, Site } from "./types";
 import { WRITE_TOOLS, groupRequests, prefs, titleOf, writeCount, type RequestGroup } from "./util";
@@ -30,6 +31,8 @@ export default function App() {
   const [live, setLive] = useState(true);
   const [dialog, setDialog] = useState<"" | "site" | "sites" | "token" | "integrations">("");
   const [mode, setMode] = useState<ApprovalMode>(() => (localStorage.getItem("lc_mode") as ApprovalMode) || "request");
+  // Which model answers: "" = the backend default (or the site's own, set in WordPress). Remembered per browser.
+  const [pick, setPick] = useState<string>(() => localStorage.getItem("lc_model") ?? "");
   const [panelTab, setPanelTab] = useState<PanelTab>(() => (localStorage.getItem("lc_tab") as PanelTab) || "preview");
   const [hostingerOk, setHostingerOk] = useState(false);
   const [baseLedger, setBaseLedger] = useState<ChangeRecord[]>([]);
@@ -111,14 +114,15 @@ export default function App() {
   useEffect(() => { if (!working) setStopping(false); if (paused) setPauseKind("note"); }, [working, paused]);
   const stop = () => { setStopping(true); api.stop(jobId).catch((e) => { setStopping(false); guard(e); }); };
   const cont = () => api.resume(jobId).catch(guard);
-  const model = health?.model ?? "model";
+  const model = pick ? shortLabel(pick) : health?.model ?? "model";
+  const choose = (id: string) => { setPick(id); if (id) localStorage.setItem("lc_model", id); else localStorage.removeItem("lc_model"); };
   const title = job ? titleOf(job, titles) : "New chat";
 
   async function send(prompt: string, fileIds: string[]) {
     setProblem("");
     if (!siteId) { setDialog("site"); return; }
     try {
-      const args = { prompt, fileIds, pageUrl: ctx.pageUrl, selectedTarget: ctx.selectedTarget, approvalMode: mode };
+      const args = { prompt, fileIds, pageUrl: ctx.pageUrl, selectedTarget: ctx.selectedTarget, approvalMode: mode, ...(pick ? { model: pick } : {}) };
       if (jobId && paused) await api.message(jobId, { ...args, kind: pauseKind });
       else if (jobId && (status === "completed" || status === "failed")) await api.message(jobId, args);
       else { const j = await api.createJob(siteId, args); setJobId(j.id); }
@@ -203,6 +207,7 @@ export default function App() {
           <section className="chat-card">
             {problem && <div className="banner error top"><span>{problem}</span><button onClick={() => setProblem("")}><Icon.Close size={14} /></button></div>}
             <Transcript items={timeline} model={model} busy={answering} working={working} welcome={welcome}
+              onAsk={(t) => void send(t, [])}
               onAnswer={(a, ok, r) => void answer(a, ok, r)} onCopy={copy} onOpen={openInPreview}
               onEdit={(t) => setDraft({ text: t, n: Date.now() })}
               onRetry={(t) => { if (t && (status === "completed" || status === "failed")) void send(t, []); }} />
@@ -212,7 +217,7 @@ export default function App() {
               placeholder={waiting ? "Waiting for your approval above…" : working ? (stopping ? "Stopping…" : "Working… (press Stop to pause)") : paused ? (pauseKind === "edit" ? "Type your corrected request…" : "Type a note for the assistant…") : site ? "Ask Livecrafts to change anything on your site…" : "Connect a site first"}
               onClearContext={(k) => setCtx((c) => ({ ...c, [k]: undefined }))} onSend={send}
               tools={<button className="mode" title="New blog post: give a title, the assistant writes the draft" onClick={() => setBlogOpen(true)} disabled={!siteId || working || waiting}><Icon.Page size={17} /></button>}
-              extra={<><ApprovalModePicker mode={mode} onChange={(m) => void changeMode(m)} /><span className="model-pill" title="Default model (LC_MODEL). A site can choose its own in WordPress → Settings → Livecrafts Assistant."><Icon.Sparkle size={13} /> {model}</span></>} />
+              extra={<><ApprovalModePicker mode={mode} onChange={(m) => void changeMode(m)} /><ModelPicker value={pick} onChange={choose} fallback={health?.model} /></>} />
           </section>
         </main>
 

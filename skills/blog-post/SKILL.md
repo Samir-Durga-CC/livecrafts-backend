@@ -12,21 +12,42 @@ whole post as a DRAFT. Nothing is published until a person deploys.
 1. **Read the request.** Title (keep the person's wording; fix only obvious typos), tone (default: professional and
    friendly), length (default: about 800 words), image choice (see step 4). Language: the language of the title,
    unless the person says otherwise.
-2. **Learn the blog.** `list_terms` for the categories and tags in use. `find_posts` type posts for 2-3 recent posts
-   and `read_post` one of them when you need the house style (headings, length, voice). Keep it quick.
+2. **Learn the site and the blog.**
+   - `site_profile` once: the page builder (Elementor, Divi, Beaver, WPBakery, Bricks, block theme ...), the brand
+     (`brand.colors` / `brand.fonts` from the theme, or `elementor.globalColors` / `globalFonts`) and `blogPosts`
+     (how the existing posts are built and whether they have featured images).
+   - `list_terms` for the categories and tags in use.
+   - `find_posts` type posts for 2-3 recent posts and `read_post` one of them when you need the house style
+     (headings, length, voice). Keep it quick.
 3. **Write the post** (step "Writing" below).
 4. **Featured image** - exactly one of:
    - The person attached an image -> `upload_media_from_chat` with a descriptive title and alt text.
    - The person picked a Media Library image (an id is given) -> use that id. "Use an image from the library" without an
      id -> `find_media` with the topic and pick the most fitting one.
    - The person asked for an AI image, or said nothing about the image -> `generate_image` ONCE: shape landscape, a
-     concrete prompt (subject, setting, style matching the site, mood, colours), no text in the picture. Alt text says
-     what the picture shows (not "featured image").
+     concrete prompt (subject, setting, style matching the site, mood) that names the brand's 2-3 main colours from
+     `site_profile` as the colour scheme (e.g. "palette of deep navy #1d3557 and warm orange #e76f51"), no text, no
+     logos in the picture. Alt text says what the picture shows (not "featured image").
    - The person said no image -> skip.
 5. **Save.** `create_blog_post` with title, content, excerpt, metaDescription, categories, tags, featuredImageId
    (and approvedNewTerms only for new names the person already agreed to).
-6. **Report** in 3-5 short lines: the title, the length in words, the category and tags used, the image, the preview
+6. **Check the result.** `create_blog_post` opens the new draft in a real browser (desktop and mobile) and returns
+   `verification`. If a check failed, do NOT report success: say what failed. "content" failed = this theme's / builder's
+   post template does not show the post content (e.g. an Elementor Pro single-post template without a Post Content
+   widget): tell the person, the post itself is fine. A failed title / PHP / layout check: fix it or tell the person.
+7. **Report** in 3-5 short lines: the title, the length in words, the category and tags used, the image, the preview
    link - and the question about suggested new categories / tags, if any. Say it is a draft: they can refine it by chat, voice or by clicking on it, and Deploy publishes it.
+
+## Builders and brand (every site)
+- Write the article as **core blocks** (below) on every site, whatever the builder. Every theme and page builder
+  (Elementor, Divi, Beaver, WPBakery, Bricks, Oxygen, block themes, classic themes) shows a post through its
+  single-post template, which prints the post content: core blocks render there and take the theme's own fonts,
+  colours, spacing and link / button styles. That IS the brand: never add inline colours, fonts or sizes.
+- Do not build the post in Elementor / Divi / another builder, even when `blogPosts.built_with` shows the old posts
+  were: a builder layout per post breaks the site's post template and blog listings. Mention it in one line if the
+  existing posts are builder-made ("the older posts use custom Elementor layouts; this one uses your post template").
+- A call to action at the end may use one core button (below) with no colour attributes: it takes the theme's button
+  style. Link it only to a real page of the site (`list_pages`), never an invented address.
 
 ## Writing
 - **Structure:** a hook intro of 2-3 sentences that says what the reader gets; 3-6 sections with `h2` headings (use
@@ -45,7 +66,8 @@ whole post as a DRAFT. Nothing is published until a person deploys.
   it - it saves the post with the most relevant existing category and returns `suggestedNewTerms`.
 - **Tags:** 3-6 short topic tags, existing spellings first. New tag names are handled the same way (suggested, not created).
 - **New categories / tags need the person's yes.** Put a name in `approvedNewTerms` only when the person agreed
-  (the request says new ones are allowed, or they answered yes). After saving, if `suggestedNewTerms` came back, ASK in
+  (the request says new ones are allowed, they answered yes, or the request says "New category to create: X - I
+  agree": then X goes in both `categories` and `approvedNewTerms`, spelled exactly as given). After saving, if `suggestedNewTerms` came back, ASK in
   your answer: "No existing category fits exactly - shall I add the new category X (and tags a, b)? Otherwise it stays in Y."
   On yes: `set_post_terms` with the full lists and the new names in `approvedNewTerms`.
 
@@ -75,8 +97,16 @@ whole post as a DRAFT. Nothing is published until a person deploys.
 <!-- /wp:paragraph --></blockquote>
 <!-- /wp:quote -->
 ```
-No inline styles, no classes beyond these, no images inside the article unless the person asks (the featured image
-is set separately). Escape `&` as `&amp;` in text.
+Button (call to action at the end only, a real page of the site):
+```
+<!-- wp:buttons -->
+<div class="wp-block-buttons"><!-- wp:button -->
+<div class="wp-block-button"><a class="wp-block-button__link wp-element-button" href="https://example.com/contact/">Talk to us</a></div>
+<!-- /wp:button --></div>
+<!-- /wp:buttons -->
+```
+No inline styles, no colour / font attributes, no classes beyond these, no images inside the article unless the
+person asks (the featured image is set separately). Escape `&` as `&amp;` in text.
 
 ## Changing the post afterwards
 It is a normal draft post: `read_post` then `block.text` / `block.replace` / `block.insert` for the article,

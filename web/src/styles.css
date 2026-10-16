@@ -424,6 +424,9 @@ h1, h2, h3 { margin: 0; }
 .blog-image .seg { display: flex; flex-wrap: wrap; gap: 6px; }
 .blog-image .seg button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text-2); border-radius: 999px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; min-height: 32px; }
 .blog-image .seg button.on { border-color: var(--accent-line); background: var(--accent-soft); color: var(--text); font-weight: 600; }
+.blog-newcat { display: flex; gap: 8px; margin-top: 8px; }
+.blog-newcat input { flex: 1; min-width: 0; }
+.blog-newcat .btn { height: auto; align-self: stretch; }
 .blog-upload { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .blog-upload img { width: 96px; height: 64px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); }
 .blog-upload label.btn { flex-direction: row; cursor: pointer; }

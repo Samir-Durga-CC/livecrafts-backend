@@ -11,6 +11,7 @@ import type { Job, Site } from "./types.js";
 import { hostinger, type HostingerHealth } from "./hostinger.js";
 import { secrets, type ProviderId } from "./secrets.js";
 import { PROVIDERS, providerStatus, testModel } from "./models.js";
+import { claudeCliStatus } from "./claudeCli.js";
 import { diffOf } from "./changes.js";
 import { canUseSite, verifyWidgetToken, type Caller } from "./auth.js";
 import { log } from "./usage.js";
@@ -18,8 +19,10 @@ import { eyes } from "./eyes.js";
 import { assistantSettings, forgetAssistantSettings } from "./persona.js";
 import { closeBrowser, screenshotPath } from "./browser.js";
 import { speak, transcribe, voiceInfo } from "./voice.js";
+import { defaultSpeedRuns, needsLocalRun, runSummary, runView, sameHost, type SpeedDevice, type SpeedRuns } from "./pagespeed.js";
 
-export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: FileStore) {
+export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: FileStore, opts: { speed?: SpeedRuns } = {}) {
+  const speed = opts.speed ?? defaultSpeedRuns();
   const publicSite = (s: Site) => ({ id: s.id, name: s.name, url: s.url, username: s.username, createdAt: s.createdAt, hosting: s.hosting ?? null }); // never expose the password
   let lastHealth: HostingerHealth | null = null;
   const checkHostinger = async () => (lastHealth = await hostinger.health());
@@ -48,7 +51,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     actor: caller.via === "widget" ? { token: caller.token, name: caller.user.name, login: caller.user.login } : undefined,
   });
   // What the chat inside the WordPress widget may call (with its signed per-person token).
-  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/voice\/(transcribe|speak)|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms)|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
+  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/sites|POST \/voice\/(transcribe|speak)|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms|pagespeed)|(POST \/sites\/[\w-]+\/pagespeed|GET \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+)|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
 
   async function readBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
     const chunks: Buffer[] = []; let size = 0;
@@ -139,6 +142,29 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         const list = await new Bridge(ms).mediaList(url.searchParams.get("search") || undefined, Math.max(1, Number(url.searchParams.get("page")) || 1));
         return send(res, 200, list.map((m: any) => ({ id: m.id, url: m.media_details?.sizes?.medium?.source_url ?? m.source_url, full: m.source_url, alt: m.alt_text ?? "", title: m.title?.rendered ?? "" })));
       }
+      // ---- PageSpeed reports (Google PageSpeed Insights, or Lighthouse on this machine for a local site)
+      const ps = url.pathname.match(/^\/sites\/([\w-]+)\/pagespeed(?:\/(speed_[a-f0-9]+))?$/);
+      if (ps) {
+        const ss = sites.get(ps[1]);
+        if (!ss || !canUseSite(caller, ss.id)) return send(res, 404, { error: "Unknown site" });
+        if (ps[2] && req.method === "GET") {
+          const r = speed.get(ps[2]);
+          return r && r.siteId === ss.id ? send(res, 200, runView(r)) : send(res, 404, { error: "Unknown report" });
+        }
+        if (!ps[2] && req.method === "GET") {
+          const page = url.searchParams.get("url") || undefined;
+          return send(res, 200, { runs: speed.history(ss.id, page).map(runSummary), google: { keySource: secrets.pagespeedSource() }, local: needsLocalRun(page || ss.url) });
+        }
+        if (!ps[2] && req.method === "POST") {
+          const b = await readJson(req);
+          const page = String(b.url || ss.url).trim();
+          if (!sameHost(ss.url, page)) return send(res, 400, { error: "Only pages of this site can be tested." });
+          const devices: SpeedDevice[] = b.device === "both" ? ["mobile", "desktop"] : b.device === "desktop" ? ["desktop"] : ["mobile"];
+          const busy = speed.history(ss.id, page, 1)[0];
+          if (busy?.status === "running") return send(res, 409, { error: "A report for this page is already running.", run: runSummary(busy) });
+          return send(res, 202, runSummary(speed.start(ss.id, page, devices)));
+        }
+      }
       if (route === "GET /sites") return send(res, 200, sites.list().filter((x) => canUseSite(caller, x.id)).map(publicSite));
       if (route === "POST /sites") {
         const b = await readJson(req);
@@ -168,6 +194,24 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         try { info = await new Bridge(next).ping(); } catch (e) { return send(res, 400, { error: `Could not connect with these details: ${(e as Error).message}` }); }
         sites.put(next); forgetAssistantSettings(next.id);
         return send(res, 200, { ...publicSite(next), plugin: info, widgetNote: await connectWidget(next) });
+      }
+      m = url.pathname.match(/^\/sites\/([\w-]+)\/templates\/render$/);
+      if (m && req.method === "GET") { // one template rendered with sample content (the component gallery)
+        const s = sites.get(m[1]);
+        if (!s) return send(res, 404, { error: "Unknown site" });
+        const id = String(url.searchParams.get("id") ?? "");
+        if (!/^[a-z0-9_-]{2,40}$/.test(id)) return send(res, 400, { error: "id must be a template id, e.g. testimonials" });
+        const variant = String(url.searchParams.get("variant") ?? "");
+        try { return send(res, 200, await new Bridge(s).renderTemplate(id, /^[a-z0-9_-]{0,20}$/.test(variant) ? variant : "")); }
+        catch (e) {
+          const msg = String((e as Error).message);
+          // The route only exists from plugin 0.17.3: say that, instead of showing "rest_no_route" in every tile.
+          return send(res, 502, {
+            error: /rest_no_route|404|No route was found/i.test(msg)
+              ? "This site's Livecrafts plugin is older than the gallery. Upload the latest plugin zip in WordPress → Plugins → Add New → Upload, then press Refresh."
+              : msg,
+          });
+        }
       }
       m = url.pathname.match(/^\/sites\/([\w-]+)\/templates$/);
       if (m && req.method === "GET") { // which templates of the site's template library exist and where each one is used
@@ -218,7 +262,16 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       }
 
       // ---- integrations: Hostinger (token + health check). The token is never sent back to the browser.
-      if (route === "GET /integrations") return send(res, 200, { hostinger: lastHealth ?? (await checkHostinger()), models: providerStatus(), defaultModel: config.model });
+      if (route === "GET /integrations") return send(res, 200, { hostinger: lastHealth ?? (await checkHostinger()), models: await providerStatus(), defaultModel: config.model, pagespeed: { keySource: secrets.pagespeedSource() } });
+      if (route === "PUT /integrations/pagespeed") {
+        const b = await readJson(req);
+        const key = typeof b.apiKey === "string" ? b.apiKey.trim() : "";
+        if (!/^[A-Za-z0-9_-]{20,80}$/.test(key)) return send(res, 400, { error: "That does not look like a Google API key (it starts with AIza…)." });
+        if (secrets.pagespeedSource() === "env") return send(res, 409, { error: "LC_PAGESPEED_API_KEY is set in the backend .env, which always wins. Change it there." });
+        secrets.setPagespeedKey(key);
+        return send(res, 200, { ok: true, pagespeed: { keySource: secrets.pagespeedSource() } });
+      }
+      if (route === "DELETE /integrations/pagespeed") { secrets.setPagespeedKey(""); return send(res, 200, { ok: true, pagespeed: { keySource: secrets.pagespeedSource() } }); }
 
       // ---- AI providers: keys are stored on the backend only, never sent back
       m = url.pathname.match(/^\/integrations\/models\/(openai|anthropic|openrouter|groq|custom)$/);
@@ -229,24 +282,30 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         const baseUrl = typeof b.baseUrl === "string" ? b.baseUrl.trim().replace(/\/+$/, "") : undefined;
         if (baseUrl && !/^https?:\/\//.test(baseUrl)) return send(res, 400, { error: "The address must start with http:// or https://" });
         if (apiKey && secrets.providerSource(id) === "env") return send(res, 409, { error: "This provider's key is set in the backend .env, which always wins. Change it there." });
-        const before = providerStatus().find((x) => x.id === id);
+        const before = (await providerStatus()).find((x) => x.id === id);
         secrets.setProvider(id, { ...(apiKey ? { apiKey } : {}), ...(baseUrl !== undefined ? { baseUrl } : {}) });
         const testWith = typeof b.testModel === "string" && b.testModel.trim() ? `${id}:${b.testModel.trim()}` : null;
         if (testWith) {
           const t = await testModel(testWith);
           if (!t.ok && apiKey && before?.keySource !== "saved") secrets.setProvider(id, null); // do not keep a key that does not work
           if (!t.ok) return send(res, 400, { error: t.error, test: t });
-          return send(res, 200, { ok: true, test: t, models: providerStatus() });
+          return send(res, 200, { ok: true, test: t, models: await providerStatus() });
         }
-        return send(res, 200, { ok: true, models: providerStatus() });
+        return send(res, 200, { ok: true, models: await providerStatus() });
       }
-      if (m && req.method === "DELETE") { secrets.setProvider(m[1] as ProviderId, null); return send(res, 200, { ok: true, models: providerStatus() }); }
+      if (m && req.method === "DELETE") { secrets.setProvider(m[1] as ProviderId, null); return send(res, 200, { ok: true, models: await providerStatus() }); }
       if (route === "POST /integrations/models/test") {
         const b = await readJson(req);
         if (!b.model) return send(res, 400, { error: "model is required (provider:model)." });
         return send(res, 200, await testModel(String(b.model)));
       }
-      if (route === "GET /models") return send(res, 200, { defaultModel: config.model, providers: PROVIDERS.map((p) => ({ ...p, configured: providerStatus().find((x) => x.id === p.id)?.configured })) });
+      if (route === "GET /models") {
+        const st = await providerStatus();
+        const providers = PROVIDERS.map((p) => ({ ...p, configured: st.find((x) => x.id === p.id)?.configured, cli: (st.find((x) => x.id === p.id) as any)?.cli }));
+        // Ready to pick right now: every example model of a provider that is configured, "provider:model".
+        const choices = providers.filter((p) => p.configured).flatMap((p) => p.examples.map((model) => ({ id: `${p.id}:${model}`, provider: p.id, providerName: p.name, model })));
+        return send(res, 200, { defaultModel: config.model, providers, choices });
+      }
       if (route === "POST /integrations/hostinger/test") return send(res, 200, await checkHostinger());
       if (route === "PUT /integrations/hostinger") {
         const b = await readJson(req);
@@ -393,10 +452,25 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(im
   });
   const shutdown = async () => { await closeBrowser(); await hostinger.reset(); process.exit(0); };
   process.on("SIGINT", shutdown);
+  // A crash is written to data/backend-errors.log (the window may be closed before anyone reads it). A failed promise
+  // nobody waited for (e.g. a browser that could not be cleaned up) is logged but does not stop the backend.
+  const crashLog = (kind: string, e: unknown) => {
+    const line = `[${new Date().toISOString()}] ${kind}: ${(e as Error)?.stack ?? String(e)}\n`;
+    try { fs.mkdirSync(config.dataDir, { recursive: true }); fs.appendFileSync(path.join(config.dataDir, "backend-errors.log"), line); } catch { /* disk full / read-only: console only */ }
+    console.error(line);
+  };
+  process.on("unhandledRejection", (e) => crashLog("unhandled promise rejection (backend keeps running)", e));
+  process.on("uncaughtException", (e) => { crashLog("CRASH", e); process.exit(1); });
   process.on("SIGTERM", shutdown);
   server.listen(config.port, config.host, () => {
     console.log(`Livecrafts backend on http://${config.host}:${config.port}  (model: ${config.model})`);
     if (!config.apiToken) console.log("WARNING: LC_API_TOKEN is not set - fine on localhost, set it before exposing this server.");
-    if (!process.env.OPENAI_API_KEY && !config.model.includes("/")) console.log("WARNING: OPENAI_API_KEY is not set - jobs will fail until it is.");
+    if (config.model.startsWith("claudecli:")) {
+      void claudeCliStatus(true).then((c) => console.log(c.installed && c.loggedIn
+        ? `Claude CLI ready (${c.version}, ${c.authMethod ?? "signed in"}) - it answers in the background, no API credit needed.`
+        : `WARNING: LC_MODEL is ${config.model} but the Claude CLI is not usable: ${c.error ?? "unknown reason"}`));
+    } else if (!process.env.OPENAI_API_KEY && !config.model.includes("/") && !config.model.includes(":")) {
+      console.log("WARNING: OPENAI_API_KEY is not set - jobs will fail until it is (or switch the model, e.g. LC_MODEL=claudecli:sonnet).");
+    }
   });
 }

@@ -18,7 +18,9 @@ const { JobRunner } = await import("../src/jobs.js");
 const { htmlWords } = await import("../src/tools.js");
 const { Skills } = await import("../src/skills.js");
 const { chooseTerms, rankTerms } = await import("../src/terms.js");
-const { blogPrompt } = await import("../web/src/blog.js");
+const { blogPrompt, cleanCategoryName, existingCategory, MAX_CATEGORIES } = await import("../web/src/blog.js");
+const { brandOverrides } = await import("../src/tools.js");
+const { firstText } = await import("../src/verify.js");
 const { call, say, mockModel } = await import("./mockModel.js");
 const { startFakeSite, PNG } = await import("./fakeSite.js");
 
@@ -258,6 +260,122 @@ console.log("\n8) a run that ends without words still answers");
   assert.match(String(j.result), /Created the blog post as a draft[\s\S]*preview=true[\s\S]*Deploy/);
   assert.ok(j.events.some((e: any) => e.type === "text" && /Created the blog post/.test(String(e.data.text))));
   ok("an empty final answer is replaced by a summary of what was done, with the preview link");
+}
+
+console.log("\n9) the form: a new category typed by the person");
+{
+  const p = blogPrompt({ title: "Shop news", tone: "Friendly", words: 800, image: "none", categories: ["News"], newCategories: ["Store Updates"] });
+  assert.match(p, /Category: News, Store Updates \(chosen by me\)/);
+  assert.match(p, /New category to create: Store Updates - I agree to add it\./);
+  const none = blogPrompt({ title: "x", tone: "", words: 800, image: "none" });
+  assert.match(none, /Category: pick the most relevant existing one/);
+  assert.doesNotMatch(none, /New category to create/);
+  ok("a typed category is listed with the chosen ones and marked as agreed to");
+  assert.equal(cleanCategoryName("  Store   updates  "), "Store updates");
+  assert.equal(cleanCategoryName(" -- "), "");
+  assert.equal(cleanCategoryName("x".repeat(80)).length, 60);
+  const cats = [{ id: 1, name: "Web Design", slug: "web-design", count: 3 }, { id: 2, name: "News", count: 1 }];
+  assert.equal(existingCategory(cats, "web design")?.id, 1);
+  assert.equal(existingCategory(cats, "Web-Design ")?.id, 1);
+  assert.equal(existingCategory(cats, "NEWS")?.id, 2);
+  assert.equal(existingCategory(cats, "Recipes"), undefined);
+  assert.equal(MAX_CATEGORIES, 2);
+  ok("typed names are cleaned, and a name that already exists is matched instead of created twice");
+}
+
+console.log("\n10) the brand comes from the theme / builder: no own colours or fonts in the article");
+{
+  assert.deepEqual(brandOverrides(ARTICLE), []);
+  assert.deepEqual(brandOverrides('<p style="color:#f00">x</p>'), ["inline styles"]);
+  assert.deepEqual(brandOverrides('<!-- wp:paragraph {"textColor":"vivid-red","fontSize":"large"} --><p class="has-vivid-red-color has-large-font-size">x</p><!-- /wp:paragraph -->'), ["colours", "fonts / sizes", "colour / font classes"]);
+  assert.deepEqual(brandOverrides('<!-- wp:button {"style":{"color":{"background":"#111"}}} -->'), ["colours"]);
+  assert.deepEqual(brandOverrides('<!-- wp:heading {"level":3} --><h3 class="wp-block-heading">x</h3><!-- /wp:heading -->'), []);
+  ok("inline styles, colour / font attributes and colour / font classes are recognised; plain blocks pass");
+  let out: any;
+  const model = mockModel(async ({ prompt }) => {
+    if (resultOf(prompt, "create_blog_post") === undefined) return call("create_blog_post", { title: "Styled", content: '<!-- wp:paragraph {"textColor":"vivid-red"} --><p class="has-vivid-red-color has-text-color">Red text.</p><!-- /wp:paragraph -->', excerpt: "x", metaDescription: "x", reason: "x" });
+    out = resultOf(prompt, "create_blog_post");
+    return say("Removed the colours.");
+  });
+  const before = wp.created.length;
+  const runner = new JobRunner(jobs, sites, buildAgent(files, { model, hostinger: null, browser: null }));
+  await runAll(runner, runner.create(site.id, "Write a post", "", [], { approvalMode: "auto" }).id);
+  assert.equal(out.ok, false);
+  assert.match(out.error, /sets its own colours[\s\S]*brand/);
+  assert.equal(wp.created.length, before, "nothing was created");
+  ok("create_blog_post refuses an article with its own colours, and creates nothing");
+}
+
+console.log("\n11) every new post is opened in a real browser after it is created");
+{
+  assert.equal(firstText(ARTICLE), "slow pages lose visitors. here is how to speed up wordpress.");
+  assert.equal(firstText("<p>" + "word ".repeat(30) + "</p>"), "word ".repeat(12).trim());
+  assert.equal(firstText("<p>Here's what <a href=\"/x\">our team</a> -- and you -- can do...</p>"), "here's what our team - and you - can do...");
+  assert.equal(firstText("<!-- wp:paragraph --><p>Hi</p><!-- /wp:paragraph --><!-- wp:list --><ul><li>A longer list item here</li></ul><!-- /wp:list -->"), "a longer list item here");
+  ok("the sentence to look for is the first real paragraph / list item");
+  const seen: any[] = [];
+  const stub = (passed: boolean) => ({
+    before: async () => null, after: async () => ({ passed: true, checks: [], summary: "" }),
+    newPost: async (url: string, e: any) => { seen.push({ url, e }); return passed
+      ? { passed: true, checks: [{ name: "content", ok: true, detail: "The theme / page builder shows the article content." }], summary: "All checks passed." }
+      : { passed: false, checks: [{ name: "content", ok: false, detail: "The article content does not appear on the page." }], summary: "1 check failed: content." } },
+  });
+  for (const passed of [true, false]) {
+    let out: any;
+    const model = mockModel(async ({ prompt }) => {
+      if (resultOf(prompt, "create_blog_post") === undefined) return call("create_blog_post", { title: passed ? "Checked post" : "Hidden content", content: ARTICLE, excerpt: "x", metaDescription: "x", categories: ["Performance"], tags: [], reason: "x" });
+      out = resultOf(prompt, "create_blog_post");
+      return say("done");
+    });
+    const runner = new JobRunner(jobs, sites, buildAgent(files, { model, hostinger: null, browser: null, verifier: stub(passed) as any }));
+    await runAll(runner, runner.create(site.id, "Write a post", "", [], { approvalMode: "auto" }).id);
+    assert.equal(out.ok, true);
+    assert.equal(out.verification.passed, passed);
+    const last = seen.at(-1);
+    assert.match(last.url, /\?p=\d+&preview=true/);
+    assert.equal(last.e.title, passed ? "Checked post" : "Hidden content");
+    assert.equal(last.e.content, ARTICLE);
+    if (passed) assert.doesNotMatch(out.note, /CHECK FAILED/);
+    else assert.match(out.note, /THE BROWSER CHECK FAILED[\s\S]*content does not appear[\s\S]*instead of reporting success/);
+  }
+  ok("create_blog_post returns the browser check of the new draft (preview link, title, content)");
+  ok("a failed check is put in the note so the assistant reports the problem, not success");
+  let page: any;
+  const model = mockModel(async ({ prompt }) => {
+    if (resultOf(prompt, "create_page") === undefined) return call("create_page", { title: "About us", content: ARTICLE, reason: "x" });
+    page = resultOf(prompt, "create_page");
+    return say("done");
+  });
+  const runner = new JobRunner(jobs, sites, buildAgent(files, { model, hostinger: null, browser: null, verifier: stub(true) as any }));
+  await runAll(runner, runner.create(site.id, "Make an About page", "", [], { approvalMode: "auto" }).id);
+  assert.equal(page.verification.passed, true);
+  assert.equal(seen.at(-1).e.title, "About us");
+  ok("new pages (create_page) are checked the same way");
+}
+
+console.log("\n12) site_profile: builders, brand and how the old posts are made");
+{
+  let prof: any;
+  const model = mockModel(async ({ prompt }) => {
+    if (resultOf(prompt, "site_profile") === undefined) return call("site_profile", {});
+    prof = resultOf(prompt, "site_profile");
+    return say("ok");
+  });
+  const runner = new JobRunner(jobs, sites, buildAgent(files, { model, hostinger: null, browser: null }));
+  await runAll(runner, runner.create(site.id, "What is this site built with?", "", [], { approvalMode: "auto" }).id);
+  assert.deepEqual(prof.otherBuilders, [{ id: "divi", name: "Divi", version: "4.27" }]);
+  assert.equal(prof.brand.colors[0].value, "#0b3d91");
+  assert.equal(prof.brand.fonts[0].name, "Inter");
+  assert.deepEqual(prof.blogPosts.built_with, { elementor: 3, blocks: 2 });
+  ok("other page builders, the theme's palette / fonts and how the existing posts are built reach the assistant");
+  const skill = new Skills().load("blog-post");
+  const text = String(skill?.content ?? skill);
+  assert.match(text, /site_profile/);
+  assert.match(text, /core blocks[\s\S]*Elementor, Divi, Beaver, WPBakery, Bricks/);
+  assert.match(text, /never add inline colours, fonts or sizes/);
+  assert.match(text, /Check the result/);
+  assert.match(text, /New category to create: X - I\s+agree/);
+  ok("the blog-post skill reads the site first, keeps the brand to the theme / builder and checks the result");
 }
 
 fake.close();
