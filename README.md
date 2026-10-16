@@ -162,6 +162,30 @@ right now - the Claude CLI appears only when the CLI is installed and signed in,
 not ready. The choice is remembered per browser and sent with each message; "Default" falls back to `LC_MODEL` or the
 site's own model (WordPress → Settings → Livecrafts Assistant, which also accepts `claudecli:sonnet`).
 
+## The local Claude CLI as the model (no API credit)
+`claudecli:<model>` makes the **Claude Code CLI on the backend machine** the assistant's brain, on that machine's own
+Claude subscription - useful when an API key runs out of credit.
+
+    npm i -g @anthropic-ai/claude-code     # or any Claude Code install
+    claude auth login                      # once, on the machine that runs this backend
+    # then:  LC_MODEL=claudecli:sonnet      # or pick it per chat in the UI
+
+How it works: every agent step spawns `claude --print` **in the background** - no terminal window, no interactive
+session, nothing saved in `~/.claude/projects`. The conversation goes in on stdin and the answer comes back on stdout,
+streamed, so the chat UI, the approval cards, the browser checks and the change ledger all behave exactly as with
+OpenAI. The CLI runs with its own brain switched off (`--system-prompt-file` = the Livecrafts prompt, `--tools ""`,
+`--safe-mode`, `--strict-mcp-config`) in an empty temp folder, so it cannot touch this project: it only answers.
+
+Because the CLI has no function-calling API, the tools are described in the system prompt and asked for in
+`<tool_call>{"name":…,"input":{…}}` blocks, which the provider turns back into real tool calls. That is a little less
+reliable than OpenAI's native tool calling and each step pays the CLI's start-up (~1-3 s), so keep it for the days an
+API key is unavailable. Screenshots are still seen (images go in as `stream-json` image blocks).
+
+Switching in the UI: the pill next to the composer (app **and** the on-site widget) lists every model that can answer
+right now - the Claude CLI appears only when the CLI is installed and signed in, and the menu says why a provider is
+not ready. The choice is remembered per browser and sent with each message; "Default" falls back to `LC_MODEL` or the
+site's own model (WordPress → Settings → Livecrafts Assistant, which also accepts `claudecli:sonnet`).
+
 ## One record of every change
 
 The **site's change ledger** (in WordPress, written by the plugin) is the only record: drafts, live changes, resets, edits made

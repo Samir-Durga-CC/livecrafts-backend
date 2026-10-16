@@ -9,14 +9,20 @@ import { secrets } from "./secrets.js";
  *   LC_TTS_VOICE  default voice         (default onyx)
  */
 const API = "https://api.openai.com/v1";
-const sttModel = () => process.env.LC_STT_MODEL || "gpt-4o-mini-transcribe";
+const sttModel = () => process.env.LC_STT_MODEL || "gpt-4o-transcribe";
+/** A language hint (ISO code, e.g. "en" or "hi") makes transcription markedly better for an accent. "" = detect. */
+const sttLanguage = () => (process.env.LC_STT_LANGUAGE ?? "").trim().toLowerCase();
 const ttsModel = () => process.env.LC_TTS_MODEL || "gpt-4o-mini-tts";
 export const VOICES = ["onyx", "ash", "echo", "fable", "sage", "alloy", "coral", "nova", "shimmer", "ballad", "verse"] as const;
+/** How fast it talks (LC_TTS_SPEED, 0.5-2). The browser applies it too, so it works whichever model is used. */
+export const speed = () => Math.min(2, Math.max(0.5, Number(process.env.LC_TTS_SPEED ?? 1.15) || 1.15));
 const defaultVoice = () => (VOICES as readonly string[]).includes(process.env.LC_TTS_VOICE ?? "") ? process.env.LC_TTS_VOICE! : "onyx";
 
 /** How the assistant sounds: calm, precise, professional - a capable studio assistant, not a cheerful chatbot. */
-const STYLE = "Voice: a calm, confident, professional AI assistant with a refined, slightly British delivery. " +
-  "Tone: composed, warm and precise, never bubbly. Pace: measured and clear, natural pauses between sentences. " +
+const STYLE = "Voice: a confident, professional AI assistant with a refined, slightly British delivery. " +
+  "Tone: warm, precise and matter-of-fact, never bubbly. " +
+  "Pace: BRISK - the natural, efficient speed of a colleague telling you what they just did, noticeably quicker than " +
+  "a narrator. Keep the energy up, do not draw words out, and pause only briefly between sentences. " +
   "Speak in the language of the text with natural native pronunciation and the same calm tone (Hindi text in Hindi, English in English). " +
   "Read web words naturally (say 'WordPress', 'Elementor'); do not read out symbols or URLs.";
 
@@ -32,7 +38,7 @@ function key(): string {
 }
 
 export function voiceInfo() {
-  return { available: !!secrets.providerKey("openai"), provider: "openai", voice: defaultVoice(), voices: VOICES, sttModel: sttModel(), ttsModel: ttsModel() };
+  return { available: !!secrets.providerKey("openai"), provider: "openai", voice: defaultVoice(), voices: VOICES, sttModel: sttModel(), ttsModel: ttsModel(), speed: speed(), language: sttLanguage() || "auto" };
 }
 
 async function failure(res: Response, what: string): Promise<Error> {
@@ -54,6 +60,7 @@ export async function transcribe(audio: Buffer, mime: string): Promise<{ text: s
   form.append("file", new File([new Uint8Array(audio)], `speech.${ext}`, { type }));
   form.append("model", sttModel());
   form.append("response_format", "json");
+  if (sttLanguage()) form.append("language", sttLanguage());
   form.append("prompt", `The speaker is editing their website with an AI assistant and may speak any language (English, Hindi, Hinglish, ...). Transcribe in the language spoken, in its own script; do not translate. Terms: ${VOCAB}`);
   const res = await fetch(`${API}/audio/transcriptions`, { method: "POST", headers: { Authorization: `Bearer ${key()}` }, body: form, signal: AbortSignal.timeout(45_000) });
   if (!res.ok) throw await failure(res, "Transcription");
@@ -75,6 +82,7 @@ export async function speak(text: string, voice?: string): Promise<Buffer> {
   const v = voice && (VOICES as readonly string[]).includes(voice) ? voice : defaultVoice();
   const body: Record<string, unknown> = { model: ttsModel(), input, voice: v, response_format: "mp3" };
   if (!/^tts-1/.test(ttsModel())) body.instructions = STYLE; // the tts-1 models do not take a style
+  else body.speed = speed();                                 // ... and they take a speed instead
   const res = await fetch(`${API}/audio/speech`, {
     method: "POST", headers: { Authorization: `Bearer ${key()}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(45_000),
   });

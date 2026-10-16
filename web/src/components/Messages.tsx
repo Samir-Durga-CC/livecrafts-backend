@@ -269,12 +269,14 @@ function Approval({ item, onAnswer, busy }: { item: Extract<TimelineItem, { kind
   );
 }
 
-export function Transcript({ items, model, busy, working, welcome, onAnswer, onCopy, onEdit, onRetry, onOpen, onAsk }: {
+export function Transcript({ items, model, busy, working, welcome, onAnswer, onCopy, onEdit, onRetry, onOpen, onAsk, onAskTouch }: {
   items: TimelineItem[]; model: string; busy: boolean; working: boolean; welcome: React.ReactNode; onOpen?: (url: string) => void;
   onAnswer: (approvalId: string, approved: boolean, reason?: string) => void;
   onCopy: (text: string) => void; onEdit: (text: string) => void; onRetry: (text: string) => void;
   /** The answers to an ask_person form go back as one ordinary message. */
   onAsk?: (text: string) => void;
+  /** Called when they start filling the question form in (voice mode stops reading it out). */
+  onAskTouch?: () => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true); // follow the stream only while the reader is at the bottom
@@ -347,7 +349,7 @@ export function Transcript({ items, model, busy, working, welcome, onAnswer, onC
             case "error": return <div key={b.key} className="banner error">{b.item.text}</div>;
           }
         })}
-        {asking && onAsk && <AskForm intro={asking.intro} questions={asking.questions} busy={busy} onSend={onAsk} />}
+        {asking && onAsk && <AskForm intro={asking.intro} questions={asking.questions} busy={busy} onSend={onAsk} onTouch={onAskTouch} />}
         {thinking && <div className="thinking"><span className="dots"><i /><i /><i /></span><span className="shimmer">Thinking</span></div>}
       </div>
     </div>

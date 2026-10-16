@@ -17,18 +17,64 @@ import { SpeedPanel } from "./SpeedPanel";
 import { connectParent, uploadToMedia } from "./parent";
 import { VoiceAgent, type VoiceState } from "./voice";
 import { VoiceBar } from "./VoiceBar";
+import { VoiceStage } from "./VoiceStage";
 
 /** Told to the assistant with every spoken request. */
-const VOICE_NOTE = "VOICE MODE: the person is talking to you and hears your replies read aloud. Answer in one to three short, natural spoken sentences - no tables, code, URLs or long lists. Say what you did or found; the details stay visible in the chat.";
+const VOICE_NOTE = "VOICE MODE: the person is talking to you and hears your replies read aloud. Answer in one to three short, natural spoken sentences - no tables, code, URLs or long lists. Say what you did or found; the details stay visible in the chat. " +
+  "If you need something from them, use ask_person - the questions are read out and they answer by speaking. Never ask in prose, and never ask about design: decide it. " +
+  "They cannot see the screen while you work, so make the first sentence the result (\"The testimonials section is on the page\"), not a preamble.";
 const YES = /^(yes|yeah|yep|yup|sure|ok|okay|go ahead|go for it|do it|approve|approved|confirm|confirmed|proceed|sounds good|perfect|please do|of course|absolutely|correct)\b[\s,.!]*/i;
 const NO = /^(no|nope|nah|don'?t|do not|cancel|deny|reject|not now)\b[\s,.!]*/i;
 
 /** What the voice reads out of the chat: finished answers, approval questions, errors. */
-const sayableOf = (items: TimelineItem[]) => items.filter((i) => (i.kind === "assistant" && !i.streaming && i.text.trim() !== "") || i.kind === "approval" || i.kind === "error");
+const sayableOf = (items: TimelineItem[]) => items.filter((i) =>
+  (i.kind === "assistant" && !i.streaming && i.text.trim() !== "")
+  || i.kind === "approval"
+  || i.kind === "error"
+  // The questions the assistant asked in the form: in voice mode they are read out and answered by speaking.
+  || (i.kind === "tool" && i.tool === "ask_person" && i.state === "ok")
+  // While it works, say what each change was - otherwise a long build is minutes of silence.
+  );
+
+/** Tools worth showing as a step on the voice stage (the rest are lookups nobody needs to watch). */
+const WORTH = new Set(["place_component", "create_page", "make_change", "revert_change", "screenshot_page", "analyze_design", "ask_person"]);
+const describeWorth = (i: TimelineItem) => i.kind === "tool" && WORTH.has(i.tool);
+
+/**
+ * What it is DOING, said as it starts - never what it has done.
+ *
+ * Announcing a finished step ("Added the testimonials section") arrives before the page can show it, so the voice is
+ * ahead of what the person sees and sounds like it is making things up. Saying "I'm adding it now" is true the
+ * moment it is said, and the finished answer reports the result once.
+ */
+function spokenDoing(i: Extract<TimelineItem, { kind: "tool" }>): string {
+  const name = String((i.input as any)?.id ?? "").replace(/_/g, " ");
+  switch (i.tool) {
+    case "get_page_map": case "read_post": case "read_page": case "read_target": case "find_text": return "Reading the page.";
+    case "analyze_design": case "site_profile": return "Looking at how your site is designed.";
+    case "find_components": case "get_component": return "Finding the right section for this.";
+    case "place_component": return name ? `Adding the ${name} section now.` : "Adding the section now.";
+    case "create_page": return "Creating the page.";
+    case "make_change": return "Making the change.";
+    case "revert_change": return "Undoing that.";
+    case "screenshot_page": case "inspect_element": return "Checking how it looks.";
+    case "upload_media_from_chat": case "upload_media_from_url": return "Adding the image to your library.";
+    case "site_status": case "site_history": return "Checking what is on the page already.";
+    default: return "";
+  }
+}
+
 function sayText(i: TimelineItem): string {
   if (i.kind === "assistant") return i.text;
   if (i.kind === "error") return `Sorry, that did not work. ${i.text}`;
   if (i.kind === "approval") return i.tool === "propose_plan" && i.input?.summary ? `Here is my plan: ${i.input.summary}. Shall I go ahead?` : "This needs your OK before I change the site. Shall I go ahead?";
+  if (i.kind === "tool" && i.tool === "ask_person") {
+    const qs: any[] = i.input?.questions ?? [];
+    const intro = String(i.input?.intro ?? "").trim();
+    const asked = qs.map((q, n) => `${qs.length > 1 ? `${n + 1}. ` : ""}${q.question}${q.options?.length ? ` ${q.options.join(", or ")}?` : ""}`).join(" ");
+    return `${intro ? intro + " " : ""}${asked} You can just tell me, or say "you decide".`;
+  }
+
   return "";
 }
 
@@ -164,6 +210,8 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
 
   // voice: how many speakable items of the current chat were already read out (or are history, never read out)
   const spoken = useRef<{ job: string; count: number } | null>({ job: "", count: 0 });
+  /** How much of the answer being streamed has already been read out, so it is never said twice. */
+  const partial = useRef<{ seq: number; chars: number }>({ seq: -1, chars: 0 });
   const freshJob = useRef("");
   const [spokenReady, setSpokenReady] = useState("");
 
@@ -203,6 +251,10 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
 
   // ---- voice mode: talk hands-free and hear the answers; every message still appears in the chat
   const [voiceOn, setVoiceOn] = useState(false);
+  // Voice mode shows its own surface; "show the chat" flips back to the transcript without ending voice.
+  const [voiceView, setVoiceView] = useState(true);
+  useEffect(() => { if (voiceOn) setVoiceView(true); }, [voiceOn]);
+  const [saying, setSaying] = useState("");
   const [voiceState, setVoiceState] = useState<VoiceState>("off");
   const [heard, setHeard] = useState("");
   const [blocked, setBlocked] = useState(false);
@@ -211,34 +263,103 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   const [voiceList, setVoiceList] = useState<string[]>([]);
   const [voiceName, setVoiceName] = useState(store.get("lcw_voice_name") ?? "");
   const [speakOn, setSpeakOn] = useState(store.get("lcw_voice_speak") !== "0");
+  const [voiceRate, setVoiceRate] = useState(Number(store.get("lcw_voice_rate") ?? 1.15) || 1.15);
   const onUtterance = useRef<(text: string) => void>(() => {});
   const [voice] = useState(() => new VoiceAgent({
     onState: setVoiceState, onUtterance: (t) => onUtterance.current(t), onError: (m) => setProblem(m), onBlocked: setBlocked,
   }));
   useEffect(() => () => voice.stop(), [voice]);
+  useEffect(() => { voice.rate = voiceRate; }, [voice, voiceRate]);
+  // While it is waiting for a yes, a no, or an answer to the form, let a short word cut straight in.
+  useEffect(() => {
+    const open = timeline.some((i) => i.kind === "tool" && i.tool === "ask_person" && i.state === "ok")
+      && timeline[timeline.length - 1]?.kind !== "user";
+    voice.expectingShortAnswer = waiting || open;
+  }, [voice, waiting, timeline]);
   const sayable = useMemo(() => sayableOf(timeline), [timeline]);
+  // What the voice stage lists: the real steps of the run, newest last, never the lookups that say nothing.
+  const voiceSteps = useMemo(
+    () => timeline.filter((i) => i.kind === "tool" && i.state !== "running" && !!describeWorth(i)).slice(-4),
+    [timeline],
+  );
 
   // read out what is new in the chat (declared before the reload below: the answer is spoken before the page reloads)
   useEffect(() => {
     const s = spoken.current;
     if (!s || s.job !== jobId || sayable.length < s.count) return;
-    if (voiceOn) for (let k = s.count; k < sayable.length; k++) voice.say(sayText(sayable[k]));
+    if (voiceOn) for (let k = s.count; k < sayable.length; k++) {
+      const item = sayable[k];
+      let line = sayText(item);
+      // The start of this answer may already have been read out while it was still streaming.
+      if (item.kind === "assistant" && partial.current.seq === item.seq) {
+        line = line.slice(partial.current.chars);
+        partial.current = { seq: -1, chars: 0 };
+      }
+      if (line.trim()) { setSaying(line); voice.say(line); }
+    }
     s.count = sayable.length;
   }, [sayable, jobId, voiceOn, voice, spokenReady]);
 
   // show the result: reload the page once the assistant has finished a step that changed the site
+  // The page used to catch up only once the whole request had finished, so a build that places six sections showed
+  // nothing for minutes while the voice said each one was done. Now it catches up as each change lands (at most
+  // every few seconds), and once more when the work stops.
+  const refreshedAt = useRef(0);
   useEffect(() => {
-    if (!jobId || baseline.current === null || !autoRefresh || working) return;
+    if (!jobId || baseline.current === null || !autoRefresh) return;
+    if (working && Date.now() - refreshedAt.current < 4000) return;
     if (writes > baseline.current) {
+      refreshedAt.current = Date.now();
       baseline.current = writes;
       setHistoryKey((k) => k + 1);
       store.sset(`lcw_reloaded:${jobId}`, String(writes));
       // Show the change in place: the page is patched where it differs, with no reload, no white flash and no lost
       // scroll position. The widget only falls back to a full reload if the page says it could not do it.
       const refresh = () => post({ type: "lc:soft-refresh", tab, selector: lastSection.current });
-      if (voiceOn) void voice.whenIdle().then(refresh); else refresh();
+      // Patching the page in place does not interrupt anything, so it no longer has to wait for the voice to finish:
+      // waiting is what let the narration run ahead of what was on screen.
+      refresh();
     }
   }, [writes, working, jobId, autoRefresh, post, tab, voiceOn, voice]);
+
+  // Speak the answer AS IT ARRIVES: every finished sentence goes out while the rest is still being written. Waiting
+  // for the whole answer added seconds of silence to every turn, which is most of what makes voice feel slow.
+  useEffect(() => {
+    if (!voiceOn || !speakOn) return;
+    const last = timeline[timeline.length - 1];
+    if (last?.kind !== "assistant" || !last.streaming) return;
+    if (partial.current.seq !== last.seq) partial.current = { seq: last.seq, chars: 0 };
+    // Only up to the last sentence that is definitely complete.
+    const done = last.text.search(/[.!?।]\s+[^\s]*$/) >= 0
+      ? last.text.slice(0, last.text.lastIndexOf(" ", last.text.length - 1) + 1)
+      : (last.text.match(/^[\s\S]*[.!?।]/)?.[0] ?? "");
+    if (done.length > partial.current.chars + 15) {
+      const chunk = done.slice(partial.current.chars);
+      partial.current = { seq: last.seq, chars: done.length };
+      setSaying(chunk);
+      voice.say(chunk);
+    }
+  }, [timeline, voiceOn, speakOn, voice]);
+
+  // Narrate the work as it happens: one short line when a step STARTS, never more than one every few seconds, and
+  // only while it is actually working. This is what makes it feel like someone doing the job rather than a pause.
+  const narrated = useRef<{ seqs: Set<number>; at: number }>({ seqs: new Set(), at: 0 });
+  useEffect(() => {
+    if (!voiceOn || !speakOn) return;
+    const now = Date.now();
+    for (const it of timeline) {
+      if (it.kind !== "tool" || it.state !== "running") continue;
+      if (narrated.current.seqs.has(it.seq)) continue;
+      narrated.current.seqs.add(it.seq);
+      const line = spokenDoing(it);
+      // One line at a time: a burst of lookups should not become a burst of sentences.
+      if (!line || now - narrated.current.at < 3500) continue;
+      narrated.current.at = now;
+      setSaying(line);
+      voice.say(line);
+    }
+  }, [timeline, voiceOn, speakOn, voice]);
+  useEffect(() => { if (!working) narrated.current = { seqs: new Set(), at: 0 }; }, [working]);
 
   /** A change made in the click panel (directly in WordPress, no AI): show it - it is a draft only editors see. */
   function applied(summary: string) {
@@ -287,6 +408,9 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   async function send(prompt: string, fileIds: string[], extraContext?: string) {
     setProblem("");
     try {
+      // They have answered (typed, spoken, or filled the form): stop reading out whatever was still queued, or the
+      // assistant carries on describing a question that is already answered.
+      if (voiceOn) { voice.stopSpeaking(); setSaying(""); partial.current = { seq: -1, chars: 0 }; }
       const args = { prompt, fileIds, pageUrl: cfg.pageUrl, approvalMode: mode, extraContext, ...(pick ? { model: pick } : {}) };
       if (jobId && paused) await api.message(jobId, { ...args, kind: pauseKind });
       else if (jobId && (status === "completed" || status === "failed")) await api.message(jobId, args);
@@ -359,6 +483,10 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     const low = text.toLowerCase().replace(/[.!?]+$/, "").trim();
     if (/^(stop listening|goodbye|good bye|bye|that'?s all|that is all|(turn off|end|exit|close) voice( mode)?)$/.test(low)) { voice.say("Goodbye."); void voice.whenIdle(8000).then(endVoice); return; }
     if (/^(stop talking|be quiet|quiet|silence|shut up|enough)$/.test(low)) { voice.stopSpeaking(); return; }
+    if (/^(you decide|your (choice|call)|whatever you think|up to you|anything|surprise me)/.test(low) && !working) {
+      void send("You decide - pick what suits the site and carry on.", [], voiceContext()).catch(() => {});
+      return;
+    }
     if (waiting && pendingApproval) {
       const y = YES.exec(text), n = NO.exec(text);
       if (y) { void answer(pendingApproval.approvalId, true, text.slice(y[0].length).trim() || undefined); voice.say("On it."); }
@@ -451,10 +579,18 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       {problem && <div className="banner error w-banner"><span>{problem}</span><button onClick={() => setProblem("")}><Icon.Close size={13} /></button></div>}
 
       <div className="w-body">
-        {tab === "chat" && (
+        {tab === "chat" && voiceOn && voiceView && (
+          <VoiceStage agent={voice} state={voiceState} heard={heard} saying={saying} steps={voiceSteps}
+            busy={working} waiting={waiting} queued={queued} blocked={blocked} speak={speakOn}
+            rate={voiceRate} onRate={(r) => { setVoiceRate(r); voice.rate = r; store.set("lcw_voice_rate", String(r)); voice.stopSpeaking(); voice.say("This is how fast I'll speak."); }}
+            onSpeak={(on) => { setSpeakOn(on); voice.speakReplies = on; store.set("lcw_speak", on ? "1" : "0"); if (!on) voice.stopSpeaking(); }}
+            onChat={() => setVoiceView(false)} onEnd={endVoice} />
+        )}
+        {tab === "chat" && !(voiceOn && voiceView) && (
           <div className="w-chat">
             <Transcript items={timeline} model={name} busy={answering} working={working} welcome={welcome}
               onAsk={(t) => void send(t, [])}
+              onAskTouch={() => { if (voiceOn) { voice.stopSpeaking(); setSaying(""); } }}
               onAnswer={(a, ok, r) => void answer(a, ok, r)} onCopy={(t) => { navigator.clipboard?.writeText(t); say("Copied"); }}
               onEdit={() => {}} onRetry={(t) => { if (t && (status === "completed" || status === "failed")) void send(t, []); }}
               onOpen={(url) => post({ type: "lc:navigate", url })} />
