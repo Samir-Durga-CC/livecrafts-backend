@@ -31,7 +31,8 @@ const MAX_UTTERANCE_MS = 12_000; // a spoken instruction is never this long; wai
 const DROP_DB = 18;          // this far below the sentence's own loudness is a real pause, not the gap between words
 const SETTLE_MS = 1200;      // the relative test only applies once a sentence is under way
 const IDLE_SEGMENT_MS = 5_000; // an idle recording is restarted, so little silence is uploaded with the speech (faster)
-const BARGE_IN_MS = 280;     // talking this long over the answer interrupts it
+const BARGE_IN_MS = 220;     // talking this long over the answer interrupts it
+const BARGE_IN_SHORT_MS = 140; // ... and a short word like "yes" or "stop" is allowed to cut in sooner
 
 interface Segment { rec: MediaRecorder; parts: Blob[]; keep: boolean }
 
@@ -40,6 +41,11 @@ export class VoiceAgent {
   speakReplies = true;
   /** How fast the answer is played. The model's own pace is set server-side; this works whatever the model does. */
   rate = 1.15;
+  /**
+   * The assistant has asked something and is waiting for a word back ("yes", "no", an answer to the form). While
+   * that is true a short reply cuts in faster: nobody waits politely for a question to finish being read out.
+   */
+  expectingShortAnswer = false;
   /** Mic level 0..1 for the animated orb (set by the UI; called 20 times a second). */
   levelSink: ((level: number) => void) | null = null;
 
@@ -208,10 +214,12 @@ export class VoiceAgent {
     if (this.state === "hearing" || this.state === "transcribing") this.level.heardAt = Date.now();
 
     if (this.state === "speaking") {
-      // talking over the answer interrupts it (a stricter bar: the answer itself may leak into the microphone)
-      const loud = db > Math.max(this.noise + 24, -34);
+      // Talking over the answer interrupts it. The bar is higher than normal speech because the answer itself can
+      // leak into the microphone - but not so high that "yes" or "stop", said at a normal volume, is ignored, which
+      // is what made it feel like it would not listen until it had finished.
+      const loud = db > Math.max(this.noise + 16, -42);
       this.above = loud ? this.above + TICK : 0;
-      if (this.above >= BARGE_IN_MS) {
+      if (this.above >= (this.expectingShortAnswer ? BARGE_IN_SHORT_MS : BARGE_IN_MS)) {
         this.stopSpeaking();
         this.newSegment();
         this.talking = true; this.talkMs = this.above; this.below = 0; this.above = 0; this.peak = db;

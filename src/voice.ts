@@ -9,7 +9,9 @@ import { secrets } from "./secrets.js";
  *   LC_TTS_VOICE  default voice         (default onyx)
  */
 const API = "https://api.openai.com/v1";
-const sttModel = () => process.env.LC_STT_MODEL || "gpt-4o-mini-transcribe";
+const sttModel = () => process.env.LC_STT_MODEL || "gpt-4o-transcribe";
+/** A language hint (ISO code, e.g. "en" or "hi") makes transcription markedly better for an accent. "" = detect. */
+const sttLanguage = () => (process.env.LC_STT_LANGUAGE ?? "").trim().toLowerCase();
 const ttsModel = () => process.env.LC_TTS_MODEL || "gpt-4o-mini-tts";
 export const VOICES = ["onyx", "ash", "echo", "fable", "sage", "alloy", "coral", "nova", "shimmer", "ballad", "verse"] as const;
 /** How fast it talks (LC_TTS_SPEED, 0.5-2). The browser applies it too, so it works whichever model is used. */
@@ -36,7 +38,7 @@ function key(): string {
 }
 
 export function voiceInfo() {
-  return { available: !!secrets.providerKey("openai"), provider: "openai", voice: defaultVoice(), voices: VOICES, sttModel: sttModel(), ttsModel: ttsModel(), speed: speed() };
+  return { available: !!secrets.providerKey("openai"), provider: "openai", voice: defaultVoice(), voices: VOICES, sttModel: sttModel(), ttsModel: ttsModel(), speed: speed(), language: sttLanguage() || "auto" };
 }
 
 async function failure(res: Response, what: string): Promise<Error> {
@@ -58,6 +60,7 @@ export async function transcribe(audio: Buffer, mime: string): Promise<{ text: s
   form.append("file", new File([new Uint8Array(audio)], `speech.${ext}`, { type }));
   form.append("model", sttModel());
   form.append("response_format", "json");
+  if (sttLanguage()) form.append("language", sttLanguage());
   form.append("prompt", `The speaker is editing their website with an AI assistant and may speak any language (English, Hindi, Hinglish, ...). Transcribe in the language spoken, in its own script; do not translate. Terms: ${VOCAB}`);
   const res = await fetch(`${API}/audio/transcriptions`, { method: "POST", headers: { Authorization: `Bearer ${key()}` }, body: form, signal: AbortSignal.timeout(45_000) });
   if (!res.ok) throw await failure(res, "Transcription");

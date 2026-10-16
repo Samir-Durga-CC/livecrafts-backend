@@ -433,3 +433,21 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
 .vs-rate button { border: 0; background: var(--surface); color: var(--muted); font-size: 11.5px; padding: 4px 8px; border-right: 1px solid var(--line); }
 .vs-rate button:last-child { border-right: 0; }
 .vs-rate button.on { background: var(--accent); color: #fff; font-weight: 600; }
+
+/* ---------------- The composer in the narrow widget panel ----------------
+   The pills (approval mode, model) wrapped onto two lines in a 380px panel and pushed the send button around.
+   In the panel they stay on one line, shrink their text first, and scroll sideways rather than reflow. */
+.embed .c-bar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; gap: 4px; }
+.embed .c-bar::-webkit-scrollbar { display: none; }
+.embed .c-bar > * { flex: none; }
+.embed .model-pill { height: 28px; padding: 0 9px; font-size: 11.5px; white-space: nowrap; max-width: 44vw; overflow: hidden; }
+.embed .model-pill svg:last-child { flex: none; }
+.embed .mode { width: 30px; height: 30px; }
+.embed .composer { padding: 10px 10px 6px; border-radius: 16px; }
+.embed .composer textarea { font-size: 14.5px; min-height: 26px; }
+/* Keep the send button hard against the right edge whatever the pills do. */
+.embed .c-bar .send { margin-left: auto; position: sticky; right: 0; }
+@media (max-width: 420px) {
+  .embed .model-pill { max-width: 38vw; }
+  .embed .model-pill span, .embed .mode-pick .model-pill { text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+}

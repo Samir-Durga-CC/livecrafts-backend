@@ -264,6 +264,12 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   }));
   useEffect(() => () => voice.stop(), [voice]);
   useEffect(() => { voice.rate = voiceRate; }, [voice, voiceRate]);
+  // While it is waiting for a yes, a no, or an answer to the form, let a short word cut straight in.
+  useEffect(() => {
+    const open = timeline.some((i) => i.kind === "tool" && i.tool === "ask_person" && i.state === "ok")
+      && timeline[timeline.length - 1]?.kind !== "user";
+    voice.expectingShortAnswer = waiting || open;
+  }, [voice, waiting, timeline]);
   const sayable = useMemo(() => sayableOf(timeline), [timeline]);
   // What the voice stage lists: the real steps of the run, newest last, never the lookups that say nothing.
   const voiceSteps = useMemo(
