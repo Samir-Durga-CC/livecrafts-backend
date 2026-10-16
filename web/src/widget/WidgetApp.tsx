@@ -356,6 +356,9 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   async function send(prompt: string, fileIds: string[], extraContext?: string) {
     setProblem("");
     try {
+      // They have answered (typed, spoken, or filled the form): stop reading out whatever was still queued, or the
+      // assistant carries on describing a question that is already answered.
+      if (voiceOn) { voice.stopSpeaking(); setSaying(""); partial.current = { seq: -1, chars: 0 }; }
       const args = { prompt, fileIds, pageUrl: cfg.pageUrl, approvalMode: mode, extraContext, ...(pick ? { model: pick } : {}) };
       if (jobId && paused) await api.message(jobId, { ...args, kind: pauseKind });
       else if (jobId && (status === "completed" || status === "failed")) await api.message(jobId, args);
@@ -526,6 +529,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
           <div className="w-chat">
             <Transcript items={timeline} model={name} busy={answering} working={working} welcome={welcome}
               onAsk={(t) => void send(t, [])}
+              onAskTouch={() => { if (voiceOn) { voice.stopSpeaking(); setSaying(""); } }}
               onAnswer={(a, ok, r) => void answer(a, ok, r)} onCopy={(t) => { navigator.clipboard?.writeText(t); say("Copied"); }}
               onEdit={() => {}} onRetry={(t) => { if (t && (status === "completed" || status === "failed")) void send(t, []); }}
               onOpen={(url) => post({ type: "lc:navigate", url })} />

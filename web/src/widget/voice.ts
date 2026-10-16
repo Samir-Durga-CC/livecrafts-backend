@@ -25,10 +25,11 @@ export interface VoiceHandlers {
 
 const TICK = 50;
 const START_MS = 150;        // this long above the threshold = they started talking
-const END_MS = 700;          // this long quiet after talking = they finished
+const END_MS = 1000;         // this long quiet after talking = they finished (a thinking pause mid-sentence is shorter)
 const MIN_SPEECH_MS = 300;   // shorter = a click or a cough
 const MAX_UTTERANCE_MS = 12_000; // a spoken instruction is never this long; waiting longer just feels broken
-const DROP_DB = 10;          // this far below the sentence's own loudness counts as a pause
+const DROP_DB = 18;          // this far below the sentence's own loudness is a real pause, not the gap between words
+const SETTLE_MS = 1200;      // the relative test only applies once a sentence is under way
 const IDLE_SEGMENT_MS = 5_000; // an idle recording is restarted, so little silence is uploaded with the speech (faster)
 const BARGE_IN_MS = 280;     // talking this long over the answer interrupts it
 
@@ -235,7 +236,9 @@ export class VoiceAgent {
     this.peak = Math.max(this.peak - 0.05, db); // decays slowly, so one loud word does not set the bar for ever
     // Finished speaking = quiet for the room OR clearly quieter than this sentence has been. The second test is what
     // makes it work in a noisy room, where the background alone never falls under the first.
-    const quiet = db < threshold - 3 || db < this.peak - DROP_DB;
+    // Quiet for the room, or clearly quieter than this sentence has been. The second test is what makes it work in a
+    // noisy room - but only once they are properly under way, or the gap after the first word ends the sentence.
+    const quiet = db < threshold - 3 || (this.talkMs > SETTLE_MS && db < this.peak - DROP_DB);
     this.below = quiet ? this.below + TICK : 0;
     if (this.below >= END_MS || this.talkMs >= MAX_UTTERANCE_MS) {
       const keep = this.talkMs - this.below >= MIN_SPEECH_MS;
