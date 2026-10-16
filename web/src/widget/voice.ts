@@ -38,6 +38,8 @@ interface Segment { rec: MediaRecorder; parts: Blob[]; keep: boolean }
 export class VoiceAgent {
   voice = "onyx";
   speakReplies = true;
+  /** How fast the answer is played. The model's own pace is set server-side; this works whatever the model does. */
+  rate = 1.15;
   /** Mic level 0..1 for the animated orb (set by the UI; called 20 times a second). */
   levelSink: ((level: number) => void) | null = null;
 
@@ -302,6 +304,8 @@ export class VoiceAgent {
       this.finishClip = done;
       audio.onended = done;
       audio.onerror = done;
+      audio.preservesPitch = true; // faster, not higher
+      audio.playbackRate = Math.min(2, Math.max(0.6, this.rate));
       audio.src = url;
       audio.play().catch((e) => {
         if ((e as DOMException)?.name === "NotAllowedError") { // autoplay rules: wait for one tap

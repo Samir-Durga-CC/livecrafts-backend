@@ -247,11 +247,13 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   const [voiceList, setVoiceList] = useState<string[]>([]);
   const [voiceName, setVoiceName] = useState(store.get("lcw_voice_name") ?? "");
   const [speakOn, setSpeakOn] = useState(store.get("lcw_voice_speak") !== "0");
+  const [voiceRate, setVoiceRate] = useState(Number(store.get("lcw_voice_rate") ?? 1.15) || 1.15);
   const onUtterance = useRef<(text: string) => void>(() => {});
   const [voice] = useState(() => new VoiceAgent({
     onState: setVoiceState, onUtterance: (t) => onUtterance.current(t), onError: (m) => setProblem(m), onBlocked: setBlocked,
   }));
   useEffect(() => () => voice.stop(), [voice]);
+  useEffect(() => { voice.rate = voiceRate; }, [voice, voiceRate]);
   const sayable = useMemo(() => sayableOf(timeline), [timeline]);
   // What the voice stage lists: the real steps of the run, newest last, never the lookups that say nothing.
   const voiceSteps = useMemo(
@@ -522,6 +524,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
         {tab === "chat" && voiceOn && voiceView && (
           <VoiceStage agent={voice} state={voiceState} heard={heard} saying={saying} steps={voiceSteps}
             busy={working} waiting={waiting} queued={queued} blocked={blocked} speak={speakOn}
+            rate={voiceRate} onRate={(r) => { setVoiceRate(r); voice.rate = r; store.set("lcw_voice_rate", String(r)); voice.stopSpeaking(); voice.say("This is how fast I'll speak."); }}
             onSpeak={(on) => { setSpeakOn(on); voice.speakReplies = on; store.set("lcw_speak", on ? "1" : "0"); if (!on) voice.stopSpeaking(); }}
             onChat={() => setVoiceView(false)} onEnd={endVoice} />
         )}

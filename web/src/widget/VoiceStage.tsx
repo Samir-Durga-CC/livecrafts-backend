@@ -21,7 +21,7 @@ const LABEL: Record<VoiceState | "working" | "waiting", { title: string; hint: s
   waiting: { title: "Need your OK", hint: "Say “yes” to go ahead, or “no”." },
 };
 
-export function VoiceStage({ agent, state, heard, saying, steps, busy, waiting, queued, blocked, speak, onSpeak, onChat, onEnd }: {
+export function VoiceStage({ agent, state, heard, saying, steps, busy, waiting, queued, blocked, speak, rate, onRate, onSpeak, onChat, onEnd }: {
   agent: VoiceAgent | null;
   state: VoiceState;
   /** The last thing the person said, and the line being read out now. */
@@ -31,6 +31,9 @@ export function VoiceStage({ agent, state, heard, saying, steps, busy, waiting, 
   steps: TimelineItem[];
   busy: boolean; waiting: boolean; queued: string; blocked: boolean;
   speak: boolean;
+  /** How fast it talks: 1 is the model's own pace, 1.15 is the default, 1.4 is brisk. */
+  rate: number;
+  onRate: (r: number) => void;
   onSpeak: (on: boolean) => void;
   onChat: () => void;
   onEnd: () => void;
@@ -67,6 +70,12 @@ export function VoiceStage({ agent, state, heard, saying, steps, busy, waiting, 
       <div className="vs-top">
         <button className="w-icon" onClick={onChat} title="Show the chat"><Icon.Chat size={16} /></button>
         <span className="grow" />
+        <div className="vs-rate" role="group" aria-label="Speaking speed">
+          {[1, 1.15, 1.4].map((r) => (
+            <button key={r} className={Math.abs(rate - r) < 0.01 ? "on" : ""} onClick={() => onRate(r)}
+              title={r === 1 ? "Normal speed" : r === 1.15 ? "A little quicker" : "Brisk"}>{r === 1 ? "1×" : r === 1.15 ? "1.15×" : "1.4×"}</button>
+          ))}
+        </div>
         <button className="w-icon" onClick={() => onSpeak(!speak)} aria-pressed={speak}
           title={speak ? "Stop reading answers aloud" : "Read answers aloud"}>
           {speak ? <Icon.Speaker size={16} /> : <Icon.SpeakerOff size={16} />}
