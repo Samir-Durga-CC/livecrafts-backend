@@ -31,24 +31,34 @@ const sayableOf = (items: TimelineItem[]) => items.filter((i) =>
   // The questions the assistant asked in the form: in voice mode they are read out and answered by speaking.
   || (i.kind === "tool" && i.tool === "ask_person" && i.state === "ok")
   // While it works, say what each change was - otherwise a long build is minutes of silence.
-  || (i.kind === "tool" && i.state === "ok" && !!spokenProgress(i)));
+  );
 
 /** Tools worth showing as a step on the voice stage (the rest are lookups nobody needs to watch). */
 const WORTH = new Set(["place_component", "create_page", "make_change", "revert_change", "screenshot_page", "analyze_design", "ask_person"]);
 const describeWorth = (i: TimelineItem) => i.kind === "tool" && WORTH.has(i.tool);
 
-/** One short line for a change that just landed, or "" for the tools that are only looking things up. */
-function spokenProgress(i: Extract<TimelineItem, { kind: "tool" }>): string {
-  const ui: any = i.ui ?? {};
-  const name = String(i.input?.id ?? "").replace(/_/g, " ");
-  if (i.tool === "place_component") return name ? `Added the ${name} section.` : "Added the section.";
-  if (i.tool === "create_page") return `Created the page${i.input?.title ? ` "${i.input.title}"` : ""}.`;
-  if (i.tool === "revert_change") return "Reverted that.";
-  if (i.tool === "make_change") {
-    const s = String(ui.summary ?? "").replace(/\s+/g, " ").trim();
-    return s ? s.slice(0, 120) : "Changed it.";
+/**
+ * What it is DOING, said as it starts - never what it has done.
+ *
+ * Announcing a finished step ("Added the testimonials section") arrives before the page can show it, so the voice is
+ * ahead of what the person sees and sounds like it is making things up. Saying "I'm adding it now" is true the
+ * moment it is said, and the finished answer reports the result once.
+ */
+function spokenDoing(i: Extract<TimelineItem, { kind: "tool" }>): string {
+  const name = String((i.input as any)?.id ?? "").replace(/_/g, " ");
+  switch (i.tool) {
+    case "get_page_map": case "read_post": case "read_page": case "read_target": case "find_text": return "Reading the page.";
+    case "analyze_design": case "site_profile": return "Looking at how your site is designed.";
+    case "find_components": case "get_component": return "Finding the right section for this.";
+    case "place_component": return name ? `Adding the ${name} section now.` : "Adding the section now.";
+    case "create_page": return "Creating the page.";
+    case "make_change": return "Making the change.";
+    case "revert_change": return "Undoing that.";
+    case "screenshot_page": case "inspect_element": return "Checking how it looks.";
+    case "upload_media_from_chat": case "upload_media_from_url": return "Adding the image to your library.";
+    case "site_status": case "site_history": return "Checking what is on the page already.";
+    default: return "";
   }
-  return "";
 }
 
 function sayText(i: TimelineItem): string {
@@ -61,7 +71,7 @@ function sayText(i: TimelineItem): string {
     const asked = qs.map((q, n) => `${qs.length > 1 ? `${n + 1}. ` : ""}${q.question}${q.options?.length ? ` ${q.options.join(", or ")}?` : ""}`).join(" ");
     return `${intro ? intro + " " : ""}${asked} You can just tell me, or say "you decide".`;
   }
-  if (i.kind === "tool") return spokenProgress(i);
+
   return "";
 }
 
@@ -279,16 +289,24 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   }, [sayable, jobId, voiceOn, voice, spokenReady]);
 
   // show the result: reload the page once the assistant has finished a step that changed the site
+  // The page used to catch up only once the whole request had finished, so a build that places six sections showed
+  // nothing for minutes while the voice said each one was done. Now it catches up as each change lands (at most
+  // every few seconds), and once more when the work stops.
+  const refreshedAt = useRef(0);
   useEffect(() => {
-    if (!jobId || baseline.current === null || !autoRefresh || working) return;
+    if (!jobId || baseline.current === null || !autoRefresh) return;
+    if (working && Date.now() - refreshedAt.current < 4000) return;
     if (writes > baseline.current) {
+      refreshedAt.current = Date.now();
       baseline.current = writes;
       setHistoryKey((k) => k + 1);
       store.sset(`lcw_reloaded:${jobId}`, String(writes));
       // Show the change in place: the page is patched where it differs, with no reload, no white flash and no lost
       // scroll position. The widget only falls back to a full reload if the page says it could not do it.
       const refresh = () => post({ type: "lc:soft-refresh", tab, selector: lastSection.current });
-      if (voiceOn) void voice.whenIdle().then(refresh); else refresh();
+      // Patching the page in place does not interrupt anything, so it no longer has to wait for the voice to finish:
+      // waiting is what let the narration run ahead of what was on screen.
+      refresh();
     }
   }, [writes, working, jobId, autoRefresh, post, tab, voiceOn, voice]);
 
@@ -310,6 +328,26 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       voice.say(chunk);
     }
   }, [timeline, voiceOn, speakOn, voice]);
+
+  // Narrate the work as it happens: one short line when a step STARTS, never more than one every few seconds, and
+  // only while it is actually working. This is what makes it feel like someone doing the job rather than a pause.
+  const narrated = useRef<{ seqs: Set<number>; at: number }>({ seqs: new Set(), at: 0 });
+  useEffect(() => {
+    if (!voiceOn || !speakOn) return;
+    const now = Date.now();
+    for (const it of timeline) {
+      if (it.kind !== "tool" || it.state !== "running") continue;
+      if (narrated.current.seqs.has(it.seq)) continue;
+      narrated.current.seqs.add(it.seq);
+      const line = spokenDoing(it);
+      // One line at a time: a burst of lookups should not become a burst of sentences.
+      if (!line || now - narrated.current.at < 3500) continue;
+      narrated.current.at = now;
+      setSaying(line);
+      voice.say(line);
+    }
+  }, [timeline, voiceOn, speakOn, voice]);
+  useEffect(() => { if (!working) narrated.current = { seqs: new Set(), at: 0 }; }, [working]);
 
   /** A change made in the click panel (directly in WordPress, no AI): show it - it is a draft only editors see. */
   function applied(summary: string) {
