@@ -49,6 +49,8 @@ export class VoiceAgent {
   private seg: Segment | null = null;
   private timer = 0;
   private noise = -55;
+  /** The last level and the bar it has to cross, so the UI can explain silence instead of just waiting. */
+  level = { db: -99, threshold: -44, recording: false, heardAt: 0 };
   private above = 0;
   private below = 0;
   private talking = false;
@@ -160,14 +162,24 @@ export class VoiceAgent {
     if (!this.stream || this.seg) return;
     const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find((m) => MediaRecorder.isTypeSupported?.(m));
     let rec: MediaRecorder;
-    try { rec = new MediaRecorder(this.stream, mime ? { mimeType: mime, audioBitsPerSecond: 48_000 } : undefined); }
-    catch { rec = new MediaRecorder(this.stream); }
+    try {
+      rec = new MediaRecorder(this.stream, mime ? { mimeType: mime, audioBitsPerSecond: 48_000 } : undefined);
+    } catch {
+      try { rec = new MediaRecorder(this.stream); }
+      catch (e) {
+        // Without a recorder the microphone is open but nothing is ever captured: say so instead of listening forever.
+        this.level.recording = false;
+        this.h.onError(`This browser cannot record from that microphone (${(e as Error).message}). Try Chrome or Edge, or another input device.`);
+        return;
+      }
+    }
     const seg: Segment = { rec, parts: [], keep: false };
     rec.ondataavailable = (e) => { if (e.data.size) seg.parts.push(e.data); };
     rec.onstop = () => { if (seg.keep && seg.parts.length) void this.transcribe(new Blob(seg.parts, { type: rec.mimeType || mime || "audio/webm" })); };
     rec.start(250);
     this.seg = seg;
     this.segMs = 0;
+    this.level.recording = true;
   }
 
   private endSegment(keep: boolean) {
@@ -185,6 +197,10 @@ export class VoiceAgent {
     for (let i = 0; i < this.samples.length; i++) sum += this.samples[i] * this.samples[i];
     const db = 20 * Math.log10(Math.sqrt(sum / this.samples.length) + 1e-9);
     this.levelSink?.(Math.max(0, Math.min(1, (db + 62) / 44)));
+    this.level.db = db;
+    this.level.threshold = Math.min(-26, Math.max(-52, this.noise + 11));
+    this.level.recording = !!this.seg;
+    if (this.state === "hearing" || this.state === "transcribing") this.level.heardAt = Date.now();
 
     if (this.state === "speaking") {
       // talking over the answer interrupts it (a stricter bar: the answer itself may leak into the microphone)

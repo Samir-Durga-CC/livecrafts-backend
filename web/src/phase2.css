@@ -427,3 +427,5 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
 .vs-steps li { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); animation: rise .18s ease-out; }
 .vs-steps li svg { color: var(--good, #16a34a); flex: none; }
 .vs-steps li.bad { color: var(--bad); } .vs-steps li.bad svg { color: var(--bad); }
+.vs-deaf { margin-top: 14px; max-width: 34ch; padding: 10px 12px; border-radius: 12px; background: color-mix(in srgb, var(--warn, #d97706) 10%, transparent); border: 1px solid color-mix(in srgb, var(--warn, #d97706) 35%, transparent); display: flex; flex-direction: column; gap: 4px; }
+.vs-deaf b { font-size: 13px; } .vs-deaf span { font-size: 12px; color: var(--muted); line-height: 1.45; }

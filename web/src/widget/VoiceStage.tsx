@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "../icons";
 import type { VoiceAgent, VoiceState } from "./voice";
 import type { TimelineItem } from "../types";
@@ -42,6 +42,23 @@ export function VoiceStage({ agent, state, heard, saying, steps, busy, waiting, 
     return () => { agent.levelSink = null; };
   }, [agent]);
 
+  /**
+   * When it has been listening for a while and has heard nothing at all, say WHY instead of waiting forever: the
+   * level it is getting against the level it needs. That turns "it just sits there" into something to act on -
+   * usually the wrong input device, a muted microphone, or a browser that cannot record.
+   */
+  const [deaf, setDeaf] = useState<null | { db: number; threshold: number; recording: boolean }>(null);
+  useEffect(() => {
+    if (!agent || state !== "listening") { setDeaf(null); return; }
+    const since = Date.now();
+    const t = window.setInterval(() => {
+      const l = agent.level;
+      const quietFor = Date.now() - Math.max(l.heardAt, since);
+      setDeaf(quietFor > 7000 && l.db < l.threshold ? { db: l.db, threshold: l.threshold, recording: l.recording } : null);
+    }, 1000);
+    return () => window.clearInterval(t);
+  }, [agent, state]);
+
   const phase = waiting ? "waiting" : busy && state !== "speaking" && state !== "hearing" ? "working" : state;
   const { title, hint } = LABEL[phase as keyof typeof LABEL] ?? LABEL.listening;
 
@@ -69,6 +86,13 @@ export function VoiceStage({ agent, state, heard, saying, steps, busy, waiting, 
         {heard && <p className="vs-heard"><q>{heard}</q></p>}
         {saying && state === "speaking" && <p className="vs-saying">{saying}</p>}
         {queued && <p className="vs-queued">Next: <q>{queued}</q></p>}
+        {deaf && (
+          <div className="vs-deaf">
+            {deaf.recording
+              ? <><b>I can't hear anything yet.</b><span>Your microphone is giving {Math.round(deaf.db)} dB; speech needs about {Math.round(deaf.threshold)} dB. Check that the right input device is selected and not muted, then speak a little closer.</span></>
+              : <><b>Nothing is being recorded.</b><span>The microphone is open but this browser is not capturing from it. Try Chrome or Edge, or pick another input device.</span></>}
+          </div>
+        )}
         {blocked && <button className="vb-unblock" onClick={() => agent?.unblock()}><Icon.Speaker size={14} /> Tap to hear the answer</button>}
       </div>
 
