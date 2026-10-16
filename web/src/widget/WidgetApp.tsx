@@ -194,6 +194,8 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
 
   // voice: how many speakable items of the current chat were already read out (or are history, never read out)
   const spoken = useRef<{ job: string; count: number } | null>({ job: "", count: 0 });
+  /** How much of the answer being streamed has already been read out, so it is never said twice. */
+  const partial = useRef<{ seq: number; chars: number }>({ seq: -1, chars: 0 });
   const freshJob = useRef("");
   const [spokenReady, setSpokenReady] = useState("");
 
@@ -261,7 +263,16 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   useEffect(() => {
     const s = spoken.current;
     if (!s || s.job !== jobId || sayable.length < s.count) return;
-    if (voiceOn) for (let k = s.count; k < sayable.length; k++) { const line = sayText(sayable[k]); setSaying(line); voice.say(line); }
+    if (voiceOn) for (let k = s.count; k < sayable.length; k++) {
+      const item = sayable[k];
+      let line = sayText(item);
+      // The start of this answer may already have been read out while it was still streaming.
+      if (item.kind === "assistant" && partial.current.seq === item.seq) {
+        line = line.slice(partial.current.chars);
+        partial.current = { seq: -1, chars: 0 };
+      }
+      if (line.trim()) { setSaying(line); voice.say(line); }
+    }
     s.count = sayable.length;
   }, [sayable, jobId, voiceOn, voice, spokenReady]);
 
@@ -278,6 +289,25 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       if (voiceOn) void voice.whenIdle().then(refresh); else refresh();
     }
   }, [writes, working, jobId, autoRefresh, post, tab, voiceOn, voice]);
+
+  // Speak the answer AS IT ARRIVES: every finished sentence goes out while the rest is still being written. Waiting
+  // for the whole answer added seconds of silence to every turn, which is most of what makes voice feel slow.
+  useEffect(() => {
+    if (!voiceOn || !speakOn) return;
+    const last = timeline[timeline.length - 1];
+    if (last?.kind !== "assistant" || !last.streaming) return;
+    if (partial.current.seq !== last.seq) partial.current = { seq: last.seq, chars: 0 };
+    // Only up to the last sentence that is definitely complete.
+    const done = last.text.search(/[.!?।]\s+[^\s]*$/) >= 0
+      ? last.text.slice(0, last.text.lastIndexOf(" ", last.text.length - 1) + 1)
+      : (last.text.match(/^[\s\S]*[.!?।]/)?.[0] ?? "");
+    if (done.length > partial.current.chars + 15) {
+      const chunk = done.slice(partial.current.chars);
+      partial.current = { seq: last.seq, chars: done.length };
+      setSaying(chunk);
+      voice.say(chunk);
+    }
+  }, [timeline, voiceOn, speakOn, voice]);
 
   /** A change made in the click panel (directly in WordPress, no AI): show it - it is a draft only editors see. */
   function applied(summary: string) {

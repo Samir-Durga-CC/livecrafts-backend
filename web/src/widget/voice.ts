@@ -25,9 +25,10 @@ export interface VoiceHandlers {
 
 const TICK = 50;
 const START_MS = 150;        // this long above the threshold = they started talking
-const END_MS = 900;          // this long quiet after talking = they finished
+const END_MS = 700;          // this long quiet after talking = they finished
 const MIN_SPEECH_MS = 300;   // shorter = a click or a cough
-const MAX_UTTERANCE_MS = 30_000;
+const MAX_UTTERANCE_MS = 12_000; // a spoken instruction is never this long; waiting longer just feels broken
+const DROP_DB = 10;          // this far below the sentence's own loudness counts as a pause
 const IDLE_SEGMENT_MS = 5_000; // an idle recording is restarted, so little silence is uploaded with the speech (faster)
 const BARGE_IN_MS = 280;     // talking this long over the answer interrupts it
 
@@ -55,6 +56,7 @@ export class VoiceAgent {
   private below = 0;
   private talking = false;
   private talkMs = 0;
+  private peak = -99;        // how loud this sentence has been: the pause is measured against it, not a fixed bar
   private segMs = 0;
   private transcribing = 0;
   // speaking
@@ -209,7 +211,7 @@ export class VoiceAgent {
       if (this.above >= BARGE_IN_MS) {
         this.stopSpeaking();
         this.newSegment();
-        this.talking = true; this.talkMs = this.above; this.below = 0; this.above = 0;
+        this.talking = true; this.talkMs = this.above; this.below = 0; this.above = 0; this.peak = db;
         this.set("hearing");
       }
       return;
@@ -221,7 +223,7 @@ export class VoiceAgent {
     if (!this.talking) {
       if (db > threshold) {
         this.above += TICK;
-        if (this.above >= START_MS) { this.talking = true; this.talkMs = this.above; this.below = 0; this.set("hearing"); }
+        if (this.above >= START_MS) { this.talking = true; this.talkMs = this.above; this.below = 0; this.peak = db; this.set("hearing"); }
       } else {
         this.above = 0;
         this.noise = Math.max(-75, Math.min(-35, this.noise * 0.97 + db * 0.03)); // follow the room's background noise
@@ -230,10 +232,14 @@ export class VoiceAgent {
       return;
     }
     this.talkMs += TICK;
-    this.below = db < threshold - 3 ? this.below + TICK : 0;
+    this.peak = Math.max(this.peak - 0.05, db); // decays slowly, so one loud word does not set the bar for ever
+    // Finished speaking = quiet for the room OR clearly quieter than this sentence has been. The second test is what
+    // makes it work in a noisy room, where the background alone never falls under the first.
+    const quiet = db < threshold - 3 || db < this.peak - DROP_DB;
+    this.below = quiet ? this.below + TICK : 0;
     if (this.below >= END_MS || this.talkMs >= MAX_UTTERANCE_MS) {
       const keep = this.talkMs - this.below >= MIN_SPEECH_MS;
-      this.talking = false; this.above = 0; this.below = 0;
+      this.talking = false; this.above = 0; this.below = 0; this.peak = -99;
       this.endSegment(keep);
       this.newSegment();
       this.set(keep ? "transcribing" : "listening");
