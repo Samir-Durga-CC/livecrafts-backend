@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../icons";
-import type { VoiceAgent, VoiceState } from "./voice";
+import type { VoiceState } from "./voice";
+
+/** Either engine: the old level-watching one, or the realtime one where the server does the listening. */
+export interface StageAgent {
+  levelSink: ((level: number) => void) | null;
+  level: { db: number; threshold: number; recording: boolean; heardAt: number };
+  stopSpeaking: () => void;
+  unblock: () => void;
+}
 import type { TimelineItem } from "../types";
 
 /**
@@ -22,7 +30,7 @@ const LABEL: Record<VoiceState | "working" | "waiting", { title: string; hint: s
 };
 
 export function VoiceStage({ agent, state, heard, saying, steps, busy, waiting, queued, blocked, speak, rate, onRate, onSpeak, onChat, onEnd }: {
-  agent: VoiceAgent | null;
+  agent: StageAgent | null;
   state: VoiceState;
   /** The last thing the person said, and the line being read out now. */
   heard: string;

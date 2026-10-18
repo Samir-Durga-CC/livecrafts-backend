@@ -18,6 +18,7 @@ import { connectParent, uploadToMedia } from "./parent";
 import { VoiceAgent, type VoiceState } from "./voice";
 import { VoiceBar } from "./VoiceBar";
 import { VoiceStage } from "./VoiceStage";
+import { RealtimeVoice, type RealtimeState } from "./realtime";
 
 /** Told to the assistant with every spoken request. */
 const VOICE_NOTE = "VOICE MODE: the person is talking to you and hears your replies read aloud. Answer in one to three short, natural spoken sentences - no tables, code, URLs or long lists. Say what you did or found; the details stay visible in the chat. " +
@@ -265,6 +266,19 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   const [speakOn, setSpeakOn] = useState(store.get("lcw_voice_speak") !== "0");
   const [voiceRate, setVoiceRate] = useState(Number(store.get("lcw_voice_rate") ?? 1.15) || 1.15);
   const onUtterance = useRef<(text: string) => void>(() => {});
+  // Realtime voice: the server does the listening and the turn-taking. The old engine stays as the fallback, and the
+  // person can force it (Settings) if realtime is unavailable or misbehaving on their machine.
+  const [engine, setEngine] = useState<"realtime" | "classic">((store.get("lcw_voice_engine") as any) === "classic" ? "classic" : "realtime");
+  const waiting4 = useRef<((result: string) => void) | null>(null);
+  const [realtime] = useState(() => new RealtimeVoice({
+    onState: (s: RealtimeState) => setVoiceState(s === "thinking" ? "transcribing" : (s as VoiceState)),
+    onHeard: (t) => setHeard(t),
+    onSaying: (t) => setSaying(t),
+    onError: (m) => setProblem(m),
+    onBlocked: setBlocked,
+    // do_on_site: hand it to the agent that already exists and wait for the result.
+    onRequest: (request) => runForVoice(request),
+  }));
   const [voice] = useState(() => new VoiceAgent({
     onState: setVoiceState, onUtterance: (t) => onUtterance.current(t), onError: (m) => setProblem(m), onBlocked: setBlocked,
   }));
@@ -287,7 +301,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   useEffect(() => {
     const s = spoken.current;
     if (!s || s.job !== jobId || sayable.length < s.count) return;
-    if (voiceOn) for (let k = s.count; k < sayable.length; k++) {
+    if (voiceOn && engine === "classic") for (let k = s.count; k < sayable.length; k++) {
       const item = sayable[k];
       let line = sayText(item);
       // The start of this answer may already have been read out while it was still streaming.
@@ -325,7 +339,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   // Speak the answer AS IT ARRIVES: every finished sentence goes out while the rest is still being written. Waiting
   // for the whole answer added seconds of silence to every turn, which is most of what makes voice feel slow.
   useEffect(() => {
-    if (!voiceOn || !speakOn) return;
+    if (!voiceOn || !speakOn || engine !== "classic") return;
     const last = timeline[timeline.length - 1];
     if (last?.kind !== "assistant" || !last.streaming) return;
     if (partial.current.seq !== last.seq) partial.current = { seq: last.seq, chars: 0 };
@@ -345,7 +359,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   // only while it is actually working. This is what makes it feel like someone doing the job rather than a pause.
   const narrated = useRef<{ seqs: Set<number>; at: number }>({ seqs: new Set(), at: 0 });
   useEffect(() => {
-    if (!voiceOn || !speakOn) return;
+    if (!voiceOn || !speakOn || engine !== "classic") return;
     const now = Date.now();
     for (const it of timeline) {
       if (it.kind !== "tool" || it.state !== "running") continue;
@@ -459,8 +473,40 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   }
 
   // ---- voice: start / end, and what a spoken sentence means right now
+  /** One spoken request, run through the real agent; resolves with one line the voice can read out. */
+  function runForVoice(request: string): Promise<string> {
+    if (!request.trim()) return Promise.resolve("I did not catch what to do.");
+    return new Promise<string>((resolve) => {
+      waiting4.current = resolve;
+      void send(request, [], voiceContext()).catch((e) => {
+        waiting4.current = null;
+        resolve(`That could not be sent: ${(e as Error).message}`);
+      });
+    });
+  }
+  // The job finished (or stopped for approval): give the voice its one line back.
+  useEffect(() => {
+    const done = waiting4.current;
+    if (!done || working) return;
+    if (waiting) { waiting4.current = null; done("It needs your approval on screen before I can carry on."); return; }
+    const last = [...timeline].reverse().find((i): i is Extract<TimelineItem, { kind: "assistant" }> => i.kind === "assistant" && !i.streaming && i.text.trim() !== "");
+    const failed = [...timeline].reverse().find((i): i is Extract<TimelineItem, { kind: "error" }> => i.kind === "error");
+    waiting4.current = null;
+    done(last ? last.text.slice(0, 600) : failed ? `It failed: ${failed.text.slice(0, 200)}` : "Done.");
+  }, [working, waiting, timeline]);
+
   async function startVoice(resume = false) {
     setProblem("");
+    if (engine === "realtime") {
+      const info = await api.voiceInfo().catch(() => null as any);
+      if (info?.realtime?.available) {
+        const ok = await realtime.start({ siteId: site.id, botName: name, pageUrl: cfg.pageUrl });
+        if (!ok) { store.sset("lcw_voice", "0"); return; }
+        setVoiceOn(true); setHeard(""); store.sset("lcw_voice", "1");
+        return;
+      }
+      setEngine("classic"); // no realtime on this backend: fall back quietly
+    }
     const info = await api.voiceInfo().catch(() => ({ available: false, voice: "onyx", voices: [] as string[] }));
     setVoiceList(info.available ? info.voices : []);
     voice.voice = voiceName && info.voices.includes(voiceName) ? voiceName : info.voice;
@@ -470,6 +516,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     if (!resume) voice.say("I'm listening. What would you like to change?");
   }
   function endVoice() {
+    realtime.stop();
     voice.stop();
     setVoiceOn(false); setHeard(""); setQueued(""); queuedRef.current = "";
     store.sset("lcw_voice", "0");
@@ -580,7 +627,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
 
       <div className="w-body">
         {tab === "chat" && voiceOn && voiceView && (
-          <VoiceStage agent={voice} state={voiceState} heard={heard} saying={saying} steps={voiceSteps}
+          <VoiceStage agent={engine === "realtime" ? realtime : voice} state={voiceState} heard={heard} saying={saying} steps={voiceSteps}
             busy={working} waiting={waiting} queued={queued} blocked={blocked} speak={speakOn}
             rate={voiceRate} onRate={(r) => { setVoiceRate(r); voice.rate = r; store.set("lcw_voice_rate", String(r)); voice.stopSpeaking(); voice.say("This is how fast I'll speak."); }}
             onSpeak={(on) => { setSpeakOn(on); voice.speakReplies = on; store.set("lcw_speak", on ? "1" : "0"); if (!on) voice.stopSpeaking(); }}

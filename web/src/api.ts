@@ -56,6 +56,9 @@ export const api = {
   saveProvider: (id: string, b: { apiKey?: string; baseUrl?: string; testModel?: string }) => request<{ ok: boolean; models: ProviderInfo[]; test?: { ok: boolean; reply?: string; ms: number } }>("PUT", `/integrations/models/${id}`, b),
   removeProvider: (id: string) => request<{ ok: boolean; models: ProviderInfo[] }>("DELETE", `/integrations/models/${id}`),
   models: () => request<ModelsReport>("GET", "/models"),
+  /** A short-lived key for ONE realtime voice call (the API key stays on the backend). */
+  realtimeSession: (b: { siteId?: string; botName?: string; pageUrl?: string }) =>
+    request<{ value: string; model: string; voice: string; expiresAt?: number }>("POST", "/voice/realtime/session", b),
   testModel: (model: string) => request<{ ok: boolean; reply?: string; error?: string; ms: number }>("POST", "/integrations/models/test", { model }),
   jobs: () => request<JobSummary[]>("GET", "/jobs"),
   job: (id: string) => request<JobSummary>("GET", `/jobs/${id}`),

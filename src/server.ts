@@ -19,6 +19,7 @@ import { eyes } from "./eyes.js";
 import { assistantSettings, forgetAssistantSettings } from "./persona.js";
 import { closeBrowser, screenshotPath } from "./browser.js";
 import { speak, transcribe, voiceInfo } from "./voice.js";
+import { createSession as createRealtimeSession, realtimeAvailable, realtimeModel, realtimeVoice } from "./realtime.js";
 import { defaultSpeedRuns, needsLocalRun, runSummary, runView, sameHost, type SpeedDevice, type SpeedRuns } from "./pagespeed.js";
 
 export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: FileStore, opts: { speed?: SpeedRuns } = {}) {
@@ -51,7 +52,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     actor: caller.via === "widget" ? { token: caller.token, name: caller.user.name, login: caller.user.login } : undefined,
   });
   // What the chat inside the WordPress widget may call (with its signed per-person token).
-  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/sites|POST \/voice\/(transcribe|speak)|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms|pagespeed)|(POST \/sites\/[\w-]+\/pagespeed|GET \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+)|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
+  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/sites|POST \/voice\/(transcribe|speak|realtime\/session)|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms|pagespeed)|(POST \/sites\/[\w-]+\/pagespeed|GET \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+)|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
 
   async function readBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
     const chunks: Buffer[] = []; let size = 0;
@@ -339,7 +340,21 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       if (m && req.method === "POST") { const s = sites.get(m[1]); if (!s) return send(res, 404, { error: "Unknown site" }); return send(res, 200, await new Bridge(s).ping()); }
 
       // ---- voice: what the person says -> text; the assistant's answer -> speech
-      if (route === "GET /voice") return send(res, 200, voiceInfo());
+      if (route === "GET /voice") return send(res, 200, { ...voiceInfo(), realtime: { available: realtimeAvailable(), model: realtimeModel(), voice: realtimeVoice() } });
+      // A short-lived client secret for ONE realtime call. The API key never leaves this machine.
+      if (route === "POST /voice/realtime/session") {
+        const b = await readJson(req).catch(() => ({} as any));
+        const site = typeof b.siteId === "string" ? sites.get(b.siteId) : undefined;
+        try {
+          return send(res, 200, await createRealtimeSession({
+            botName: typeof b.botName === "string" ? b.botName.slice(0, 60) : undefined,
+            siteName: site?.name,
+            pageUrl: typeof b.pageUrl === "string" ? b.pageUrl.slice(0, 300) : undefined,
+          }));
+        } catch (e) {
+          return send(res, (e as any).status ?? 502, { error: (e as Error).message });
+        }
+      }
       if (route === "POST /voice/transcribe") {
         const buf = await readBody(req, 12_000_000);
         return send(res, 200, await transcribe(buf, String(req.headers["content-type"] ?? "")));
