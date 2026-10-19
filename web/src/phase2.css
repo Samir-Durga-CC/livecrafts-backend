@@ -538,3 +538,6 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
 .sp-hist-scores { display: flex; gap: 4px; flex: none; }
 .sp-pill { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; font-weight: 600; padding: 3px 6px; border-radius: 7px; background: var(--hover); font-variant-numeric: tabular-nums; }
 .sp-pill.good { background: var(--ok-soft); color: var(--ok); } .sp-pill.ok { background: var(--warn-soft); color: var(--warn); } .sp-pill.bad { background: var(--bad-soft); color: var(--bad); }
+.vs-engine { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; }
+.vs-engine.realtime { background: color-mix(in srgb, var(--good, #16a34a) 16%, transparent); color: var(--good, #16a34a); }
+.vs-engine.classic { background: var(--hover); color: var(--muted); }

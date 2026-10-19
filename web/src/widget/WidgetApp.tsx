@@ -321,7 +321,10 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   const refreshedAt = useRef(0);
   useEffect(() => {
     if (!jobId || baseline.current === null || !autoRefresh) return;
-    if (working && Date.now() - refreshedAt.current < 4000) return;
+    // Only when the work has stopped. Patching the page mid-run meant re-parsing the whole document every few
+    // seconds while the browser was already busy, which froze the tab on a builder page. The voice says what is
+    // happening; the page catches up once, at the end.
+    if (working) return;
     if (writes > baseline.current) {
       refreshedAt.current = Date.now();
       baseline.current = writes;
@@ -505,7 +508,9 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
         setVoiceOn(true); setHeard(""); store.sset("lcw_voice", "1");
         return;
       }
-      setEngine("classic"); // no realtime on this backend: fall back quietly
+      // Falling back silently is how someone ends up testing the old engine and thinking realtime is broken.
+      setEngine("classic");
+      setProblem("Realtime voice is not available on this backend (restart it, or add an OpenAI key). Using the older voice mode.");
     }
     const info = await api.voiceInfo().catch(() => ({ available: false, voice: "onyx", voices: [] as string[] }));
     setVoiceList(info.available ? info.voices : []);
@@ -627,7 +632,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
 
       <div className="w-body">
         {tab === "chat" && voiceOn && voiceView && (
-          <VoiceStage agent={engine === "realtime" ? realtime : voice} state={voiceState} heard={heard} saying={saying} steps={voiceSteps}
+          <VoiceStage agent={engine === "realtime" ? realtime : voice} engine={engine} state={voiceState} heard={heard} saying={saying} steps={voiceSteps}
             busy={working} waiting={waiting} queued={queued} blocked={blocked} speak={speakOn}
             rate={voiceRate} onRate={(r) => { setVoiceRate(r); voice.rate = r; store.set("lcw_voice_rate", String(r)); voice.stopSpeaking(); voice.say("This is how fast I'll speak."); }}
             onSpeak={(on) => { setSpeakOn(on); voice.speakReplies = on; store.set("lcw_speak", on ? "1" : "0"); if (!on) voice.stopSpeaking(); }}

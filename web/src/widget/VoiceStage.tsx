@@ -29,7 +29,7 @@ const LABEL: Record<VoiceState | "working" | "waiting", { title: string; hint: s
   waiting: { title: "Need your OK", hint: "Say “yes” to go ahead, or “no”." },
 };
 
-export function VoiceStage({ agent, state, heard, saying, steps, busy, waiting, queued, blocked, speak, rate, onRate, onSpeak, onChat, onEnd }: {
+export function VoiceStage({ agent, state, heard, saying, steps, busy, waiting, queued, blocked, speak, engine, rate, onRate, onSpeak, onChat, onEnd }: {
   agent: StageAgent | null;
   state: VoiceState;
   /** The last thing the person said, and the line being read out now. */
@@ -39,6 +39,8 @@ export function VoiceStage({ agent, state, heard, saying, steps, busy, waiting, 
   steps: TimelineItem[];
   busy: boolean; waiting: boolean; queued: string; blocked: boolean;
   speak: boolean;
+  /** Which engine is talking: shown so nobody tests the old one and thinks the new one is broken. */
+  engine?: "realtime" | "classic";
   /** How fast it talks: 1 is the model's own pace, 1.15 is the default, 1.4 is brisk. */
   rate: number;
   onRate: (r: number) => void;
@@ -77,6 +79,7 @@ export function VoiceStage({ agent, state, heard, saying, steps, busy, waiting, 
     <div className={`vstage vs-${phase}`} role="status" aria-live="polite">
       <div className="vs-top">
         <button className="w-icon" onClick={onChat} title="Show the chat"><Icon.Chat size={16} /></button>
+        {engine && <span className={`vs-engine ${engine}`} title={engine === "realtime" ? "The voice service listens and takes turns; interrupt any time" : "Older voice mode: records, transcribes, then answers"}>{engine === "realtime" ? "live" : "basic"}</span>}
         <span className="grow" />
         <div className="vs-rate" role="group" aria-label="Speaking speed">
           {[1, 1.15, 1.4].map((r) => (
