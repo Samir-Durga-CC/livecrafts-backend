@@ -541,3 +541,18 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
 .vs-engine { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; }
 .vs-engine.realtime { background: color-mix(in srgb, var(--good, #16a34a) 16%, transparent); color: var(--good, #16a34a); }
 .vs-engine.classic { background: var(--hover); color: var(--muted); }
+
+/* ---------------- Voice as one line above the composer (no orb, no takeover) ---------------- */
+.vstrip { display: flex; align-items: center; gap: 8px; margin: 0 10px 6px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); font-size: 12.5px; color: var(--muted); animation: rise .15s ease-out; }
+.vstrip-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.vstrip-listening .vstrip-dot { background: var(--accent); animation: vstrip-breathe 2.4s ease-in-out infinite; }
+.vstrip-hearing .vstrip-dot { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.vstrip-transcribing .vstrip-dot { background: var(--warn, #d97706); }
+.vstrip-speaking .vstrip-dot { background: var(--good, #16a34a); animation: vstrip-breathe 1s ease-in-out infinite; }
+.vstrip.busy .vstrip-dot { background: var(--warn, #d97706); animation: vstrip-breathe 1.4s ease-in-out infinite; }
+.vstrip-label { color: var(--text-2); white-space: nowrap; }
+.vstrip-heard { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.vstrip-btn { border: 1px solid var(--accent); color: var(--accent); background: var(--surface); border-radius: 999px; padding: 3px 10px; font-size: 12px; }
+.vstrip .w-icon { width: 26px; height: 26px; }
+@keyframes vstrip-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .vstrip-dot { animation: none !important; } }

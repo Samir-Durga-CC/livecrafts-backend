@@ -17,7 +17,7 @@ import { SpeedPanel } from "./SpeedPanel";
 import { connectParent, uploadToMedia } from "./parent";
 import { VoiceAgent, type VoiceState } from "./voice";
 import { VoiceBar } from "./VoiceBar";
-import { VoiceStage } from "./VoiceStage";
+import { VoiceStrip } from "./VoiceStrip";
 import { RealtimeVoice, type RealtimeState } from "./realtime";
 import { voiceLog } from "./voicelog";
 
@@ -253,9 +253,16 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
 
   // ---- voice mode: talk hands-free and hear the answers; every message still appears in the chat
   const [voiceOn, setVoiceOn] = useState(false);
+  /**
+   * Two ways to use the microphone:
+   *   dictate - it only writes what you say into the box; you read it and press send
+   *   agent   - a conversation: it answers out loud and does the work
+   * Both put what was heard straight into the chat; neither takes the screen over.
+   */
+  const [voiceMode, setVoiceMode] = useState<"dictate" | "agent">((store.get("lcw_voice_mode") as any) === "dictate" ? "dictate" : "agent");
+  const dictated = useRef("");
+  const [draft, setDraft] = useState<{ text: string; n: number } | undefined>();
   // Voice mode shows its own surface; "show the chat" flips back to the transcript without ending voice.
-  const [voiceView, setVoiceView] = useState(true);
-  useEffect(() => { if (voiceOn) setVoiceView(true); }, [voiceOn]);
   const [saying, setSaying] = useState("");
   const [voiceState, setVoiceState] = useState<VoiceState>("off");
   const [heard, setHeard] = useState("");
@@ -292,11 +299,6 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     voice.expectingShortAnswer = waiting || open;
   }, [voice, waiting, timeline]);
   const sayable = useMemo(() => sayableOf(timeline), [timeline]);
-  // What the voice stage lists: the real steps of the run, newest last, never the lookups that say nothing.
-  const voiceSteps = useMemo(
-    () => timeline.filter((i) => i.kind === "tool" && i.state !== "running" && !!describeWorth(i)).slice(-4),
-    [timeline],
-  );
 
   // read out what is new in the chat (declared before the reload below: the answer is spoken before the page reloads)
   useEffect(() => {
@@ -499,8 +501,20 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     done(last ? last.text.slice(0, 600) : failed ? `It failed: ${failed.text.slice(0, 200)}` : "Done.");
   }, [working, waiting, timeline]);
 
-  async function startVoice(resume = false) {
+  async function startVoice(resume = false, mode: "dictate" | "agent" = voiceMode) {
     setProblem("");
+    setVoiceMode(mode);
+    store.set("lcw_voice_mode", mode);
+    dictated.current = "";
+    // Dictation never uses the realtime conversation: it only needs the words, and nothing should answer back.
+    if (mode === "dictate") {
+      const info = await api.voiceInfo().catch(() => ({ available: false, voice: "onyx", voices: [] as string[] }));
+      voiceLog.start("classic", (info as any).sttModel ?? "");
+      voice.speakReplies = false;
+      if (!(await voice.start(info.available))) { store.sset("lcw_voice", "0"); return; }
+      setVoiceOn(true); setHeard(""); store.sset("lcw_voice", "1");
+      return;
+    }
     if (engine === "realtime") {
       const info = await api.voiceInfo().catch(() => null as any);
       if (info?.realtime?.available) {
@@ -528,12 +542,18 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     setVoiceOn(false); setHeard(""); setQueued(""); queuedRef.current = "";
     store.sset("lcw_voice", "0");
   }
-  useEffect(() => { if (store.sget("lcw_voice") === "1") void startVoice(true); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (store.sget("lcw_voice") === "1") void startVoice(true, voiceMode); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const voiceContext = () => [selectionContext(), VOICE_NOTE].filter(Boolean).join("\n\n");
   const pendingApproval = [...timeline].reverse().find((i): i is Extract<TimelineItem, { kind: "approval" }> => i.kind === "approval" && !i.answer);
 
   onUtterance.current = (text: string) => {
     setHeard(text);
+    if (voiceMode === "dictate") {
+      // Straight into the box. Nothing is sent until the person presses send, so a misheard word can be fixed.
+      dictated.current = [dictated.current, text].filter(Boolean).join(" ");
+      setDraft({ text: dictated.current, n: Date.now() });
+      return;
+    }
     const low = text.toLowerCase().replace(/[.!?]+$/, "").trim();
     if (/^(stop listening|goodbye|good bye|bye|that'?s all|that is all|(turn off|end|exit|close) voice( mode)?)$/.test(low)) { voice.say("Goodbye."); void voice.whenIdle(8000).then(endVoice); return; }
     if (/^(stop talking|be quiet|quiet|silence|shut up|enough)$/.test(low)) { voice.stopSpeaking(); return; }
@@ -633,15 +653,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       {problem && <div className="banner error w-banner"><span>{problem}</span><button onClick={() => setProblem("")}><Icon.Close size={13} /></button></div>}
 
       <div className="w-body">
-        {tab === "chat" && voiceOn && voiceView && (
-          <VoiceStage agent={engine === "realtime" ? realtime : voice} engine={engine} state={voiceState}
-            onDiagnostics={() => { voiceLog.download(); say("Voice log saved to your downloads"); }} heard={heard} saying={saying} steps={voiceSteps}
-            busy={working} waiting={waiting} queued={queued} blocked={blocked} speak={speakOn}
-            rate={voiceRate} onRate={(r) => { setVoiceRate(r); voice.rate = r; store.set("lcw_voice_rate", String(r)); voice.stopSpeaking(); voice.say("This is how fast I'll speak."); }}
-            onSpeak={(on) => { setSpeakOn(on); voice.speakReplies = on; store.set("lcw_speak", on ? "1" : "0"); if (!on) voice.stopSpeaking(); }}
-            onChat={() => setVoiceView(false)} onEnd={endVoice} />
-        )}
-        {tab === "chat" && !(voiceOn && voiceView) && (
+        {tab === "chat" && (
           <div className="w-chat">
             <Transcript items={timeline} model={name} busy={answering} working={working} welcome={welcome}
               onAsk={(t) => void send(t, [])}
@@ -656,12 +668,30 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
                 onSpeak={(on) => { voice.speakReplies = on; if (!on) voice.stopSpeaking(); setSpeakOn(on); store.set("lcw_voice_speak", on ? "1" : "0"); }}
                 onEnd={endVoice} />
             )}
+            {voiceOn && (
+              <VoiceStrip mode={voiceMode} state={voiceState} heard={heard} busy={working} blocked={blocked} speak={speakOn}
+                onSpeak={(on) => { setSpeakOn(on); voice.speakReplies = on; store.set("lcw_voice_speak", on ? "1" : "0"); if (!on) { voice.stopSpeaking(); realtime.stopSpeaking(); } }}
+                onUnblock={() => (voiceMode === "agent" ? realtime.unblock() : voice.unblock())}
+                onDiagnostics={() => { voiceLog.download(); say("Voice log saved to your downloads"); }}
+                onEnd={endVoice} />
+            )}
             <Composer compact disabled={working || waiting} model={name} context={{}}
               onStop={working && jobId ? stop : undefined} stopping={stopping}
               notice={paused ? <PausedBar kind={pauseKind} onKind={setPauseKind} onContinue={() => void cont()} /> : status === "interrupted" || status === "failed" ? <InterruptedBar failed={status === "failed"} error={String([...events].reverse().find((e) => e.type === "status")?.data.error ?? "")} onContinue={() => void cont()} /> : undefined}
               placeholder={voiceOn && !waiting && !working ? "Voice mode is on - just talk, or type here…" : waiting ? "Answer the approval above…" : working ? (stopping ? "Stopping…" : "Working… (Stop to pause)") : paused ? (pauseKind === "edit" ? "Type your corrected request…" : "Type a note…") : "Ask for any change on this page…"}
-              voice={<button className={`mode mic ${voiceOn ? "on" : ""}`} aria-pressed={voiceOn} onClick={() => (voiceOn ? endVoice() : void startVoice())}
-                title={voiceOn ? "End voice mode" : "Voice mode: just talk - no need to press Enter. Answers are read aloud."}><Icon.Mic size={17} /></button>}
+              draft={draft}
+              voice={<>
+                <button className={`mode mic ${voiceOn && voiceMode === "dictate" ? "on" : ""}`} aria-pressed={voiceOn && voiceMode === "dictate"}
+                  onClick={() => (voiceOn && voiceMode === "dictate" ? endVoice() : void startVoice(false, "dictate"))}
+                  title="Dictate: what you say is typed into the box. Nothing is sent until you press send.">
+                  <Icon.Mic size={17} />
+                </button>
+                <button className={`mode mic ${voiceOn && voiceMode === "agent" ? "on" : ""}`} aria-pressed={voiceOn && voiceMode === "agent"}
+                  onClick={() => (voiceOn && voiceMode === "agent" ? endVoice() : void startVoice(false, "agent"))}
+                  title="Talk: a conversation - it answers out loud and does the work.">
+                  <Icon.Chat size={17} />
+                </button>
+              </>}
               attachNote={cfg.canUpload ? <label className="att-save"><input type="checkbox" checked={saveToLibrary} onChange={(e) => { setSaveToLibrary(e.target.checked); store.set("lcw_save_media", e.target.checked ? "1" : "0"); }} /> Also save to the Media Library</label> : undefined}
               onClearContext={() => {}} onSend={sendFromComposer}
               chips={selected ? <span className="chip"><Icon.Cursor size={12} /> {selected.label}<button aria-label="forget selection" onClick={() => setSelected(null)}><Icon.Close size={11} /></button></span> : undefined}
