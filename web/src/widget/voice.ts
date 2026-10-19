@@ -1,4 +1,5 @@
 import { api } from "../api";
+import { voiceLog } from "./voicelog";
 
 /**
  * Hands-free voice for the chat: no button to press, no Enter.
@@ -167,7 +168,15 @@ export class VoiceAgent {
 
   // ------------------------------------------------------------------ listening
 
-  private set(s: VoiceState) { if (this.state !== s) { this.state = s; this.h.onState(s); } }
+  private set(s: VoiceState) {
+    if (this.state === s) return;
+    // The old engine decides turns itself, so what it thought it heard is the evidence that matters.
+    if (s === "hearing") voiceLog.add("speech.started", { whileSpeaking: this.state === "speaking", db: Math.round(this.level.db), threshold: Math.round(this.level.threshold) });
+    if (s === "transcribing") voiceLog.add("speech.stopped", { talkMs: this.talkMs });
+    if (s === "speaking") voiceLog.add("reply.first-audio");
+    this.state = s;
+    this.h.onState(s);
+  }
 
   private newSegment() {
     if (!this.stream || this.seg) return;
@@ -263,8 +272,10 @@ export class VoiceAgent {
     this.transcribing++;
     try {
       const text = (await api.transcribe(audio)).trim();
+      voiceLog.add("heard", { text, bytes: audio.size });
       if (text && this.state !== "off") { this.chime("heard"); this.h.onUtterance(text); }
     } catch (e) {
+      voiceLog.add("error", { message: (e as Error).message, where: "transcribe" });
       if (this.state !== "off") this.h.onError((e as Error).message);
     } finally {
       this.transcribing--;

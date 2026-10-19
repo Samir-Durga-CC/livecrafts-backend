@@ -1,4 +1,5 @@
 import { api } from "../api";
+import { voiceLog } from "./voicelog";
 
 /**
  * Voice through OpenAI's Realtime API: the microphone and the model are joined by WebRTC, and the SERVER decides when
@@ -66,6 +67,7 @@ export class RealtimeVoice {
     let session: { value: string; model: string };
     try {
       session = await api.realtimeSession(opts);
+      voiceLog.start("realtime", session.model);
     } catch (e) {
       this.stopTracks();
       this.set("off");
@@ -91,9 +93,10 @@ export class RealtimeVoice {
       const dc = pc.createDataChannel("oai-events");
       this.dc = dc;
       dc.onmessage = (e) => { try { this.event(JSON.parse(e.data)); } catch { /* not ours */ } };
-      dc.onopen = () => this.set("listening");
+      dc.onopen = () => { voiceLog.add("connected"); this.set("listening"); };
 
       pc.onconnectionstatechange = () => {
+        voiceLog.add("peer." + pc.connectionState);
         if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
           if (this.state !== "off") this.h.onError("The voice connection dropped. Turn voice on again.");
           this.stop();
@@ -108,7 +111,7 @@ export class RealtimeVoice {
         body: offer.sdp,
         headers: { Authorization: `Bearer ${session.value}`, "Content-Type": "application/sdp" },
       });
-      if (!res.ok) throw new Error(`the voice service refused the connection (HTTP ${res.status})`);
+      if (!res.ok) { voiceLog.add("connect.failed", { status: res.status }); throw new Error(`the voice service refused the connection (HTTP ${res.status})`); }
       await pc.setRemoteDescription({ type: "answer", sdp: await res.text() });
       return true;
     } catch (e) {
@@ -186,20 +189,25 @@ export class RealtimeVoice {
     switch (ev?.type) {
       case "input_audio_buffer.speech_started":
         // They started talking - over the answer, if it was still going. The server stops it for us.
+        voiceLog.add("speech.started", { whileSpeaking: this.state === "speaking" });
         this.saying = "";
         this.set("hearing");
         break;
       case "input_audio_buffer.speech_stopped":
+        voiceLog.add("speech.stopped");
         this.set("thinking");
         break;
       case "conversation.item.input_audio_transcription.completed":
+        voiceLog.add("heard", { text: String(ev.transcript ?? "").trim() });
         if (ev.transcript) this.h.onHeard(String(ev.transcript).trim());
         break;
       case "response.created":
+        voiceLog.add("reply.started");
         this.saying = "";
         this.set("thinking");
         break;
       case "response.output_audio_transcript.delta":
+        if (!this.saying) voiceLog.add("reply.first-audio");
         this.saying += String(ev.delta ?? "");
         this.h.onSaying(this.saying);
         this.set("speaking");
@@ -210,7 +218,11 @@ export class RealtimeVoice {
       case "response.done":
         void this.finish(ev);
         break;
+      case "response.cancelled":
+        voiceLog.add("reply.cancelled");
+        break;
       case "error":
+        voiceLog.add("error", { message: String(ev.error?.message ?? ""), code: ev.error?.code, type: ev.error?.type });
         this.h.onError(String(ev.error?.message ?? "The voice service reported a problem."));
         break;
     }
@@ -225,14 +237,19 @@ export class RealtimeVoice {
       if (this.running.has(call.call_id)) continue;
       this.running.add(call.call_id);
       this.set("thinking");
-      let result: string;
+      let result = "";
+      const began = Date.now();
+      let asked = "";
       try {
         const args = JSON.parse(call.arguments || "{}");
-        result = await this.h.onRequest(String(args.request ?? "").trim());
+        asked = String(args.request ?? "").trim();
+        voiceLog.add("work.started", { request: asked.slice(0, 200) });
+        result = await this.h.onRequest(asked);
       } catch (e) {
         result = `That did not work: ${(e as Error).message}`;
       } finally {
         this.running.delete(call.call_id);
+        voiceLog.add("work.done", { ms: Date.now() - began, request: asked.slice(0, 80), result: String(result ?? "").slice(0, 160) });
       }
       this.send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.call_id, output: JSON.stringify({ result }) } });
     }

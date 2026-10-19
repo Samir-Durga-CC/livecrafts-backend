@@ -29,7 +29,7 @@ const LABEL: Record<VoiceState | "working" | "waiting", { title: string; hint: s
   waiting: { title: "Need your OK", hint: "Say “yes” to go ahead, or “no”." },
 };
 
-export function VoiceStage({ agent, state, heard, saying, steps, busy, waiting, queued, blocked, speak, engine, rate, onRate, onSpeak, onChat, onEnd }: {
+export function VoiceStage({ agent, state, heard, saying, steps, busy, waiting, queued, blocked, speak, engine, rate, onRate, onSpeak, onChat, onDiagnostics, onEnd }: {
   agent: StageAgent | null;
   state: VoiceState;
   /** The last thing the person said, and the line being read out now. */
@@ -46,6 +46,8 @@ export function VoiceStage({ agent, state, heard, saying, steps, busy, waiting, 
   onRate: (r: number) => void;
   onSpeak: (on: boolean) => void;
   onChat: () => void;
+  /** Save the session's event log so a voice problem can be looked at instead of described. */
+  onDiagnostics?: () => void;
   onEnd: () => void;
 }) {
   const orb = useRef<HTMLButtonElement>(null);

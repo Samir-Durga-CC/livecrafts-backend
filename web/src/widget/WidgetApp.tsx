@@ -19,6 +19,7 @@ import { VoiceAgent, type VoiceState } from "./voice";
 import { VoiceBar } from "./VoiceBar";
 import { VoiceStage } from "./VoiceStage";
 import { RealtimeVoice, type RealtimeState } from "./realtime";
+import { voiceLog } from "./voicelog";
 
 /** Told to the assistant with every spoken request. */
 const VOICE_NOTE = "VOICE MODE: the person is talking to you and hears your replies read aloud. Answer in one to three short, natural spoken sentences - no tables, code, URLs or long lists. Say what you did or found; the details stay visible in the chat. " +
@@ -516,6 +517,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     setVoiceList(info.available ? info.voices : []);
     voice.voice = voiceName && info.voices.includes(voiceName) ? voiceName : info.voice;
     voice.speakReplies = speakOn;
+    voiceLog.start("classic", (info as any).sttModel ?? "");
     if (!(await voice.start(info.available))) { store.sset("lcw_voice", "0"); return; }
     setVoiceOn(true); setHeard(""); store.sset("lcw_voice", "1");
     if (!resume) voice.say("I'm listening. What would you like to change?");
@@ -632,7 +634,8 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
 
       <div className="w-body">
         {tab === "chat" && voiceOn && voiceView && (
-          <VoiceStage agent={engine === "realtime" ? realtime : voice} engine={engine} state={voiceState} heard={heard} saying={saying} steps={voiceSteps}
+          <VoiceStage agent={engine === "realtime" ? realtime : voice} engine={engine} state={voiceState}
+            onDiagnostics={() => { voiceLog.download(); say("Voice log saved to your downloads"); }} heard={heard} saying={saying} steps={voiceSteps}
             busy={working} waiting={waiting} queued={queued} blocked={blocked} speak={speakOn}
             rate={voiceRate} onRate={(r) => { setVoiceRate(r); voice.rate = r; store.set("lcw_voice_rate", String(r)); voice.stopSpeaking(); voice.say("This is how fast I'll speak."); }}
             onSpeak={(on) => { setSpeakOn(on); voice.speakReplies = on; store.set("lcw_speak", on ? "1" : "0"); if (!on) voice.stopSpeaking(); }}
