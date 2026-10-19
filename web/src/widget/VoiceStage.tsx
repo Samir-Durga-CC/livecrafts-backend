@@ -89,6 +89,11 @@ export function VoiceStage({ agent, state, heard, saying, steps, busy, waiting, 
               title={r === 1 ? "Normal speed" : r === 1.15 ? "A little quicker" : "Brisk"}>{r === 1 ? "1×" : r === 1.15 ? "1.15×" : "1.4×"}</button>
           ))}
         </div>
+        {onDiagnostics && (
+          <button className="w-icon" onClick={onDiagnostics} title="Save this voice session's log, to send to support">
+            <Icon.Share size={15} />
+          </button>
+        )}
         <button className="w-icon" onClick={() => onSpeak(!speak)} aria-pressed={speak}
           title={speak ? "Stop reading answers aloud" : "Read answers aloud"}>
           {speak ? <Icon.Speaker size={16} /> : <Icon.SpeakerOff size={16} />}
