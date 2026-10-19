@@ -64,10 +64,11 @@ export class RealtimeVoice {
       return false;
     }
 
-    let session: { value: string; model: string };
+    let session: { value: string; model: string; tuning?: Record<string, unknown> };
     try {
       session = await api.realtimeSession(opts);
       voiceLog.start("realtime", session.model);
+      voiceLog.add("tuning", (session.tuning ?? {}) as Record<string, unknown>);
     } catch (e) {
       this.stopTracks();
       this.set("off");
