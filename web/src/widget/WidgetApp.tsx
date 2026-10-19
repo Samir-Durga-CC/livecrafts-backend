@@ -689,7 +689,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
                 <button className={`mode mic ${voiceOn && voiceMode === "agent" ? "on" : ""}`} aria-pressed={voiceOn && voiceMode === "agent"}
                   onClick={() => (voiceOn && voiceMode === "agent" ? endVoice() : void startVoice(false, "agent"))}
                   title="Talk: a conversation - it answers out loud and does the work.">
-                  <Icon.Chat size={17} />
+                  <Icon.Waveform size={17} />
                 </button>
               </>}
               attachNote={cfg.canUpload ? <label className="att-save"><input type="checkbox" checked={saveToLibrary} onChange={(e) => { setSaveToLibrary(e.target.checked); store.set("lcw_save_media", e.target.checked ? "1" : "0"); }} /> Also save to the Media Library</label> : undefined}
