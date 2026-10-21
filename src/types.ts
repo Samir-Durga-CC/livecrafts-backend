@@ -61,6 +61,8 @@ export interface Job {
   model?: string;
   /** The page the person is on (default page for the assistant's reads and checks). */
   pageUrl?: string;
+  /** This chat is a voice session: faster model, low reasoning effort, and the site context is read once per session. */
+  voice?: boolean;
   /** The person in the chat (widget): every change is credited to them in the site history. */
   actor?: { name: string; login: string };
   /** Their signed widget token (short-lived; refreshed with every message / approval). */

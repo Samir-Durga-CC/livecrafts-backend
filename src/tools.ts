@@ -12,6 +12,7 @@ import { makeComponentTools } from "./componentTools.js";
 import { generateImage, type ImageShape } from "./images.js";
 import { chooseTerms } from "./terms.js";
 import { sameHost, summarize, type SpeedDevice, type SpeedRuns } from "./pagespeed.js";
+import type { SiteCache } from "./sessions.js";
 
 /**
  * The assistant's tools. Every write goes to the site as a DRAFT through the Livecrafts plugin (POST /changes):
@@ -94,6 +95,11 @@ export interface ToolExtras {
   speed?: SpeedRuns | null;
   siteId?: string;
   siteUrl?: string;
+  /**
+   * A voice session's memory of the site (sessions.ts): site_status, read_notes and get_page_map are read once and
+   * then answered from here, instead of once per turn. Every write empties it, so a changed page is never read stale.
+   */
+  cache?: SiteCache | null;
 }
 
 const deviceSchema = z.enum(["desktop", "tablet", "mobile"]).optional().describe("Screen size (default desktop)");
@@ -118,11 +124,15 @@ function parseValue(v: string): unknown {
 
 export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras = {}) {
   const ref = () => extras.ref?.() ?? "";
+  /** Read once per voice session (and once per run otherwise). */
+  const once = <T>(key: string, read: () => Promise<T>): Promise<T> => (extras.cache ? extras.cache.get(key, read) : read());
+  /** The site was written to: the session's status, notes and page maps are stale from here on. */
+  const changed = () => extras.cache?.invalidate();
   const postCache = new Map<string, number>();
   const postIdOf = async (url?: string, post?: number) => {
     if (post) return post;
     const u = url || extras.pageUrl?.() || bridge.homeUrl;
-    if (!postCache.has(u)) postCache.set(u, Number((await bridge.map({ url: u, view: "draft" }))?.post?.id));
+    if (!postCache.has(u)) postCache.set(u, Number((await once(`map:${u}:draft`, () => bridge.map({ url: u, view: "draft" })))?.post?.id));
     return postCache.get(u)!;
   };
   /** Run a write; for one that changed a page, check it in a real browser before the model hears back. */
@@ -130,12 +140,15 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     const v = extras.verifier;
     const before = v && pageUrl ? await v.before(pageUrl) : null;
     const res = await write();
+    // The page is not what the session read any more. Done before the browser check, so nothing can read it stale.
+    if (res?.ok !== false && !res?.unchanged) changed();
     if (res?.ok === false || res?.unchanged || !v || !pageUrl || !res?.change) return res;
     return { ...res, verification: await v.after(pageUrl, res.change, before, opts) };
   };
   /** A NEW page / post: open its preview the way the theme / page builder renders it (title, content, image, health). */
   const checkedNew = async (res: any, e: { title: string; content?: string; imageUrl?: string }) => {
     const v = extras.verifier;
+    if (res?.ok) changed();
     if (!res?.ok || !res?.preview) return res;
     if (!v) return { ...res, verification: { passed: true, checks: [], summary: "Not checked in a browser (page checks are off). Open the preview link to see it." } };
     return { ...res, verification: await v.newPost(res.preview, e) };
@@ -148,7 +161,7 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
         "the last release, and changes made OUTSIDE Livecrafts since then (WP admin, Elementor editor - by whom). Call it at the start of a request that touches existing work, and before reverting.",
       inputSchema: z.object({}),
       execute: async () => safe(async () => {
-        const s = await bridge.status();
+        const s = await once("status", () => bridge.status());
         return {
           ok: true,
           drafts: (s.drafts?.objects ?? []).map((o: any) => ({ object: o.object.label, url: o.object.url, changes: o.changes.map(changeView) })),
@@ -180,7 +193,8 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
       description: "Your notes about this site and about a page (what you learned last time: where things are stored, brand rules, pitfalls). Read them before working on a page you have not read notes for in this chat.",
       inputSchema: z.object({ url: z.string().optional().describe("Page URL (default: the page the person is on)") }),
       execute: async ({ url }) => safe(async () => {
-        const r = await bridge.notes(await postIdOf(url));
+        const post = await postIdOf(url);
+        const r = await once(`notes:${post ?? ""}`, () => bridge.notes(post));
         return { ok: true, site: r.site?.text ?? "", page: r.page?.text ?? "", pageUpdated: r.page?.updated ?? null };
       }),
     }),
@@ -191,6 +205,7 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
       inputSchema: z.object({ scope: z.enum(["site", "page"]), url: z.string().optional().describe("For page notes: the page URL (default: the page the person is on)"), text: z.string().max(20000) }),
       execute: async ({ scope, url, text }) => safe(async () => {
         const r = await bridge.setNotes(scope === "page" ? await postIdOf(url) : undefined, text);
+        changed();
         return { ok: true, saved: scope, updated: r.notes?.updated };
       }),
     }),
@@ -209,7 +224,11 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
         "Everything editable on a page with its CURRENT value: ACF fields (also inside groups and repeater/flexible rows), Elementor content settings, ACF row lists, and the Elementor outline " +
         "(element ids, types, nesting, short text). Choose change targets from here. view draft (default) includes unpublished changes.",
       inputSchema: z.object({ url: z.string().optional().describe("Full page URL (default: the page the person is on, else the home page)"), view: viewSchema }),
-      execute: async ({ url, view }) => safe(async () => compactMap(await bridge.map({ url: url || extras.pageUrl?.() || bridge.homeUrl, view: view ?? "draft" }))),
+      execute: async ({ url, view }) => safe(async () => {
+        const u = url || extras.pageUrl?.() || bridge.homeUrl;
+        const v = view ?? "draft";
+        return compactMap(await once(`map:${u}:${v}`, () => bridge.map({ url: u, view: v })));
+      }),
     }),
     read_post: tool({
       description: "The title, status, template and RAW content (block markup) of a page/post as editors see it now (draft view), or as visitors do (live). Use it before changing blocks or content.",

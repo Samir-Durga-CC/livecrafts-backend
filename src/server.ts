@@ -18,7 +18,8 @@ import { log } from "./usage.js";
 import { eyes } from "./eyes.js";
 import { assistantSettings, forgetAssistantSettings } from "./persona.js";
 import { closeBrowser, screenshotPath } from "./browser.js";
-import { speak, transcribe, voiceInfo } from "./voice.js";
+import { speak, siteWordsFromMap, transcribe, voiceInfo } from "./voice.js";
+import { voiceSession } from "./sessions.js";
 import { createSession as createRealtimeSession, realtimeAvailable, realtimeModel, realtimeVoice } from "./realtime.js";
 import { defaultSpeedRuns, needsLocalRun, runSummary, runView, sameHost, type SpeedDevice, type SpeedRuns } from "./pagespeed.js";
 
@@ -49,6 +50,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
   const requestOpts = (b: any, caller: Caller) => ({
     approvalMode: b.approvalMode, model: typeof b.model === "string" ? b.model.trim() : undefined, kind: ["new", "note", "edit"].includes(b.kind) ? b.kind : undefined,
     pageUrl: typeof b.pageUrl === "string" && /^https?:\/\//.test(b.pageUrl) ? b.pageUrl : undefined,
+    voice: b.voice === true,
     actor: caller.via === "widget" ? { token: caller.token, name: caller.user.name, login: caller.user.login } : undefined,
   });
   // What the chat inside the WordPress widget may call (with its signed per-person token).
@@ -75,6 +77,25 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     return ctx.join("\n") || undefined;
   }
   const fileIdsOf = (b: any): string[] => (Array.isArray(b.fileIds) ? b.fileIds.map(String) : []);
+
+  /**
+   * Read the site ONCE for a voice session: status, notes and the page map, in parallel, into the session's cache
+   * (sessions.ts). Every turn of that session then starts with all three in hand instead of fetching them again,
+   * and the page map also gives the vocabulary hint the realtime engine needs to hear the site's own names.
+   * Best effort: a site that cannot be reached must not stop the voice from starting.
+   */
+  async function warmVoiceSession(site: Site, pageUrl?: string): Promise<string> {
+    const cache = voiceSession(site.id, pageUrl);
+    const bridge = new Bridge(site);
+    const url = pageUrl || bridge.homeUrl;
+    const [map] = await Promise.all([
+      cache.get(`map:${url}:draft`, () => bridge.map({ url, view: "draft" })).catch(() => null),
+      cache.get("status", () => bridge.status()).catch(() => null),
+    ]);
+    const post = Number((map as any)?.post?.id) || undefined;
+    await cache.get(`notes:${post ?? ""}`, () => bridge.notes(post)).catch(() => null);
+    return map ? siteWordsFromMap(map) : "";
+  }
 
   // The chat UI is a static React build in web/dist, served from the same origin (so no CORS, and the plugin can iframe it).
   const webRoot = path.resolve(process.cwd(), "web", "dist");
@@ -345,11 +366,16 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       if (route === "POST /voice/realtime/session") {
         const b = await readJson(req).catch(() => ({} as any));
         const site = typeof b.siteId === "string" ? sites.get(b.siteId) : undefined;
+        const voicePage = typeof b.pageUrl === "string" && /^https?:\/\//.test(b.pageUrl) ? b.pageUrl.slice(0, 300) : undefined;
+        // The site is read once here, so the first thing the person says does not wait for it - and its own words go
+        // to the realtime model, which otherwise hears "AEROMATIC" as "aromatic".
+        const siteWords = site ? await warmVoiceSession(site, voicePage) : "";
         try {
           return send(res, 200, await createRealtimeSession({
             botName: typeof b.botName === "string" ? b.botName.slice(0, 60) : undefined,
             siteName: site?.name,
-            pageUrl: typeof b.pageUrl === "string" ? b.pageUrl.slice(0, 300) : undefined,
+            pageUrl: voicePage,
+            siteWords,
           }));
         } catch (e) {
           return send(res, (e as any).status ?? 502, { error: (e as Error).message });

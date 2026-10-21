@@ -11,6 +11,7 @@ import { log, recordUsage, tokensOf } from "./usage.js";
 import type { ApprovalMode, Job, JobEvent, JobStatus, PendingApproval, Site } from "./types.js";
 import { APPROVAL_MODES } from "./types.js";
 import { WRITE_TOOLS } from "./tools.js";
+import { voiceSession, type SiteCache } from "./sessions.js";
 
 export interface RequestOptions {
   approvalMode?: ApprovalMode; model?: string; /** "note" / "edit" = said while paused: same request continues */ kind?: "new" | "note" | "edit";
@@ -18,6 +19,8 @@ export interface RequestOptions {
   actor?: { token: string; name: string; login: string };
   /** The page the person is on. */
   pageUrl?: string;
+  /** The request came from voice (the realtime tool or the voice chat): faster model, context read once per session. */
+  voice?: boolean;
 }
 const cleanMode = (m: unknown): ApprovalMode | undefined => (APPROVAL_MODES.includes(m as ApprovalMode) ? (m as ApprovalMode) : undefined);
 
@@ -64,7 +67,7 @@ export class JobRunner {
     const now = new Date().toISOString();
     const text = context ? `${context}\n\n${prompt}` : prompt;
     const job: Job = { id: newId("job"), siteId, prompt, status: "queued", messages: [userMessage(text, fileIds)], pending: [], events: [], changes: [], createdAt: now, updatedAt: now,
-      approvalMode: cleanMode(opts.approvalMode) ?? "request", requestSeq: 1, model: opts.model || undefined, pageUrl: opts.pageUrl || undefined,
+      approvalMode: cleanMode(opts.approvalMode) ?? "request", requestSeq: 1, model: opts.model || undefined, pageUrl: opts.pageUrl || undefined, voice: opts.voice || undefined,
       actorToken: opts.actor?.token, actor: opts.actor ? { name: opts.actor.name, login: opts.actor.login } : undefined };
     this.jobs.put(job);
     this.emit(job, "user", { text: prompt, fileIds, requestId: 1, approvalMode: job.approvalMode });
@@ -96,6 +99,7 @@ export class JobRunner {
     if (cleanMode(opts.approvalMode)) job.approvalMode = cleanMode(opts.approvalMode);
     if (opts.model !== undefined) job.model = opts.model || undefined;
     if (opts.pageUrl) job.pageUrl = opts.pageUrl;
+    if (opts.voice !== undefined) job.voice = opts.voice || undefined;
     if (opts.actor) { job.actorToken = opts.actor.token; job.actor = { name: opts.actor.name, login: opts.actor.login }; }
     this.emit(job, "user", { text: prompt, fileIds, requestId: job.requestSeq, approvalMode: job.approvalMode, ...(kind !== "new" ? { kind } : {}) });
     this.setStatus(job, "queued");
@@ -360,6 +364,9 @@ export class JobRunner {
     try {
       const mode = job.approvalMode ?? "every";
       const persona = await assistantSettings(site);
+      // A voice session reads the site once and keeps it: the turns after the first one get the status, the notes and
+      // the page map from here instead of fetching them again (and every write empties it).
+      const cache: SiteCache | null = job.voice ? voiceSession(job.siteId, job.pageUrl) : null;
       const ctx: JobContext = {
         persona,
         approval: { mode, planApproved: mode === "request" && job.planApprovedFor === (job.requestSeq ?? 1) },
@@ -367,7 +374,9 @@ export class JobRunner {
         actorToken: job.actorToken,
         pageUrl: job.pageUrl,
         ref: `${job.id}#${job.requestSeq ?? 1}`,
-        siteContext: await siteContext(new Bridge(site, job.actorToken), job.pageUrl),
+        siteContext: await siteContext(new Bridge(site, job.actorToken), job.pageUrl, cache),
+        voice: job.voice,
+        cache,
         shouldStop: () => ctl.stop,
       };
       const { agent, model } = this.factory(site, ctx);
@@ -578,10 +587,11 @@ function lastRequestText(job: Job): string {
  * What the assistant should know before it starts: drafts not deployed yet, conflicts, changes made outside Livecrafts
  * since the last release (who / what), and the notes of the site and of the page the person is on.
  */
-async function siteContext(bridge: Bridge, pageUrl?: string): Promise<string> {
+async function siteContext(bridge: Bridge, pageUrl?: string, cache?: SiteCache | null): Promise<string> {
   const lines: string[] = [];
+  const once = <T>(key: string, read: () => Promise<T>): Promise<T> => (cache ? cache.get(key, read) : read());
   try {
-    const s: any = await bridge.status();
+    const s: any = await once("status", () => bridge.status());
     const drafts = (s.drafts?.objects ?? []) as any[];
     lines.push(drafts.length ? `Drafts not deployed yet (${s.drafts.count}):` : "No drafts: the preview equals the live site.");
     for (const o of drafts.slice(0, 8)) lines.push(`- ${o.object.label}: ${o.changes.slice(0, 6).map((c: any) => `#${c.id} ${c.summary} (${c.user?.name ?? c.source})`).join("; ")}`);
@@ -593,8 +603,8 @@ async function siteContext(bridge: Bridge, pageUrl?: string): Promise<string> {
   } catch (e) { lines.push(`(Could not read the site status: ${(e as Error).message})`); }
   try {
     let post: number | undefined;
-    if (pageUrl) post = Number((await bridge.map({ url: pageUrl, view: "draft" }).catch(() => null))?.post?.id) || undefined;
-    const n: any = await bridge.notes(post);
+    if (pageUrl) post = Number((await once(`map:${pageUrl}:draft`, () => bridge.map({ url: pageUrl, view: "draft" })).catch(() => null))?.post?.id) || undefined;
+    const n: any = await once(`notes:${post ?? ""}`, () => bridge.notes(post));
     if (n.site?.text) lines.push(`\nYOUR SITE NOTES:\n${String(n.site.text).slice(0, 4000)}`);
     if (n.page?.text) lines.push(`\nYOUR NOTES FOR THIS PAGE:\n${String(n.page.text).slice(0, 4000)}`);
     if (!n.site?.text && !n.page?.text) lines.push("No notes yet - write them as you learn the site (write_notes).");

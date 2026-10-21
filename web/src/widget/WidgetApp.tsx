@@ -425,13 +425,14 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     });
   }, [site.id, cfg.pageUrl, eyesOk, post]);
 
-  async function send(prompt: string, fileIds: string[], extraContext?: string) {
+  /** `spoken`: the request was said out loud. The backend then runs it as a voice job (faster model, low effort). */
+  async function send(prompt: string, fileIds: string[], extraContext?: string, spoken = false) {
     setProblem("");
     try {
       // They have answered (typed, spoken, or filled the form): stop reading out whatever was still queued, or the
       // assistant carries on describing a question that is already answered.
       if (voiceOn) { voice.stopSpeaking(); setSaying(""); partial.current = { seq: -1, chars: 0 }; }
-      const args = { prompt, fileIds, pageUrl: cfg.pageUrl, approvalMode: mode, extraContext, ...(pick ? { model: pick } : {}) };
+      const args = { prompt, fileIds, pageUrl: cfg.pageUrl, approvalMode: mode, extraContext, ...(spoken ? { voice: true } : {}), ...(pick ? { model: pick } : {}) };
       if (jobId && paused) await api.message(jobId, { ...args, kind: pauseKind });
       else if (jobId && (status === "completed" || status === "failed")) await api.message(jobId, args);
       else { const j = await api.createJob(site.id, args); freshJob.current = j.id; setJobId(j.id); }
@@ -484,7 +485,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     if (!request.trim()) return Promise.resolve("I did not catch what to do.");
     return new Promise<string>((resolve) => {
       waiting4.current = resolve;
-      void send(request, [], voiceContext()).catch((e) => {
+      void send(request, [], voiceContext(), true).catch((e) => {
         waiting4.current = null;
         resolve(`That could not be sent: ${(e as Error).message}`);
       });
@@ -558,7 +559,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     if (/^(stop listening|goodbye|good bye|bye|that'?s all|that is all|(turn off|end|exit|close) voice( mode)?)$/.test(low)) { voice.say("Goodbye."); void voice.whenIdle(8000).then(endVoice); return; }
     if (/^(stop talking|be quiet|quiet|silence|shut up|enough)$/.test(low)) { voice.stopSpeaking(); return; }
     if (/^(you decide|your (choice|call)|whatever you think|up to you|anything|surprise me)/.test(low) && !working) {
-      void send("You decide - pick what suits the site and carry on.", [], voiceContext()).catch(() => {});
+      void send("You decide - pick what suits the site and carry on.", [], voiceContext(), true).catch(() => {});
       return;
     }
     if (waiting && pendingApproval) {
@@ -574,13 +575,13 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       voice.say("Noted. I'll do that next.");
       return;
     }
-    send(text, [], voiceContext()).catch(() => voice.say("Sorry, I could not send that."));
+    send(text, [], voiceContext(), true).catch(() => voice.say("Sorry, I could not send that."));
   };
   // something said while the assistant was busy: send it as soon as it is free
   useEffect(() => {
     if (!voiceOn || working || waiting || !queuedRef.current) return;
     const t = queuedRef.current; queuedRef.current = ""; setQueued("");
-    send(t, [], voiceContext()).catch(() => {});
+    send(t, [], voiceContext(), true).catch(() => {});
   }, [voiceOn, working, waiting]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function clearHistory() {

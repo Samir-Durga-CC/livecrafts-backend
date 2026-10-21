@@ -1,4 +1,5 @@
 import { secrets } from "./secrets.js";
+import { sttLanguage, transcriptionPrompt } from "./voice.js";
 
 /**
  * Voice through OpenAI's Realtime API: the person and the model talk to each other directly over WebRTC.
@@ -34,7 +35,7 @@ const pick = <T extends string>(value: string | undefined, allowed: readonly T[]
  *   LC_REALTIME_THRESHOLD  how loud speech must be, 0-1           - server only (default 0.5)
  *   LC_REALTIME_NOISE      near_field (default) | far_field | off - a headset is near, a laptop mic is far
  */
-export function audioInput() {
+export function audioInput(opts: { siteWords?: string } = {}) {
   const server = pick(process.env.LC_REALTIME_VAD, ["semantic", "server"] as const, "semantic") === "server";
   const turn_detection = server
     ? {
@@ -59,7 +60,13 @@ export function audioInput() {
     turn_detection,
     // Cleaned up BEFORE turn detection sees it, so a noisy room produces fewer false starts and better words.
     ...(noise === "off" ? {} : { noise_reduction: { type: noise } }),
-    transcription: { model: process.env.LC_STT_MODEL || "gpt-4o-transcribe" },
+    // The same vocabulary hint and language the Classic path gives the transcriber (voice.ts). Without them this
+    // engine hears "AEROMATIC" as "aromatic" and the edit is aimed at nothing.
+    transcription: {
+      model: process.env.LC_STT_MODEL || "gpt-4o-transcribe",
+      prompt: transcriptionPrompt(opts.siteWords ?? ""),
+      ...(sttLanguage() ? { language: sttLanguage() } : {}),
+    },
   };
 }
 
@@ -81,7 +88,7 @@ export const DO_ON_SITE = {
 };
 
 /** How the voice behaves. Short, spoken, and never pretending the work is done before it is. */
-export function instructions(opts: { botName?: string; siteName?: string; pageUrl?: string } = {}) {
+export function instructions(opts: { botName?: string; siteName?: string; pageUrl?: string; siteWords?: string } = {}) {
   const name = opts.botName?.trim() || "Livecrafts";
   return [
     `You are ${name}, the voice of a website editor. The person is looking at their own site and talking to you.`,
@@ -114,7 +121,7 @@ export interface RealtimeSession { value: string; expiresAt?: number; model: str
  * A client secret the browser can use for ONE realtime call. Short-lived by design: if it leaks it is worthless in
  * minutes, and it can never be used for anything but a realtime session.
  */
-export async function createSession(opts: { botName?: string; siteName?: string; pageUrl?: string } = {}): Promise<RealtimeSession> {
+export async function createSession(opts: { botName?: string; siteName?: string; pageUrl?: string; siteWords?: string } = {}): Promise<RealtimeSession> {
   const key = secrets.providerKey("openai");
   if (!key) throw Object.assign(new Error("Realtime voice needs an OpenAI API key (Integrations → AI models → OpenAI)."), { status: 503 });
 
@@ -127,7 +134,7 @@ export async function createSession(opts: { botName?: string; siteName?: string;
       tool_choice: "auto",
       // The server decides when a turn has ended, from the meaning of what was said - not from how loud the room is.
       // That, and being interrupted properly, is the reason to use the Realtime API at all.
-      audio: { input: audioInput(), output: { voice: realtimeVoice() } },
+      audio: { input: audioInput({ siteWords: opts.siteWords }), output: { voice: realtimeVoice() } },
     },
   };
 
@@ -151,11 +158,12 @@ export async function createSession(opts: { botName?: string; siteName?: string;
   const j = (await res.json()) as any;
   const value = j?.value ?? j?.client_secret?.value;
   if (!value) throw Object.assign(new Error("OpenAI returned no client secret for the realtime session."), { status: 502 });
-  const input = audioInput();
+  const input = audioInput({ siteWords: opts.siteWords });
   return {
     value, expiresAt: j?.expires_at, model: realtimeModel(), voice: realtimeVoice(),
     // Echoed back so a saved voice log says which settings produced it.
-    tuning: { turnDetection: input.turn_detection, noiseReduction: (input as any).noise_reduction?.type ?? "off" },
+    tuning: { turnDetection: input.turn_detection, noiseReduction: (input as any).noise_reduction?.type ?? "off",
+      language: sttLanguage() || "auto", siteWords: (opts.siteWords ?? "").slice(0, 200) },
   };
 }
 

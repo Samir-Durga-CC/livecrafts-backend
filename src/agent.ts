@@ -15,6 +15,7 @@ import { Skills } from "./skills.js";
 import { hydrateMessages } from "./vision.js";
 import type { ApprovalMode, Site } from "./types.js";
 import { defaultSpeedRuns, type SpeedRuns } from "./pagespeed.js";
+import type { SiteCache } from "./sessions.js";
 
 /** Minimal shape the job runner needs (the SDK agent streams), so tests can plug in a mock. */
 export interface AgentLike {
@@ -37,6 +38,13 @@ export interface JobContext {
   ref?: string;
   /** What is going on on the site + the notes, read at the start of the run (see siteContext in jobs.ts). */
   siteContext?: string;
+  /**
+   * The request came from voice. The person is listening, so: the voice model if one is configured (LC_VOICE_MODEL),
+   * low reasoning effort, and the reads of the site answered from the session's cache (see sessions.ts).
+   */
+  voice?: boolean;
+  /** Site status / notes / page map, read once per voice session instead of once per turn. */
+  cache?: SiteCache | null;
   /** True once the person pressed Stop: the loop ends after the current step (a running site change always finishes). */
   shouldStop?: () => boolean;
 }
@@ -213,7 +221,9 @@ export function buildAgent(files: FileStore, opts: BuildOptions = {}): AgentFact
     for (const name of APPROVAL_REQUIRED) approval[name] = writeStatus;
     if (mode === "request") approval.propose_plan = job?.approval?.planApproved ? "approved" : "user-approval";
 
-    const modelId = job?.model || job?.persona?.model || config.model;
+    // Voice: the person is standing in front of their site waiting for an answer, so a spoken request gets the faster
+    // model when one is configured and low reasoning effort either way. Typed chat keeps the model it always had.
+    const modelId = job?.model || job?.persona?.model || (job?.voice && config.voiceModel) || config.model;
     const agent = new ToolLoopAgent({
       model: opts.model ?? resolveModel(modelId),
       instructions: systemPrompt(site, {
@@ -224,12 +234,18 @@ export function buildAgent(files: FileStore, opts: BuildOptions = {}): AgentFact
         siteFiles, allowThemeWrites: config.allowThemeWrites, hostinger: hg, browser, verifier, skills, planTool: mode === "request",
         pageUrl: () => job?.pageUrl, ref: () => job?.ref ?? "", fetchImpl: opts.fetchImpl, allowPrivateImageHosts: opts.allowPrivateImageHosts, generateImage: opts.generateImage,
         speed: opts.speed !== undefined ? opts.speed : defaultSpeedRuns(), siteId: site.id, siteUrl: site.url,
+        cache: job?.cache ?? null,
       }),
       toolApproval: approval,
       // Right before every model call: turn image markers / screenshots into real pictures the model can see.
       prepareStep: ({ messages }: any) => ({ messages: hydrateMessages(messages, files) }),
       // OpenAI: send the whole conversation each time instead of pointing at items stored on OpenAI's side.
-      providerOptions: { openai: { store: false } },
+      // Voice also asks for low reasoning effort: "change the heading to X" does not need the default thinking budget,
+      // and the wait is what the person hears. (Only the providers that have the setting; the others ignore it.)
+      providerOptions: {
+        openai: { store: false, ...(job?.voice ? { reasoningEffort: "low" } : {}) },
+        ...(job?.voice ? { openrouter: { reasoning: { effort: "low" } }, gateway: { reasoningEffort: "low" } } : {}),
+      },
       stopWhen: [isStepCount(config.maxSteps), () => !!job?.shouldStop?.()], // step limit (cost safety) + the Stop button
       maxRetries: 2,
     } as any);
