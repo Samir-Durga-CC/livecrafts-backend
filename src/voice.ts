@@ -35,8 +35,11 @@ export const VOCAB = "Livecrafts, WordPress, Elementor, Gutenberg, ACF, hero sec
  * vocabulary to keep current, not two that drift apart.
  */
 export function transcriptionPrompt(siteWords = ""): string {
-  return "The speaker is editing their website with an AI assistant and may speak any language (English, Hindi, Hinglish, ...). "
-    + `Transcribe in the language spoken, in its own script; do not translate. Terms: ${VOCAB}`
+  // Do NOT list languages here. Naming Hindi and Hinglish was enough to make a quiet "hey there, how are you"
+  // come back as Devanagari: a short or unclear recording follows whatever the prompt suggests. The language is
+  // pinned with the `language` parameter instead (LC_STT_LANGUAGE, or the browser's), which is a far stronger hint.
+  return "The speaker is dictating an instruction for their website editor. "
+    + `Transcribe exactly what is said, in the language it was said in; never translate it, and never invent words for audio that is unclear or silent. Terms: ${VOCAB}`
     + (siteWords.trim() ? ` On this site: ${siteWords.trim().slice(0, 400)}` : "");
 }
 
@@ -89,7 +92,7 @@ async function failure(res: Response, what: string): Promise<Error> {
  *   VOCAB alone is generic, so "change the AEROMATIC heading" is heard as "aromatic" and the edit targets nothing.
  *   Keep it short (a few hundred characters): a transcription prompt is a hint, and a long one starts to dilute.
  */
-export async function transcribe(audio: Buffer, mime: string, siteWords = ""): Promise<{ text: string; ms: number }> {
+export async function transcribe(audio: Buffer, mime: string, siteWords = "", language = ""): Promise<{ text: string; ms: number }> {
   const t = Date.now();
   const type = mime.split(";")[0].trim().toLowerCase();
   const ext = EXT[type];
@@ -99,7 +102,10 @@ export async function transcribe(audio: Buffer, mime: string, siteWords = ""): P
   form.append("file", new File([new Uint8Array(audio)], `speech.${ext}`, { type }));
   form.append("model", sttModel());
   form.append("response_format", "json");
-  if (sttLanguage()) form.append("language", sttLanguage());
+  // LC_STT_LANGUAGE wins; otherwise the language the caller asked for (the widget sends the browser's). Without
+  // either, the model picks a language from two seconds of audio and sometimes picks the wrong script entirely.
+  const lang = sttLanguage() || (/^[a-z]{2}$/.test(language.trim().toLowerCase()) ? language.trim().toLowerCase() : "");
+  if (lang) form.append("language", lang);
   form.append("prompt", transcriptionPrompt(siteWords));
   const res = await fetch(`${API}/audio/transcriptions`, { method: "POST", headers: { Authorization: `Bearer ${key()}` }, body: form, signal: AbortSignal.timeout(45_000) });
   if (!res.ok) throw await failure(res, "Transcription");

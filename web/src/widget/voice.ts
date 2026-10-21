@@ -261,6 +261,14 @@ export class VoiceAgent {
     this.below = quiet ? this.below + TICK : 0;
     if (this.below >= END_MS || this.talkMs >= MAX_UTTERANCE_MS) {
       const keep = this.talkMs - this.below >= MIN_SPEECH_MS;
+      // Cut by the clock, never by a pause: in twelve seconds this room never went quiet, so the bar is too low for
+      // it (a fan, traffic, an open window) and everything counts as speech. The person then waits chunk after
+      // chunk, and near-silence gets transcribed into words nobody said. Raise the floor to what was just measured;
+      // if it is still too low, the next cut raises it again.
+      if (this.below < END_MS) {
+        this.noise = Math.min(-35, Math.max(-75, this.peak - 12));
+        voiceLog.add("vad.floor-raised", { noise: Math.round(this.noise), peak: Math.round(this.peak), talkMs: this.talkMs });
+      }
       this.talking = false; this.above = 0; this.below = 0; this.peak = -99;
       this.endSegment(keep);
       this.newSegment();
@@ -271,8 +279,11 @@ export class VoiceAgent {
   private async transcribe(audio: Blob) {
     this.transcribing++;
     try {
-      const text = (await api.transcribe(audio)).trim();
-      voiceLog.add("heard", { text, bytes: audio.size });
+      const began = Date.now();
+      const r = await api.transcribe(audio);
+      const text = r.text.trim();
+      // Both numbers, so a slow turn says WHERE it was slow: ms - serverMs is the upload, serverMs is the service.
+      voiceLog.add("heard", { text, bytes: audio.size, ms: Date.now() - began, serverMs: r.ms });
       if (text && this.state !== "off") { this.chime("heard"); this.h.onUtterance(text); }
     } catch (e) {
       voiceLog.add("error", { message: (e as Error).message, where: "transcribe" });

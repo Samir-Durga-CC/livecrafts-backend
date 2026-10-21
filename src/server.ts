@@ -383,7 +383,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       }
       if (route === "POST /voice/transcribe") {
         const buf = await readBody(req, 12_000_000);
-        return send(res, 200, await transcribe(buf, String(req.headers["content-type"] ?? "")));
+        return send(res, 200, await transcribe(buf, String(req.headers["content-type"] ?? ""), "", String(url.searchParams.get("lang") ?? "")));
       }
       if (route === "POST /voice/speak") {
         const b = await readJson(req);

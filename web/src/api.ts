@@ -81,12 +81,18 @@ export const api = {
   removeHostinger: () => request<HostingerHealth>("DELETE", "/integrations/hostinger"),
 
   voiceInfo: () => request<{ available: boolean; voice: string; voices: string[] }>("GET", "/voice"),
-  /** Recorded speech -> text ("" when nothing was said). */
-  async transcribe(audio: Blob, signal?: AbortSignal): Promise<string> {
-    const res = await fetch("/voice/transcribe", { method: "POST", headers: authHeaders({ "Content-Type": audio.type || "audio/webm" }), body: audio, signal });
+  /**
+   * Recorded speech -> text ("" when nothing was said). `ms` is how long the speech service itself took, so a slow
+   * turn can be split into upload time and service time instead of being called "voice is slow".
+   * The browser's language goes with it: without a language, two seconds of audio can be read as the wrong script.
+   */
+  async transcribe(audio: Blob, signal?: AbortSignal): Promise<{ text: string; ms: number }> {
+    const lang = (navigator.language || "").slice(0, 2).toLowerCase();
+    const res = await fetch(`/voice/transcribe${/^[a-z]{2}$/.test(lang) ? `?lang=${lang}` : ""}`,
+      { method: "POST", headers: authHeaders({ "Content-Type": audio.type || "audio/webm" }), body: audio, signal });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new ApiError(res.status, (data as any).error ?? `Transcription failed (HTTP ${res.status})`);
-    return String((data as any).text ?? "");
+    return { text: String((data as any).text ?? ""), ms: Number((data as any).ms) || 0 };
   },
   /** Text -> speech (mp3). */
   async speech(text: string, voice: string, signal?: AbortSignal): Promise<Blob> {
