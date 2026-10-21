@@ -7,7 +7,7 @@ interface Attachment { key: string; name: string; preview: string; state: "uploa
 
 export interface Context { pageUrl?: string; selectedTarget?: string }
 
-export function Composer({ disabled, placeholder, model, context, draft, onClearContext, onSend, extra, chips, compact, onStop, stopping, notice, voice, tools, attachNote }: {
+export function Composer({ disabled, placeholder, model, context, draft, onClearContext, onSend, extra, chips, compact, onStop, stopping, notice, voice, wave, tools, attachNote }: {
   disabled: boolean; placeholder: string; model: string; context: Context; draft?: { text: string; n: number };
   extra?: ReactNode; chips?: ReactNode; compact?: boolean;
   /** While the assistant works: the send button becomes Stop. */
@@ -16,6 +16,8 @@ export function Composer({ disabled, placeholder, model, context, draft, onClear
   notice?: ReactNode;
   /** The voice-mode button, next to the attach buttons. */
   voice?: ReactNode;
+  /** Shown inside the input box itself while the microphone is open (the live level). */
+  wave?: ReactNode;
   /** More buttons next to the voice button (e.g. "New blog post"). */
   tools?: ReactNode;
   /** Shown under attached images (e.g. "also save them to the Media Library"). */
@@ -86,6 +88,7 @@ export function Composer({ disabled, placeholder, model, context, draft, onClear
           onChange={(e) => setText(e.target.value)}
           onPaste={(e) => { const imgs = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith("image/")); if (imgs.length) { e.preventDefault(); add(imgs); } }}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void submit(); } }} />
+        {wave}
       </div>
       <div className="c-bar">
         <button className="mode" title="Attach an image (you can also drag & drop or paste)" onClick={() => picker.current?.click()} disabled={disabled}><Icon.Image size={17} /></button>

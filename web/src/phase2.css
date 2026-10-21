@@ -556,3 +556,15 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
 .vstrip .w-icon { width: 26px; height: 26px; }
 @keyframes vstrip-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .vstrip-dot { animation: none !important; } }
+
+/* The microphone, live in the input box: one bar per sample, newest on the right (VoiceWave.tsx).
+   --h is 0..1 and is written per bar on an animation frame, 20 times a second. */
+.c-wave { flex: none; align-self: center; display: flex; align-items: center; justify-content: flex-end; gap: 2px;
+  height: 20px; max-width: 45%; overflow: hidden; color: var(--muted); }
+.c-wave i { flex: none; width: 2px; height: calc(2px + var(--h, 0) * 16px); border-radius: 1px; background: currentColor; opacity: .4; transition: height .07s linear; }
+/* The newest samples - the ones under the cursor - read brightest, so the line clearly runs left. */
+.c-wave i:nth-last-child(-n+8) { opacity: .75; }
+.c-wave i:nth-last-child(-n+3) { opacity: 1; }
+.c-wave.hearing { color: var(--w-accent, var(--accent)); }
+.c-wave.transcribing { color: var(--warn, #d97706); }
+@media (prefers-reduced-motion: reduce) { .c-wave i { transition: none; } }

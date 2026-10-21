@@ -18,6 +18,7 @@ import { connectParent, uploadToMedia } from "./parent";
 import { VoiceAgent, type VoiceState } from "./voice";
 import { VoiceBar } from "./VoiceBar";
 import { VoiceStrip } from "./VoiceStrip";
+import { VoiceWave } from "./VoiceWave";
 import { RealtimeVoice, type RealtimeState } from "./realtime";
 import { voiceLog } from "./voicelog";
 
@@ -662,7 +663,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
               onAnswer={(a, ok, r) => void answer(a, ok, r)} onCopy={(t) => { navigator.clipboard?.writeText(t); say("Copied"); }}
               onEdit={() => {}} onRetry={(t) => { if (t && (status === "completed" || status === "failed")) void send(t, []); }}
               onOpen={(url) => post({ type: "lc:navigate", url })} />
-            {voiceOn && (
+            {voiceOn && voiceMode === "agent" && (
               <VoiceBar agent={voice} state={voiceState} heard={heard} busy={working} waiting={waiting} queued={queued} blocked={blocked}
                 voices={voiceList} voice={voiceName && voiceList.includes(voiceName) ? voiceName : voice.voice} speak={speakOn}
                 onVoice={(v) => { voice.voice = v; setVoiceName(v); store.set("lcw_voice_name", v); voice.say("This is how I sound now."); }}
@@ -681,6 +682,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
               notice={paused ? <PausedBar kind={pauseKind} onKind={setPauseKind} onContinue={() => void cont()} /> : status === "interrupted" || status === "failed" ? <InterruptedBar failed={status === "failed"} error={String([...events].reverse().find((e) => e.type === "status")?.data.error ?? "")} onContinue={() => void cont()} /> : undefined}
               placeholder={voiceOn && !waiting && !working ? "Voice mode is on - just talk, or type here…" : waiting ? "Answer the approval above…" : working ? (stopping ? "Stopping…" : "Working… (Stop to pause)") : paused ? (pauseKind === "edit" ? "Type your corrected request…" : "Type a note…") : "Ask for any change on this page…"}
               draft={draft}
+              wave={voiceOn && voiceMode === "dictate" ? <VoiceWave agent={voice} state={voiceState} /> : undefined}
               voice={<>
                 <button className={`mode mic ${voiceOn && voiceMode === "dictate" ? "on" : ""}`} aria-pressed={voiceOn && voiceMode === "dictate"}
                   onClick={() => (voiceOn && voiceMode === "dictate" ? endVoice() : void startVoice(false, "dictate"))}
