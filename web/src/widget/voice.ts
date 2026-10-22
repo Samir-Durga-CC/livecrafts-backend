@@ -85,6 +85,26 @@ export class VoiceAgent {
 
   get active() { return this.state !== "off"; }
 
+  /**
+   * The voice, without the ears.
+   *
+   * In streaming voice mode the microphone belongs to Dictation, which is doing its own capture and its own
+   * transcription - but the answers still have to be read aloud, and this is what knows how to do that (chunking
+   * into sentences, prefetching the next one, interrupting cleanly). Opening a second microphone here would take
+   * a second device stream for nothing and leave two detectors listening to the same room.
+   *
+   * `playNext` waits on `talking`, which nothing sets in this mode, and every path it uses checks `state`, so
+   * announcing "listening" is enough to make it speak and nothing more.
+   */
+  async startSpeaker(): Promise<boolean> {
+    if (this.state !== "off") return true;
+    this.server = true;
+    this.ctx = new AudioContext();
+    await this.ctx.resume().catch(() => {});
+    this.set("listening");
+    return true;
+  }
+
   /** Open the microphone and start listening. false when it could not start (the reason went to onError). */
   async start(serverVoice: boolean): Promise<boolean> {
     if (this.state !== "off") return true;

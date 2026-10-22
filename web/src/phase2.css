@@ -283,6 +283,12 @@ html.embed body { font-size: 14px; }
 .mode.mic.rec::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #fff; animation: rec-pulse 1.4s ease-in-out infinite; }
 @keyframes rec-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .mode.mic.rec::before { animation: none; } }
+/* Opening: amber, and breathing rather than pulsing - it is not recording yet, and must not look as if it is. */
+.mode.mic.warming { background: var(--warn, #d97706); color: #fff; width: auto; gap: 6px; padding: 0 10px; }
+.mode.mic.warming:hover:not(:disabled) { background: var(--warn, #d97706); color: #fff; filter: brightness(1.08); }
+.mode.mic.warming::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #fff; animation: warm-pulse 1s ease-in-out infinite; }
+@keyframes warm-pulse { 0%, 100% { opacity: .9; transform: scale(1); } 50% { opacity: .4; transform: scale(.7); } }
+@media (prefers-reduced-motion: reduce) { .mode.mic.warming::before { animation: none; } }
 .vbar { --vb: var(--w-accent, var(--accent)); margin: 0 10px 8px; padding: 10px 10px 10px 12px; border-radius: 14px; border: 1px solid color-mix(in srgb, var(--vb) 35%, var(--line));
   background: linear-gradient(135deg, color-mix(in srgb, var(--vb) 10%, var(--surface)), var(--surface)); animation: rise .15s ease-out; }
 .vbar.hearing { --vb: var(--ok); }

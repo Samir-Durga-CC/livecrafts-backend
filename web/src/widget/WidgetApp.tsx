@@ -278,7 +278,19 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   const onUtterance = useRef<(text: string) => void>(() => {});
   // Realtime voice: the server does the listening and the turn-taking. The old engine stays as the fallback, and the
   // person can force it (Settings) if realtime is unavailable or misbehaving on their machine.
-  const [engine, setEngine] = useState<"realtime" | "classic">((store.get("lcw_voice_engine") as any) === "classic" ? "classic" : "realtime");
+  /**
+   * Which engine answers in voice mode.
+   *
+   *   stream    dictation's own streaming transcription, sent to the agent the moment a sentence ends, and the
+   *             answer streamed back and spoken as it is written. The default: it is the only one of the three
+   *             whose transcription is the one measured to work.
+   *   realtime  speech to speech over WebRTC - the model holds the conversation itself
+   *   classic   the old recorder: record, upload, wait
+   */
+  const [engine, setEngine] = useState<"realtime" | "classic" | "stream">(() => {
+    const saved = store.get("lcw_voice_engine");
+    return saved === "classic" || saved === "realtime" ? saved : "stream";
+  });
   const waiting4 = useRef<((result: string) => void) | null>(null);
   const [realtime] = useState(() => new RealtimeVoice({
     onState: (s: RealtimeState) => setVoiceState(s === "thinking" ? "transcribing" : (s as VoiceState)),
@@ -297,13 +309,31 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
    */
   const dictatedText = useRef("");
   const [dictateOn, setDictateOn] = useState(false);
+  /**
+   * Dictating, or talking to the agent?
+   *
+   * The same microphone and the same transcription serve both; only what happens at the end of a sentence
+   * differs. Dictation leaves it in the box for the person to read and send. The agent sends it itself, because
+   * waiting for a button is the thing that stops it being a conversation. Read through a ref: these handlers are
+   * built once, and the mode changes under them.
+   */
+  const talkingToAgent = useRef(false);
   const [dictation] = useState(() => new Dictation({
     onState: (s: DictateState) => setVoiceState(s === "transcribing" ? "transcribing" : (s as VoiceState)),
+    // The words appear in the box either way, as they are said - that is the whole point of streaming them.
     onPartial: (text) => setDraft({ text: [dictatedText.current, text].filter(Boolean).join(" "), n: Date.now() }),
     onFinal: (text) => {
+      setHeard(text);
+      if (talkingToAgent.current) {
+        // The sentence is finished: hand it straight over. onUtterance decides what it means - an answer to a
+        // question, a "stop", or a new request that replaces whatever is running.
+        dictatedText.current = "";
+        setDraft({ text: "", n: Date.now() });
+        onUtterance.current(text);
+        return;
+      }
       dictatedText.current = [dictatedText.current, text].filter(Boolean).join(" ");
       setDraft({ text: dictatedText.current, n: Date.now() });
-      setHeard(text);
     },
     onError: (m) => setProblem(m),
   }));
@@ -365,7 +395,8 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   // Speak the answer AS IT ARRIVES: every finished sentence goes out while the rest is still being written. Waiting
   // for the whole answer added seconds of silence to every turn, which is most of what makes voice feel slow.
   useEffect(() => {
-    if (!voiceOn || !speakOn || engine !== "classic") return;
+    // Streaming voice reads the answer aloud the same way; realtime does its own speaking.
+    if (!voiceOn || !speakOn || (engine !== "classic" && engine !== "stream")) return;
     const last = timeline[timeline.length - 1];
     if (last?.kind !== "assistant" || !last.streaming) return;
     if (partial.current.seq !== last.seq) partial.current = { seq: last.seq, chars: 0 };
@@ -385,7 +416,8 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   // only while it is actually working. This is what makes it feel like someone doing the job rather than a pause.
   const narrated = useRef<{ seqs: Set<number>; at: number }>({ seqs: new Set(), at: 0 });
   useEffect(() => {
-    if (!voiceOn || !speakOn || engine !== "classic") return;
+    // Streaming voice reads the answer aloud the same way; realtime does its own speaking.
+    if (!voiceOn || !speakOn || (engine !== "classic" && engine !== "stream")) return;
     const now = Date.now();
     for (const it of timeline) {
       if (it.kind !== "tool" || it.state !== "running") continue;
@@ -546,6 +578,28 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       setVoiceOn(true); setHeard(""); store.sset("lcw_voice", "1");
       return;
     }
+    /**
+     * Streaming voice: dictation's microphone, the agent's answer.
+     *
+     * The words appear in the box as they are said, the finished sentence goes to the agent without a button,
+     * and the answer is streamed back - spoken sentence by sentence while the rest is still being written, so
+     * nobody waits for a whole reply to be generated before hearing any of it.
+     */
+    if (engine === "stream") {
+      talkingToAgent.current = true;
+      dictatedText.current = "";
+      if (!(await dictation.start({ siteId: site.id, pageUrl: cfg.pageUrl }))) {
+        talkingToAgent.current = false;
+        store.sset("lcw_voice", "0");
+        return;
+      }
+      // The answers are read aloud by the old engine, used as a speaker only - the microphone stays with dictation.
+      voice.voice = voiceName || voice.voice;
+      voice.speakReplies = speakOn;
+      if (speakOn) await voice.startSpeaker();
+      setDictateOn(true); setVoiceOn(true); setHeard(""); store.sset("lcw_voice", "1");
+      return;
+    }
     if (engine === "realtime") {
       const info = await api.voiceInfo({ siteId: site.id, pageUrl: cfg.pageUrl }).catch(() => null as any);
       if (info?.realtime?.available) {
@@ -571,9 +625,20 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     realtime.stop();
     voice.stop();
     dictation.stop();
+    talkingToAgent.current = false;
     setDictateOn(false);
     setVoiceOn(false); setHeard(""); setQueued(""); queuedRef.current = "";
     store.sset("lcw_voice", "0");
+  }
+  /**
+   * What the button is doing right now: "" idle, "warming" opening, "rec" live and meaning Stop.
+   *
+   * The beep and the colour say the same thing, because a button that looks live before the session is ready is
+   * the reason people spoke into a microphone that was not listening yet.
+   */
+  function micPhase(m: "dictate" | "agent"): "" | "warming" | "rec" {
+    if (!voiceOn || voiceMode !== m) return "";
+    return voiceState === "starting" ? "warming" : "rec";
   }
   useEffect(() => { if (store.sget("lcw_voice") === "1") void startVoice(true, voiceMode); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const voiceContext = () => [selectionContext(), VOICE_NOTE].filter(Boolean).join("\n\n");
@@ -603,6 +668,21 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     }
     if (working) {
       if (/^(stop|cancel|halt|abort|pause|wait|hold on)\b/.test(low)) { stop(); voice.say("Stopping."); return; }
+      /**
+       * Speaking over the answer REPLACES it.
+       *
+       * Queueing was the old behaviour: "Noted, I'll do that next", and the thing you had just corrected ran
+       * anyway, followed by the correction. In a conversation, interrupting means the previous thing is off -
+       * so the running turn is stopped and the new sentence takes its place.
+       */
+      if (talkingToAgent.current) {
+        voice.stopSpeaking();
+        setSaying("");
+        partial.current = { seq: -1, chars: 0 };
+        stop();
+        void send(text, [], voiceContext(), true).catch(() => setProblem("That could not be sent."));
+        return;
+      }
       queuedRef.current = text; setQueued(text);
       voice.say("Noted. I'll do that next.");
       return;
@@ -701,10 +781,18 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
                 onSpeak={(on) => { voice.speakReplies = on; if (!on) voice.stopSpeaking(); setSpeakOn(on); store.set("lcw_voice_speak", on ? "1" : "0"); }}
                 onEnd={endVoice} />
             )}
-            {voiceOn && (
+            {/**
+              * No strip in streaming voice.
+              *
+              * It carried "Listening…" and the last thing heard - both of which are now where they belong: the
+              * button is red and says Stop, the waveform sits in the input box, and the words appear in the box
+              * as they are spoken. A second panel repeating that is a row of chrome between the person and the
+              * thing they are reading, on a widget that is already narrow.
+              */}
+            {voiceOn && engine !== "stream" && (
               <VoiceStrip mode={voiceMode} state={voiceState} heard={heard} busy={working} blocked={blocked} speak={speakOn}
                 onSpeak={(on) => { setSpeakOn(on); voice.speakReplies = on; store.set("lcw_voice_speak", on ? "1" : "0"); if (!on) { voice.stopSpeaking(); realtime.stopSpeaking(); } }}
-                onUnblock={() => (voiceMode === "agent" ? realtime.unblock() : voice.unblock())}
+                onUnblock={() => (engine === "realtime" && voiceMode === "agent" ? realtime.unblock() : voice.unblock())}
                 onDiagnostics={() => { voiceLog.download(); say("Voice log saved to your downloads"); }}
                 onEnd={endVoice} />
             )}
@@ -713,17 +801,17 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
               notice={paused ? <PausedBar kind={pauseKind} onKind={setPauseKind} onContinue={() => void cont()} /> : status === "interrupted" || status === "failed" ? <InterruptedBar failed={status === "failed"} error={String([...events].reverse().find((e) => e.type === "status")?.data.error ?? "")} onContinue={() => void cont()} /> : undefined}
               placeholder={voiceOn && !waiting && !working ? "Voice mode is on - just talk, or type here…" : waiting ? "Answer the approval above…" : working ? (stopping ? "Stopping…" : "Working… (Stop to pause)") : paused ? (pauseKind === "edit" ? "Type your corrected request…" : "Type a note…") : "Ask for any change on this page…"}
               draft={draft}
-              wave={voiceOn && voiceMode === "dictate" ? <VoiceWave agent={dictateOn ? dictation : voice} state={voiceState} /> : undefined}
+              wave={voiceOn && (voiceMode === "dictate" || engine === "stream") ? <VoiceWave agent={dictateOn ? dictation : voice} state={voiceState} /> : undefined}
               voice={<>
-                <button className={`mode mic ${voiceOn && voiceMode === "dictate" ? "rec" : ""}`} aria-pressed={voiceOn && voiceMode === "dictate"}
+                <button className={`mode mic ${micPhase("dictate")}`} aria-pressed={voiceOn && voiceMode === "dictate"}
                   onClick={() => (voiceOn && voiceMode === "dictate" ? endVoice() : void startVoice(false, "dictate"))}
-                  title={voiceOn && voiceMode === "dictate" ? "Stop dictating (what was written stays in the box)" : "Dictate: what you say is typed into the box. Nothing is sent until you press send."}>
-                  <Icon.Mic size={17} />{voiceOn && voiceMode === "dictate" ? <b>Stop</b> : null}
+                  title={micPhase("dictate") === "warming" ? "Opening the microphone - wait for the beep" : voiceOn && voiceMode === "dictate" ? "Stop dictating (what was written stays in the box)" : "Dictate: what you say is typed into the box. Nothing is sent until you press send."}>
+                  <Icon.Mic size={17} />{micPhase("dictate") === "rec" ? <b>Stop</b> : null}
                 </button>
-                <button className={`mode mic ${voiceOn && voiceMode === "agent" ? "on" : ""}`} aria-pressed={voiceOn && voiceMode === "agent"}
+                <button className={`mode mic ${micPhase("agent")}`} aria-pressed={voiceOn && voiceMode === "agent"}
                   onClick={() => (voiceOn && voiceMode === "agent" ? endVoice() : void startVoice(false, "agent"))}
-                  title="Talk: a conversation - it answers out loud and does the work.">
-                  <Icon.Waveform size={17} />
+                  title={micPhase("agent") === "warming" ? "Connecting - wait for the beep" : voiceOn && voiceMode === "agent" ? "Stop talking to the agent" : "Talk: a conversation - it answers out loud and does the work."}>
+                  <Icon.Waveform size={17} />{micPhase("agent") === "rec" ? <b>Stop</b> : null}
                 </button>
               </>}
               attachNote={cfg.canUpload ? <label className="att-save"><input type="checkbox" checked={saveToLibrary} onChange={(e) => { setSaveToLibrary(e.target.checked); store.set("lcw_save_media", e.target.checked ? "1" : "0"); }} /> Also save to the Media Library</label> : undefined}
