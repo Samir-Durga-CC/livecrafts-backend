@@ -588,4 +588,5 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
 .md.reading { white-space: pre-wrap; }
 .md.reading .said { color: var(--text); }
 .md.reading .unsaid { color: var(--muted); opacity: .55; }
-@media (prefers-reduced-motion: no-preference) { .md.reading .said { transition: color .12s linear; } }
+/* No transition here: the two spans keep their colours and only their text moves between them, so there is
+   nothing for one to animate. The smoothness comes from how often the position is updated (voice.ts play). */

@@ -348,7 +348,9 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   const readSeq = useRef(-1);
   const [voice] = useState(() => new VoiceAgent({
     onState: setVoiceState, onUtterance: (t) => onUtterance.current(t), onError: (m) => setProblem(m), onBlocked: setBlocked,
-    onSpeaking: (part, done) => setReadAloud(readSeq.current < 0 ? null : { seq: readSeq.current, to: done ? part.to : part.from }),
+    // The highlight sits where the voice is: across this sentence's span, by how far through its clip it is.
+    onSpeaking: (part, progress) => setReadAloud(readSeq.current < 0 ? null
+      : { seq: readSeq.current, to: Math.round(part.from + (part.to - part.from) * progress) }),
   }));
   useEffect(() => () => voice.stop(), [voice]);
   useEffect(() => { voice.rate = voiceRate; }, [voice, voiceRate]);
@@ -410,6 +412,20 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     const last = timeline[timeline.length - 1];
     if (last?.kind !== "assistant" || !last.streaming) return;
     if (partial.current.seq !== last.seq) partial.current = { seq: last.seq, chars: 0 };
+    /**
+     * Grey from the FIRST character, not from the first clip of audio.
+     *
+     * This used to start when the player reported a sentence, which is a second or more after the words are on
+     * screen. So an answer appeared in full contrast, turned grey, and only then began filling back in - the
+     * wrong way round, and the greying read as something going wrong rather than as text waiting to be read.
+     *
+     * An answer that is going to be read aloud is text you have not been told yet, from the moment it exists.
+     * It arrives grey and fills in as the voice reaches it; nothing ever goes from lit to grey.
+     */
+    if (readSeq.current !== last.seq) {
+      readSeq.current = last.seq;
+      setReadAloud({ seq: last.seq, to: 0 });
+    }
     // Only up to the last sentence that is definitely complete.
     const done = last.text.search(/[.!?।]\s+[^\s]*$/) >= 0
       ? last.text.slice(0, last.text.lastIndexOf(" ", last.text.length - 1) + 1)
@@ -419,10 +435,27 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       const from = partial.current.chars;
       partial.current = { seq: last.seq, chars: done.length };
       setSaying(chunk);
-      readSeq.current = last.seq;
       voice.say(chunk, { from, to: done.length });
     }
   }, [timeline, voiceOn, speakOn, voice]);
+
+  /**
+   * Nothing stays grey that is never going to be read.
+   *
+   * Grey means "the voice has not reached this yet", so it has to stop meaning anything the moment there is no
+   * voice: sound turned off, voice mode ended, or an answer that finished and fell silent without being spoken
+   * (a speech request that failed takes its queue with it). Left alone, that message would sit unreadable at
+   * half contrast for the rest of the conversation.
+   */
+  useEffect(() => {
+    if (!voiceOn || !speakOn) { setReadAloud(null); readSeq.current = -1; return; }
+    if (!readAloud || voiceState === "speaking") return;
+    const it = timeline.find((i) => i.kind === "assistant" && i.seq === readAloud.seq);
+    if (!it || it.kind !== "assistant" || it.streaming) return;
+    // A gap between two sentences also looks like this, so give the next clip time to start.
+    const t = window.setTimeout(() => { setReadAloud(null); readSeq.current = -1; }, 2500);
+    return () => window.clearTimeout(t);
+  }, [voiceOn, speakOn, readAloud, voiceState, timeline]);
 
   // Narrate the work as it happens: one short line when a step STARTS, never more than one every few seconds, and
   // only while it is actually working. This is what makes it feel like someone doing the job rather than a pause.

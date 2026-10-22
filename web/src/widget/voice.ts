@@ -28,8 +28,11 @@ export interface VoiceHandlers {
    * This is what lets the message on screen follow the voice. It reports the AUDIO, not the queue: text is
    * handed over sentences ahead of what is being heard, so highlighting what was queued would run away from the
    * reader - which is worse than not highlighting at all, because it looks like it is reading something else.
+   *
+   * `progress` runs 0..1 through the clip, taken from the player's own position, so the highlight moves WITH
+   * the voice instead of jumping a whole sentence when each clip ends.
    */
-  onSpeaking?: (part: { text: string; from: number; to: number }, done: boolean) => void;
+  onSpeaking?: (part: { text: string; from: number; to: number }, progress: number) => void;
 }
 
 const TICK = 50;
@@ -356,15 +359,16 @@ export class VoiceAgent {
     this.set("speaking");
     const signal = this.abort.signal;
     try {
-      if (!this.server) { this.h.onSpeaking?.(part, false); await this.speakWithBrowser(text); this.h.onSpeaking?.(part, true); }
+      // The browser's own voice gives no position, so it can only say "started" and "finished".
+      if (!this.server) { this.h.onSpeaking?.(part, 0); await this.speakWithBrowser(text); this.h.onSpeaking?.(part, 1); }
       else {
         const clip = await this.fetchSpeech(text, signal);
         if (this.queue[0]) void this.fetchSpeech(this.queue[0].text, signal).catch(() => {}); // prepare the next sentence meanwhile
         if (signal.aborted) return this.doneSpeaking();
         // Said around play(), not around fetch: the fetch is where the waiting is, and nothing is audible yet.
-        this.h.onSpeaking?.(part, false);
-        await this.play(clip);
-        this.h.onSpeaking?.(part, true);
+        this.h.onSpeaking?.(part, 0);
+        await this.play(clip, (p) => this.h.onSpeaking?.(part, p));
+        this.h.onSpeaking?.(part, 1);
       }
     } catch (e) {
       if (!signal.aborted && (this.state as VoiceState) !== "off") { this.queue = []; this.h.onError((e as Error).message); } // it may have been stopped meanwhile
@@ -380,11 +384,30 @@ export class VoiceAgent {
     return p;
   }
 
-  private play(clip: Blob): Promise<void> {
+  private play(clip: Blob, onProgress?: (p: number) => void): Promise<void> {
     return new Promise((resolve) => {
       const url = URL.createObjectURL(clip);
       const audio = this.audio ?? (this.audio = new Audio());
-      const done = () => { audio.onended = null; audio.onerror = null; URL.revokeObjectURL(url); this.finishClip = null; resolve(); };
+      /**
+       * Where the voice is in this clip, a few times a second.
+       *
+       * Taken from the player rather than estimated from the text, because playbackRate, the voice and the
+       * sentence all change how long the same words take. Throttled: this drives a React render, and sixty a
+       * second of that to move a highlight a few pixels is not a trade worth making - at ~12 a second with the
+       * transition on .said it reads as continuous.
+       */
+      let raf = 0, last = 0;
+      const tick = () => {
+        raf = requestAnimationFrame(tick);
+        const d = audio.duration;
+        if (!onProgress || !isFinite(d) || d <= 0) return;
+        const now = performance.now();
+        if (now - last < 80) return;
+        last = now;
+        onProgress(Math.max(0, Math.min(1, audio.currentTime / d)));
+      };
+      raf = requestAnimationFrame(tick);
+      const done = () => { cancelAnimationFrame(raf); audio.onended = null; audio.onerror = null; URL.revokeObjectURL(url); this.finishClip = null; resolve(); };
       this.finishClip = done;
       audio.onended = done;
       audio.onerror = done;
