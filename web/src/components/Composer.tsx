@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { FloatingMenu } from "./FloatingMenu";
 import { api } from "../api";
 import { Icon } from "../icons";
 import type { UploadedFile } from "../types";
@@ -27,6 +28,8 @@ export function Composer({ disabled, placeholder, model, context, draft, onClear
   const [text, setText] = useState("");
   const [files, setFiles] = useState<Attachment[]>([]);
   const [drag, setDrag] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const plus = useRef<HTMLButtonElement>(null);
   const [sending, setSending] = useState(false);
   const ta = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
@@ -91,8 +94,27 @@ export function Composer({ disabled, placeholder, model, context, draft, onClear
         {wave}
       </div>
       <div className="c-bar">
-        <button className="mode" title="Attach an image (you can also drag & drop or paste)" onClick={() => picker.current?.click()} disabled={disabled}><Icon.Image size={17} /></button>
-        <button className="mode" title="Attach a file" onClick={() => picker.current?.click()} disabled={disabled}><Icon.Clip size={17} /></button>
+        {/**
+          * One "+" instead of two buttons that did the same thing.
+          *
+          * The image button and the paperclip both opened the SAME image-only picker, so the row spent two slots
+          * on one action in a panel that has no room for either. They are now one button and a menu.
+          */}
+        <button ref={plus} className={`mode${addOpen ? " on" : ""}`} title="Add an attachment"
+          onClick={() => setAddOpen(!addOpen)} aria-expanded={addOpen} disabled={disabled}><Icon.Plus size={18} /></button>
+        <FloatingMenu anchor={plus} open={addOpen} onClose={() => setAddOpen(false)} align="left">
+          <div className="menu-label">Add</div>
+          <button className="menu-item" onClick={() => { setAddOpen(false); picker.current?.click(); }}>
+            <Icon.Image size={16} />
+            <span className="grow"><b>Image</b><small>png, jpg, gif, webp, avif or svg — or drag one in, or paste</small></span>
+          </button>
+          {/* Honest rather than broken: the backend accepts images only (files.ts), and the assistant has no way
+              to read a document yet, so a working-looking entry here would just fail on upload. */}
+          <button className="menu-item" disabled>
+            <Icon.Clip size={16} />
+            <span className="grow"><b>File</b><small>not yet — images are the only attachment the assistant can read</small></span>
+          </button>
+        </FloatingMenu>
         <input ref={picker} type="file" accept="image/*" multiple hidden onChange={(e) => { if (e.target.files) add(e.target.files); e.target.value = ""; }} />
         {voice}
         {tools}

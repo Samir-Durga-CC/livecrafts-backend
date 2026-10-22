@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { FloatingMenu } from "./FloatingMenu";
 import { api } from "../api";
 import { Icon } from "../icons";
 import type { ModelChoice, ModelsReport } from "../types";
@@ -17,14 +18,16 @@ export function shortLabel(id: string, fallback = "model"): string {
 
 let cache: ModelsReport | null = null;
 
-export function ModelPicker({ value, onChange, fallback, up = true }: {
+export function ModelPicker({ value, onChange, fallback }: {
   value: string;
   onChange: (id: string) => void;
   /** What answers when nothing is picked (the backend default, or the site's own model from WordPress). */
   fallback?: string;
+  /** Kept for callers; the menu now decides for itself which way it has room to open. */
   up?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const btn = useRef<HTMLButtonElement>(null);
   const [report, setReport] = useState<ModelsReport | null>(cache);
 
   useEffect(() => {
@@ -41,14 +44,14 @@ export function ModelPicker({ value, onChange, fallback, up = true }: {
 
   return (
     <div className="mode-pick">
-      <button className={`model-pill${usingCli ? " model-cli" : ""}`} onClick={() => setOpen(!open)} aria-expanded={open}
+      <button ref={btn} className={`model-pill${usingCli ? " model-cli" : ""}`} onClick={() => setOpen(!open)} aria-expanded={open}
         title={value ? `Answering: ${value}` : `Answering: ${fallback ?? "the backend default"} (not chosen here)`}>
         <Icon.Sparkle size={13} /> {shortLabel(value, shortLabel(fallback ?? "", "model"))} <Icon.ChevronDown size={12} />
       </button>
-      {open && (
-        <>
-          <div className="mode-scrim" onMouseDown={() => setOpen(false)} />
-          <div className={`menu ${up ? "up" : "down"} mode-menu`}>
+      {/* Opened through a portal: the composer's button row scrolls sideways, and an overflow ancestor clips
+          anything positioned inside it - which is why this menu used to appear as a sliver behind the buttons. */}
+      <FloatingMenu anchor={btn} open={open} onClose={() => setOpen(false)}>
+          <div>
             <div className="menu-label">Which model answers</div>
             <button className="menu-item mode-item" onClick={() => pick("")}>
               <span className="grow"><b>Default</b><small>{fallback ? shortLabel(fallback) : "set by the backend or in WordPress"}</small></span>
@@ -78,8 +81,7 @@ export function ModelPicker({ value, onChange, fallback, up = true }: {
             )}
             {!report && <div className="menu-note"><small>Loading the list…</small></div>}
           </div>
-        </>
-      )}
+      </FloatingMenu>
     </div>
   );
 }

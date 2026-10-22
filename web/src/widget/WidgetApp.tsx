@@ -19,6 +19,7 @@ import { connectParent, uploadToMedia } from "./parent";
 import { VoiceAgent, type VoiceState } from "./voice";
 import { VoiceBar } from "./VoiceBar";
 import { VoiceStrip } from "./VoiceStrip";
+import { VoiceButton } from "./VoiceButton";
 import { VoiceWave } from "./VoiceWave";
 import { Dictation, type DictateState } from "./dictation";
 import { RealtimeVoice, type RealtimeState } from "./realtime";
@@ -930,18 +931,8 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
               placeholder={voiceOn && !waiting && !working ? "Voice mode is on - just talk, or type here…" : waiting ? "Answer the approval above…" : working ? (stopping ? "Stopping…" : "Working… (Stop to pause)") : paused ? (pauseKind === "edit" ? "Type your corrected request…" : "Type a note…") : "Ask for any change on this page…"}
               draft={draft}
               wave={voiceOn && (voiceMode === "dictate" || engine === "stream") ? <VoiceWave agent={dictateOn ? dictation : voice} state={voiceState} /> : undefined}
-              voice={<>
-                <button className={`mode mic ${micPhase("dictate")}`} aria-pressed={voiceOn && voiceMode === "dictate"}
-                  onClick={() => (voiceOn && voiceMode === "dictate" ? endVoice() : void startVoice(false, "dictate"))}
-                  title={micPhase("dictate") === "warming" ? "Opening the microphone - wait for the beep" : voiceOn && voiceMode === "dictate" ? "Stop dictating (what was written stays in the box)" : "Dictate: what you say is typed into the box. Nothing is sent until you press send."}>
-                  <Icon.Mic size={17} />{micPhase("dictate") === "rec" ? <b>Stop</b> : null}
-                </button>
-                <button className={`mode mic ${micPhase("agent")}`} aria-pressed={voiceOn && voiceMode === "agent"}
-                  onClick={() => (voiceOn && voiceMode === "agent" ? endVoice() : void startVoice(false, "agent"))}
-                  title={micPhase("agent") === "warming" ? "Connecting - wait for the beep" : voiceOn && voiceMode === "agent" ? "Stop talking to the agent" : "Talk: a conversation - it answers out loud and does the work."}>
-                  <Icon.Waveform size={17} />{micPhase("agent") === "rec" ? <b>Stop</b> : null}
-                </button>
-              </>}
+              voice={<VoiceButton mode={voiceMode} phase={micPhase(voiceMode)} on={voiceOn}
+                onStart={(m) => void startVoice(false, m)} onEnd={endVoice} />}
               attachNote={cfg.canUpload ? <label className="att-save"><input type="checkbox" checked={saveToLibrary} onChange={(e) => { setSaveToLibrary(e.target.checked); store.set("lcw_save_media", e.target.checked ? "1" : "0"); }} /> Also save to the Media Library</label> : undefined}
               onClearContext={() => {}} onSend={sendFromComposer}
               chips={selected ? <span className="chip"><Icon.Cursor size={12} /> {selected.label}<button aria-label="forget selection" onClick={() => setSelected(null)}><Icon.Close size={11} /></button></span> : undefined}
