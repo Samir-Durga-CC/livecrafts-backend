@@ -53,6 +53,10 @@ export class Dictation {
   private streaming = false;
   private preroll: ArrayBuffer[] = [];
   private partial = "";
+  /** For the voice log: a run that produced nothing must say which stage produced nothing. */
+  private sent = 0;
+  private sentences = 0;
+  private heard5s: number | null = null;
 
   constructor(h: DictationHandlers) { this.h = h; }
 
@@ -114,6 +118,8 @@ export class Dictation {
 
   /** Close everything. Whatever was already written stays in the box. */
   stop() {
+    if (this.heard5s) { window.clearTimeout(this.heard5s); this.heard5s = null; }
+    voiceLog.add("dictation.stop", { framesSent: this.sent, sentences: this.sentences });
     this.streaming = false;
     this.preroll = [];
     this.partial = "";
@@ -133,8 +139,14 @@ export class Dictation {
 
   private onLevel(db: number) {
     this.levelSink?.(Math.max(0, Math.min(1, (db + 62) / 44)));
+    // Once, after five seconds of an open microphone with nothing heard: the levels and the bar it had to cross,
+    // so "it did nothing" can be read as either a deaf detector or a silent room.
+    this.heard5s ??= window.setTimeout(() => {
+      if (!this.sentences && this.vad) voiceLog.add("vad.nothing-after-5s", { floor: Math.round(this.vad.floor), bar: Math.round(this.vad.bar), lastDb: Math.round(db) });
+    }, 5000);
     const edge = this.vad?.push(db);
     if (edge === "start") {
+      voiceLog.add("vad.start", { db: Math.round(db), floor: Math.round(this.vad!.floor), bar: Math.round(this.vad!.bar) });
       // Everything held back while the room was quiet, except the last part of a second: that is where the
       // beginning of the first word is, and the detector is always a little late to notice it.
       this.streaming = true;
@@ -145,6 +157,8 @@ export class Dictation {
     if (edge === "end") {
       // Nothing more goes up until the next sentence starts, so the buffer upstream holds speech and not the room.
       this.streaming = false;
+      this.sentences++;
+      voiceLog.add("vad.end", { framesSent: this.sent, sentence: this.sentences });
       try { this.ws?.send(JSON.stringify({ type: "commit" })); } catch { /* socket gone */ }
       this.set("transcribing");
     }
@@ -152,7 +166,7 @@ export class Dictation {
 
   private onPcm(buf: ArrayBuffer) {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
-    if (this.streaming) return void this.ws.send(buf);
+    if (this.streaming) { this.sent++; return void this.ws.send(buf); }
     this.preroll.push(buf);
     if (this.preroll.length > PREROLL_FRAMES) this.preroll.shift();
   }

@@ -497,25 +497,45 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     const pageUrl = q.get("pageUrl") && /^https?:\/\//.test(q.get("pageUrl")!) ? q.get("pageUrl")!.slice(0, 300) : undefined;
     const say = (o: Record<string, unknown>) => { if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(o)); };
 
-    // Best effort: without the site's words dictation still works, it just mishears the brand names.
-    const siteWords = site ? await warmVoiceSession(site, pageUrl).catch(() => "") : "";
-
     const d = new Dictation({
       onReady: (model) => say({ type: "ready", model }),
       onPartial: (text, id) => say({ type: "partial", text, id }),
       onFinal: (text, id) => say({ type: "final", text, id }),
       onError: (message) => say({ type: "error", message }),
     });
-    d.start({ siteWords, language: q.get("lang") ?? undefined });
 
-    client.on("message", (data, isBinary) => {
-      if (isBinary) return d.send(data as Buffer);
+    /**
+     * The listener goes on NOW, before anything is awaited.
+     *
+     * Reading the site's words needs the site, which can take a second or be unreachable altogether - and ws
+     * drops messages that arrive with no listener attached. Someone who presses the button and speaks straight
+     * away would have had that first sentence thrown away here, with no error anywhere: an open socket, an idle
+     * session and a person repeating themselves.
+     */
+    let frames = 0, commits = 0;
+    const early: Array<{ bin: boolean; data: Buffer | string }> = [];
+    let ready = false;
+    const handle = (bin: boolean, data: Buffer | string) => {
+      if (bin) { frames++; return d.send(data as Buffer); }
       let m: any;
       try { m = JSON.parse(String(data)); } catch { return; }
-      if (m.type === "commit") d.commit();
+      if (m.type === "commit") { commits++; d.commit(); }
       if (m.type === "stop") d.stop();
+    };
+    client.on("message", (data, isBinary) => {
+      if (!ready) { if (early.length < 500) early.push({ bin: isBinary, data: isBinary ? (data as Buffer) : String(data) }); return; }
+      handle(isBinary, isBinary ? (data as Buffer) : String(data));
     });
-    client.on("close", () => d.stop());
+    client.on("close", () => {
+      log("info", "dictation closed", { site: site?.id, frames, commits });
+      d.stop();
+    });
+
+    // Best effort: without the site's words dictation still works, it just mishears the brand names.
+    const siteWords = site ? await warmVoiceSession(site, pageUrl).catch(() => "") : "";
+    d.start({ siteWords, language: q.get("lang") ?? undefined });
+    ready = true;
+    for (const e of early.splice(0)) handle(e.bin, e.data);
   });
 
   return server;
