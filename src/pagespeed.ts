@@ -42,7 +42,11 @@ export interface SpeedRun {
   status: "running" | "done" | "failed"; error?: string;
   source: "google" | "local"; startedAt: string; finishedAt?: string;
   reports: SpeedReport[];
+  /** Where the person is with each fix, keyed "<device>:<fix id>" (kept with the report, so it survives reloads). */
+  fixState?: Record<string, FixMark>;
 }
+export type FixStatus = "progress" | "fixed" | "done" | "skipped";
+export interface FixMark { status: FixStatus; jobId?: string; requestId?: number; at: string }
 
 // ------------------------------------------------------------------------------------------------ where to run it
 
@@ -331,6 +335,20 @@ export class SpeedRuns {
   /** Wait for a run (the assistant's tool). */
   wait(id: string): Promise<SpeedRun | undefined> { return this.live.get(id) ?? Promise.resolve(this.store.get(id)); }
   get(id: string): SpeedRun | undefined { return this.store.get(id); }
+
+  /** Set (or clear, with null) the status of one fix of a finished report. */
+  markFix(id: string, key: string, mark: { status: FixStatus; jobId?: string; requestId?: number } | null): SpeedRun | undefined {
+    const run = this.store.get(id);
+    if (!run || run.status !== "done") return undefined;
+    const [device, fixId] = key.split(":");
+    if (!run.reports.some((r) => r.device === device && r.fixes.some((f) => f.id === fixId))) return undefined;
+    const state = { ...(run.fixState ?? {}) };
+    if (mark) state[key] = { status: mark.status, ...(mark.jobId ? { jobId: mark.jobId } : {}), ...(mark.requestId ? { requestId: mark.requestId } : {}), at: new Date().toISOString() };
+    else delete state[key];
+    run.fixState = state;
+    this.store.put(run);
+    return run;
+  }
 
   /** Newest first; optionally only one page. A run left "running" by a restart is reported as failed. */
   history(siteId: string, url?: string, limit = 20): SpeedRun[] {

@@ -1,18 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { Icon } from "../icons";
-import { RATING_LABEL, SCORE_LABELS, delta, reportHtml, savingsLabel, scoreTone, whenLabel, type SpeedDevice, type SpeedReport, type SpeedRun, type SpeedRunSummary } from "../speed";
+import { RATING_LABEL, SCORE_LABELS, delta, reportHtml, scoreTone, whenLabel, type SpeedDevice, type SpeedReport, type SpeedRun, type SpeedRunSummary } from "../speed";
 
 type DeviceChoice = SpeedDevice | "both";
-const STEPS_GOOGLE = ["Asking Google to load the page", "Running Lighthouse on Google's servers", "Collecting real-visitor data", "Picking the fixes for this page"];
-const STEPS_LOCAL = ["Opening the page in this computer's browser", "Running Lighthouse", "Measuring the second device", "Picking the fixes for this page"];
+const STEPS_GOOGLE = ["Asking Google to load the page", "Running Lighthouse on Google's servers", "Collecting real-visitor data", "Writing the report"];
+const STEPS_LOCAL = ["Opening the page in this computer's browser", "Running Lighthouse", "Measuring the second device", "Writing the report"];
 
 /**
  * The widget's Speed tab: run a Google PageSpeed report for the page the person is on (or Lighthouse on this computer
  * for a localhost site), see scores, Core Web Vitals and the top fixes, and send a fix to the assistant.
  */
-export function SpeedPanel({ siteId, pageUrl, siteName, disabled, onAsk }: {
-  siteId: string; pageUrl: string; siteName?: string; disabled: boolean; onAsk: (prompt: string) => void;
+export function SpeedPanel({ siteId, pageUrl, siteName, disabled }: {
+  siteId: string; pageUrl: string; siteName?: string; disabled: boolean;
 }) {
   const [url, setUrl] = useState(pageUrl);
   const [device, setDevice] = useState<DeviceChoice>("mobile");
@@ -110,16 +110,17 @@ export function SpeedPanel({ siteId, pageUrl, siteName, disabled, onAsk }: {
   const rep = run?.status === "done" ? run.reports.find((r) => r.device === shown) ?? run.reports[0] : null;
   if (run && rep) {
     const prev = history?.find((h) => h.id !== run.id && h.status === "done" && h.startedAt < run.startedAt && h.scores.some((s) => s.device === rep.device))?.scores.find((s) => s.device === rep.device);
-    const fixable = rep.fixes.filter((f) => f.assistant).length;
     return (
       <div className="sp">
         <div className="sp-head">
           <div className="sp-head-text">
-            <button type="button" className="sp-back" onClick={() => setRun(null)}><Icon.ChevronRight size={13} /> All reports</button>
             <b title={rep.finalUrl}>{shortUrl(run.url)}</b>
             <span className="muted small">{whenLabel(run.startedAt)} · {run.source === "google" ? "Google PageSpeed" : "Lighthouse on this computer"}</span>
           </div>
-          <button type="button" className="btn" disabled={disabled} onClick={() => void start(run.devices.length > 1 ? "both" : run.devices[0], run.url)}><Icon.Retry size={14} /> Re-run</button>
+          <span className="sp-head-btns">
+            <button type="button" className="btn ghost sm" onClick={() => setRun(null)} title="Earlier reports, another page or device">History</button>
+            <button type="button" className="btn sm" disabled={disabled} onClick={() => void start(run.devices.length > 1 ? "both" : run.devices[0], run.url)}><Icon.Retry size={14} /> Re-run</button>
+          </span>
         </div>
         {run.reports.length > 1 && (
           <div className="sp-seg two" role="radiogroup" aria-label="Device">
@@ -130,36 +131,10 @@ export function SpeedPanel({ siteId, pageUrl, siteName, disabled, onAsk }: {
           {SCORE_LABELS.map(([k, label]) => <ScoreRing key={k} label={label} value={rep.scores[k]} change={delta(rep.scores[k], prev?.[k])} />)}
         </div>
         <Vitals rep={rep} />
-        <div className="sp-fixes">
-          <div className="sp-sec-title"><b>Top fixes for this page</b>{rep.fixes.some((f) => savingsLabel(f)) && <span className="muted small">est. saving</span>}</div>
-          {rep.fixes.length === 0 && <p className="muted small">Nothing important to fix. Nice work.</p>}
-          {rep.fixes.map((f) => (
-            <div key={f.id} className="sp-fix">
-              <div className="sp-fix-top">
-                <div><b>{f.title}</b><span>{f.detail}</span></div>
-                {savingsLabel(f) && <span className="sp-save">{savingsLabel(f)}</span>}
-              </div>
-              {f.items.length > 0 && (
-                <details className="sp-items"><summary>{f.items.length} affected</summary>
-                  <ul>{f.items.map((i, n) => <li key={n} title={i.selector || i.url}>{i.label || i.url || i.selector}</li>)}</ul>
-                </details>
-              )}
-              <div className="sp-fix-actions">
-                <span className={`sp-cat ${f.category}`}>{CAT[f.category]}</span>
-                <button type="button" className={`btn ${f.assistant ? "dark" : ""}`} disabled={disabled} onClick={() => onAsk(f.prompt)}>
-                  {f.assistant ? <><Icon.Sparkle size={13} /> Fix with assistant</> : <><Icon.Chat size={13} /> How to fix</>}
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
         {rep.warnings.length > 0 && <div className="sp-note">{rep.warnings.map((w, i) => <p key={i}>{w}</p>)}</div>}
         {err && <div className="banner error">{err}</div>}
-        <div className="sp-foot">
-          <button type="button" className="btn" onClick={printReport}><Icon.Page size={14} /> Print / PDF</button>
-          <button type="button" className="btn primary" disabled={disabled || !fixable || !rep.fixAllPrompt} onClick={() => rep.fixAllPrompt && onAsk(rep.fixAllPrompt)} title={fixable ? "Send the fixes the assistant can make to the chat (it proposes a plan first)" : "None of these can be changed from page content"}>
-            <Icon.Wand size={14} /> Fix all{fixable ? ` (${fixable})` : ""}
-          </button>
+        <div className="sp-foot one">
+          <button type="button" className="btn primary" onClick={printReport}><Icon.Page size={14} /> Open full report (print or save as PDF)</button>
         </div>
       </div>
     );
@@ -198,7 +173,6 @@ export function SpeedPanel({ siteId, pageUrl, siteName, disabled, onAsk }: {
   );
 }
 
-const CAT = { performance: "Speed", accessibility: "Accessibility", seo: "SEO", "best-practices": "Best practice" } as const;
 const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
 const shortUrl = (u: string) => u.replace(/^https?:\/\//, "").replace(/\/$/, "") || u;
 

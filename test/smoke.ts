@@ -213,6 +213,15 @@ console.log("\n8) approval modes");
   assert.equal(w.pending[0].toolName, "propose_plan"); r.respond(job.id, w.pending[0].approvalId, true);
   const done = await r.waitUntilSettled(job.id);
   assert.equal(done.status, "completed"); assert.equal(wp.changes.length, before + 2); ok("once per request: one plan approval, then every step runs");
+  // Undo for a whole request (the PageSpeed "Undo fix" button): both changes of that request are dropped, newest first.
+  const rid = done.requestSeq ?? 1;
+  const mine = (done.changes ?? []).filter((c) => (c.requestId ?? 0) === rid && !c.revertedAt);
+  assert.equal(mine.length, 2);
+  const undoAll = await r.revertRequest(job.id, rid);
+  assert.equal(undoAll.reverted, 2);
+  for (const c of mine) assert.equal(wp.changes.find((x) => x.id === c.pluginId)!.status, "discarded");
+  await assert.rejects(() => r.revertRequest(job.id, rid), /Nothing to revert/);
+  ok("undo a whole request: every change of it is reverted, and a second undo says there is nothing left");
   const auto = runnerWith(scripted([() => call("make_change", { kind: "acf.field", target: "field_hero_title", value: "Auto", reason: "x" }), () => say("Done.")]));
   const aj = auto.create(site.id, "auto", undefined, [], { approvalMode: "auto" });
   assert.equal((await auto.waitUntilSettled(aj.id)).status, "completed"); ok("auto: no questions (still a draft, still checked)");

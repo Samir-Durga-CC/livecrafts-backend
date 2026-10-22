@@ -51,6 +51,12 @@ export function BlogDialog({ siteId, initialTitle = "", onClose, onSubmit }: {
   const removeNewCat = (name: string) => setR((x) => ({ ...x, newCategories: (x.newCategories ?? []).filter((n) => n !== name) }));
   const set = <K extends keyof BlogRequest>(k: K, v: BlogRequest[K]) => setR((x) => ({ ...x, [k]: v }));
   useEffect(() => { titleRef.current?.focus(); }, []);
+  // Esc closes the dialog (like every dialog), unless the post is being started
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   function pickFile(f?: File) {
     if (!f || !f.type.startsWith("image/")) return;

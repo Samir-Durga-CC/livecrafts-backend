@@ -1,4 +1,5 @@
-import type { SpeedRun, SpeedRunSummary } from "./speed";
+import type { FixStatus, SpeedRun, SpeedRunSummary } from "./speed";
+import type { PluginActionResult, PluginHistoryEntry, PluginJob, PluginList } from "./plugins";
 import type { TemplatesReport, ApprovalMode, AssistantInfo, ChangeRecord, DiffData, HostingerHealth, ModelsReport, ProviderInfo, SiteStatus, JobEvent, JobSummary, Site, TimelineItem, UploadedFile } from "./types";
 
 const TOKEN_KEY = "lc_token";
@@ -76,6 +77,13 @@ export const api = {
   speedHistory: (siteId: string, url?: string) => request<{ runs: SpeedRunSummary[]; google: { keySource: "env" | "saved" | "none" }; local: boolean }>("GET", `/sites/${siteId}/pagespeed${url ? `?url=${encodeURIComponent(url)}` : ""}`),
   startSpeed: (siteId: string, url: string, device: "mobile" | "desktop" | "both") => request<SpeedRunSummary>("POST", `/sites/${siteId}/pagespeed`, { url, device }),
   speedRun: (siteId: string, runId: string) => request<SpeedRun>("GET", `/sites/${siteId}/pagespeed/${runId}`),
+  plugins: (siteId: string, refresh = false) => request<PluginList>("GET", `/sites/${siteId}/plugins${refresh ? "?refresh=1" : ""}`),
+  pluginHistory: (siteId: string) => request<{ history: PluginHistoryEntry[] }>("GET", `/sites/${siteId}/plugins/history`),
+  pluginVersions: (siteId: string, plugin: string) => request<{ versions: string[]; note?: string }>("GET", `/sites/${siteId}/plugins/versions?plugin=${encodeURIComponent(plugin)}`),
+  updatePlugin: (siteId: string, plugin: string) => request<PluginJob>("POST", `/sites/${siteId}/plugins/update`, { plugin }),
+  pluginJob: (siteId: string, id: string) => request<PluginJob>("GET", `/sites/${siteId}/plugins/jobs/${id}`),
+  rollbackPlugin: (siteId: string, plugin: string, to: { backup?: string; version?: string } = {}) => request<PluginActionResult>("POST", `/sites/${siteId}/plugins/rollback`, { plugin, ...to }),
+  markSpeedFix: (siteId: string, runId: string, key: string, status: FixStatus | "open", jobId?: string, requestId?: number) => request<SpeedRun>("PUT", `/sites/${siteId}/pagespeed/${runId}/fix`, { key, status, jobId, requestId }),
   testHostinger: () => request<HostingerHealth>("POST", "/integrations/hostinger/test"),
   saveHostinger: (token: string) => request<HostingerHealth>("PUT", "/integrations/hostinger", { token }),
   removeHostinger: () => request<HostingerHealth>("DELETE", "/integrations/hostinger"),

@@ -244,7 +244,8 @@ console.log("\n7) the app's report helpers");
   const html = reportHtml({ url: "https://example.com/<b>x</b>", startedAt: "2026-10-16T09:05:00Z", source: "google", reports: [rep] }, "Shop & Co");
   assert.match(html, /^<!doctype html>/);
   assert.ok(html.includes("Shop &amp; Co") && !html.includes("<b>x</b>"), "escaped");
-  assert.match(html, /Real visitors \(this page, last 28 days\)[\s\S]*Lab test[\s\S]*Fixes/);
+  assert.match(html, /Core Web Vitals[\s\S]*real visitors, last 28 days[\s\S]*Lab test[\s\S]*What to fix/);
+  assert.match(html, /class="band"/); assert.match(html, /Livecrafts assistant can fix|Hosting \/ plugin setting/); assert.match(html, /class="verdict"/);
   assert.match(html, /@media print/);
   ok("the printable report (Print / PDF): escaped, real visitors, lab test, fixes, print styles");
 }
