@@ -10,7 +10,7 @@ import { Bridge } from "./bridge.js";
 import { log, recordUsage, tokensOf } from "./usage.js";
 import type { ApprovalMode, Job, JobEvent, JobStatus, PendingApproval, Site } from "./types.js";
 import { APPROVAL_MODES } from "./types.js";
-import { WRITE_TOOLS } from "./tools.js";
+import { WRITE_TOOLS, compactMap } from "./tools.js";
 import { voiceSession, type SiteCache } from "./sessions.js";
 
 export interface RequestOptions {
@@ -584,14 +584,28 @@ function lastRequestText(job: Job): string {
 }
 
 /**
- * What the assistant should know before it starts: drafts not deployed yet, conflicts, changes made outside Livecrafts
- * since the last release (who / what), and the notes of the site and of the page the person is on.
+ * What the assistant should know before it starts: drafts not deployed yet, conflicts, changes made outside
+ * Livecrafts since the last release (who / what), the notes of the site and of the page the person is on, and the
+ * MAP of that page - everything editable on it, with its current value.
+ *
+ * WHY THE MAP IS HERE NOW. Every turn used to open with the same three tool calls - site_status, read_notes,
+ * get_page_map - three model round trips, about eighteen seconds, before any work began. Two of the three were
+ * already being handed over in this very text and the model fetched them again anyway, because its instructions
+ * told it to. So the third one joins them, the instructions now say they are given, and a turn starts at the work.
+ *
+ * It is read fresh for every run (once per voice session, see sessions.ts) and any write empties that cache, so
+ * what is pasted here is never older than the request it belongs to.
  */
 async function siteContext(bridge: Bridge, pageUrl?: string, cache?: SiteCache | null): Promise<string> {
   const lines: string[] = [];
   const once = <T>(key: string, read: () => Promise<T>): Promise<T> => (cache ? cache.get(key, read) : read());
+  // The status and the page map do not depend on each other, so they are asked for together; the notes need the
+  // post id that the map returns, so they follow. Two waits instead of three.
+  const mapUrl = pageUrl || bridge.homeUrl;
+  const statusP = once("status", () => bridge.status());
+  const mapP = once(`map:${mapUrl}:draft`, () => bridge.map({ url: mapUrl, view: "draft" })).catch(() => null);
   try {
-    const s: any = await once("status", () => bridge.status());
+    const s: any = await statusP;
     const drafts = (s.drafts?.objects ?? []) as any[];
     lines.push(drafts.length ? `Drafts not deployed yet (${s.drafts.count}):` : "No drafts: the preview equals the live site.");
     for (const o of drafts.slice(0, 8)) lines.push(`- ${o.object.label}: ${o.changes.slice(0, 6).map((c: any) => `#${c.id} ${c.summary} (${c.user?.name ?? c.source})`).join("; ")}`);
@@ -601,13 +615,38 @@ async function siteContext(bridge: Bridge, pageUrl?: string, cache?: SiteCache |
     if (s.last_release) lines.push(`Last release: #${s.last_release.id} ${s.last_release.kind} - ${s.last_release.summary} (${s.last_release.at})`);
     if (s.legacy_overlay) lines.push("This site still has an old Livecrafts 0.9 overlay (see site_status).");
   } catch (e) { lines.push(`(Could not read the site status: ${(e as Error).message})`); }
+  const map: any = await mapP;
   try {
-    let post: number | undefined;
-    if (pageUrl) post = Number((await once(`map:${pageUrl}:draft`, () => bridge.map({ url: pageUrl, view: "draft" })).catch(() => null))?.post?.id) || undefined;
+    const post = Number(map?.post?.id) || undefined;
     const n: any = await once(`notes:${post ?? ""}`, () => bridge.notes(post));
     if (n.site?.text) lines.push(`\nYOUR SITE NOTES:\n${String(n.site.text).slice(0, 4000)}`);
     if (n.page?.text) lines.push(`\nYOUR NOTES FOR THIS PAGE:\n${String(n.page.text).slice(0, 4000)}`);
     if (!n.site?.text && !n.page?.text) lines.push("No notes yet - write them as you learn the site (write_notes).");
   } catch { /* notes are optional */ }
+  if (map) lines.push(`\nTHIS PAGE, MAPPED (get_page_map for ${mapUrl}, draft view - do not call it again for this page unless you change it):\n${mapText(map)}`);
   return lines.join("\n");
+}
+
+/**
+ * The page map as the model gets it from the tool, trimmed to what fits in front of every request.
+ *
+ * The tool's own view allows 200 values and two 250-line outlines, which on a built page is thousands of tokens
+ * re-sent on every step of the turn. Sixty values and sixty outline lines keep what makes the map worth having -
+ * the target ids and what is currently in them - and the tool is still there for the rest.
+ */
+function mapText(map: any, limit = 6000): string {
+  const c: any = compactMap(map);
+  const short = {
+    post: c.post, builders: c.builders, drafts: c.drafts,
+    values: (c.values ?? []).slice(0, 60).map((v: any) => ({ ...v, value: String(v.value ?? "").slice(0, 120) })),
+    acfRows: c.acfRows,
+    elementorOutline: c.elementorOutline?.slice(0, 60),
+    diviOutline: c.diviOutline?.slice(0, 60),
+    howToChange: c.howToChange,
+  };
+  const text = JSON.stringify(short);
+  if (text.length <= limit) return text;
+  // Still too big (a page with very long field values): keep the shape, drop the tail, and say so rather than
+  // letting the model believe it has seen everything.
+  return text.slice(0, limit) + " …TRUNCATED - call get_page_map for the full map of this page.";
 }

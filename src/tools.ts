@@ -53,8 +53,13 @@ export function htmlWords(html: string): number {
   return t ? t.split(/\s+/).length : 0;
 }
 
-/** The page map can be big; give the model a compact, stable view of it. */
-function compactMap(m: any) {
+/**
+ * The page map can be big; give the model a compact, stable view of it.
+ *
+ * Exported because the SAME shape is now put in front of the model at the start of a run (see siteContext in
+ * jobs.ts). Two renderings of a page map would drift, and the model would be told two different things.
+ */
+export function compactMap(m: any) {
   const values = [...(m.acf ?? []).filter((e: any) => e.kind === "acf"), ...(m.elementor ?? []), ...(m.divi ?? [])].slice(0, 200).map((e: any) => ({
     target: e.tid, label: e.label, type: e.ftype,
     value: e.ftype === "image" ? `[image id ${e.value}] ${e.url}` : String(e.value).slice(0, 200),
@@ -158,7 +163,8 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     site_status: tool({
       description:
         "What is going on on this site right now, like `git status`: the draft changes not deployed yet (per page, with ids), conflicts (someone changed the live site under a draft), " +
-        "the last release, and changes made OUTSIDE Livecrafts since then (WP admin, Elementor editor - by whom). Call it at the start of a request that touches existing work, and before reverting.",
+        "the last release, and changes made OUTSIDE Livecrafts since then (WP admin, Elementor editor - by whom). " +
+        "THIS IS ALREADY IN YOUR SITE CONTEXT below, read fresh for this request: do not call this to start a request. Call it only to see changes made since you started working, or before reverting.",
       inputSchema: z.object({}),
       execute: async () => safe(async () => {
         const s = await once("status", () => bridge.status());
@@ -190,7 +196,8 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
       }),
     }),
     read_notes: tool({
-      description: "Your notes about this site and about a page (what you learned last time: where things are stored, brand rules, pitfalls). Read them before working on a page you have not read notes for in this chat.",
+      description: "Your notes about this site and about a page (what you learned last time: where things are stored, brand rules, pitfalls). " +
+        "The notes for the site and for the page the person is on are ALREADY IN YOUR SITE CONTEXT: call this only for a DIFFERENT page.",
       inputSchema: z.object({ url: z.string().optional().describe("Page URL (default: the page the person is on)") }),
       execute: async ({ url }) => safe(async () => {
         const post = await postIdOf(url);
@@ -222,7 +229,8 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     get_page_map: tool({
       description:
         "Everything editable on a page with its CURRENT value: ACF fields (also inside groups and repeater/flexible rows), Elementor content settings, ACF row lists, and the Elementor outline " +
-        "(element ids, types, nesting, short text). Choose change targets from here. view draft (default) includes unpublished changes.",
+        "(element ids, types, nesting, short text). Choose change targets from here. view draft (default) includes unpublished changes. " +
+        "THE PAGE THE PERSON IS ON IS ALREADY MAPPED IN YOUR SITE CONTEXT below: call this only for a DIFFERENT page, for the live view, or to re-read a page AFTER you have changed it.",
       inputSchema: z.object({ url: z.string().optional().describe("Full page URL (default: the page the person is on, else the home page)"), view: viewSchema }),
       execute: async ({ url, view }) => safe(async () => {
         const u = url || extras.pageUrl?.() || bridge.homeUrl;
@@ -562,14 +570,24 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
   const skillTools = sk && sk.list().length ? {
     load_skill: tool({
       description: "Load an official WordPress skill (expert instructions) before work in its area. Default file is SKILL.md; its references/*.md files can be loaded too. Load only the skills that actually apply to THIS request - most requests need just the 3-4 named in your instructions, never the whole catalogue. Loading the same skill+file twice in one request returns a short notice instead of the text again (you already have it).",
-      inputSchema: z.object({ name: z.string(), file: z.string().optional().describe("e.g. references/theme-json.md") }),
-      execute: async ({ name, file }) => safe(async () => {
-        const key = name + "/" + (file || "SKILL.md");
-        if (filesLoaded.has(key)) return { ok: true, name, file: file || "SKILL.md", alreadyLoaded: true, note: "Already loaded earlier in this request - use what you read then, do not load it again." };
-        const r = sk.load(name, file);
-        skillsLoaded.add(name);
-        filesLoaded.add(key);
-        return r;
+      inputSchema: z.object({
+        // Several at once: the instructions name three or four skills for one request, and asking for them one at
+        // a time cost three or four model round trips before any work started.
+        name: z.union([z.string(), z.array(z.string()).max(6)]).describe("One skill name, or several to load in one go"),
+        file: z.string().optional().describe("e.g. references/theme-json.md (only with a single name)"),
+      }),
+      execute: async (a: { name: string | string[]; file?: string }) => safe(async () => {
+        /** One skill, remembered for this request so the same text is never paid for twice. */
+        const loadOne = (name: string, file?: string) => {
+          const key = name + "/" + (file || "SKILL.md");
+          if (filesLoaded.has(key)) return { ok: true, name, file: file || "SKILL.md", alreadyLoaded: true, note: "Already loaded earlier in this request - use what you read then, do not load it again." };
+          const r = sk!.load(name, file);
+          skillsLoaded.add(name);
+          filesLoaded.add(key);
+          return r;
+        };
+        if (Array.isArray(a.name)) return { ok: true, skills: a.name.map((n) => loadOne(n)) };
+        return loadOne(a.name, a.file);
       }),
     }),
   } : {};
