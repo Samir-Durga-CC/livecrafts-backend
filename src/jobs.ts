@@ -1,3 +1,4 @@
+import { friendlyAiError } from "./aiErrors.js";
 import type { ModelMessage } from "ai";
 import { config } from "./config.js";
 import { JsonStore, newId } from "./store.js";
@@ -481,8 +482,8 @@ export class JobRunner {
         this.setStatus(job, "paused", { note: "Stopped." });
         return;
       }
-      job.error = (e as Error).message;
-      log("error", "job failed", { site: job.siteId, job: job.id, error: job.error });
+      job.error = friendlyAiError((e as Error).message);
+      log("error", "job failed", { site: job.siteId, job: job.id, error: (e as Error).message });
       this.emit(job, "error", { error: job.error });
       this.setStatus(job, "failed", { error: job.error });
     }
@@ -544,7 +545,7 @@ function uiSummary(tool: string | undefined, v: any): Record<string, unknown> | 
   if (!v || typeof v !== "object" || v.ok === false) return undefined;
   if (tool === "screenshot_page" && v.screenshotId) return { screenshotId: v.screenshotId, device: v.device, target: v.target };
   if (tool === "create_blog_post") {
-    return { changeId: v.changeId, summary: v.change?.summary, status: "draft", id: v.id, link: v.preview, preview: v.preview, words: v.words, image: v.featured_media?.url,
+    return { changeId: v.changeId, summary: v.change?.summary, status: "draft", id: v.id, link: v.preview, preview: v.preview, edit: v.edit, words: v.words, image: v.featured_media?.url,
       categories: v.categories?.map((t: any) => t.name), tags: v.tags?.map((t: any) => t.name) };
   }
   if (tool === "make_change" || tool === "create_page" || tool === "revert_change" || tool === "place_component") {

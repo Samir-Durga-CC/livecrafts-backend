@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import { JsonStore, newId } from "./store.js";
 import { FileStore } from "./files.js";
 import { Bridge, BridgeError } from "./bridge.js";
+import { pluginJobs } from "./pluginJobs.js";
 import { buildAgent } from "./agent.js";
 import { JobRunner } from "./jobs.js";
 import type { Job, Site } from "./types.js";
@@ -51,7 +52,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     actor: caller.via === "widget" ? { token: caller.token, name: caller.user.name, login: caller.user.login } : undefined,
   });
   // What the chat inside the WordPress widget may call (with its signed per-person token).
-  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/sites|POST \/voice\/(transcribe|speak)|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms|pagespeed)|(POST \/sites\/[\w-]+\/pagespeed|GET \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+)|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
+  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/sites|POST \/voice\/(transcribe|speak)|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms|pagespeed)|(POST \/sites\/[\w-]+\/pagespeed|GET \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+|PUT \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+\/fix|GET \/sites\/[\w-]+\/plugins(\/(history|versions|jobs\/plj_[a-f0-9]+))?|POST \/sites\/[\w-]+\/plugins\/(update|rollback))|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
 
   async function readBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
     const chunks: Buffer[] = []; let size = 0;
@@ -126,6 +127,31 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         const r = await new Bridge(ps, caller.via === "widget" ? caller.token : undefined).previewToken();
         return send(res, 200, { token: r.token, param: r.param });
       }
+      // ---- plugin updates with backup + health check + rollback (Livecrafts plugin 0.19+). Live at once, so from the
+      // widget only a signed-in person whose WordPress account may update plugins (the plugin checks that too).
+      const pl = url.pathname.match(/^\/sites\/([\w-]+)\/plugins(?:\/(history|versions|update|rollback|jobs\/plj_[a-f0-9]+))?$/);
+      if (pl) {
+        const site = sites.get(pl[1]);
+        if (!site || !canUseSite(caller, site.id)) return send(res, 404, { error: "Unknown site" });
+        if (req.headers["x-livecrafts-widget"] && caller.via !== "widget") return send(res, 403, { error: "Plugin updates need you to be signed in to WordPress. Reload the page while logged in." });
+        const b = new Bridge(site, caller.via === "widget" ? caller.token : undefined);
+        const what = pl[2] ?? "";
+        if (req.method === "GET" && what === "") return send(res, 200, await b.plugins(url.searchParams.get("refresh") === "1"));
+        if (req.method === "GET" && what === "history") return send(res, 200, await b.pluginHistory());
+        if (req.method === "GET" && what === "versions") return send(res, 200, await b.pluginVersions(String(url.searchParams.get("plugin") ?? "")));
+        if (req.method === "GET" && what.startsWith("jobs/")) {
+          const j = pluginJobs().get(what.slice(5));
+          return j && j.siteId === site.id ? send(res, 200, j) : send(res, 404, { error: "Unknown update" });
+        }
+        if (req.method === "POST" && (what === "update" || what === "rollback")) {
+          const body = await readJson(req);
+          const plugin = String(body.plugin ?? "");
+          if (!plugin || plugin.length > 200) return send(res, 400, { error: "Which plugin?" });
+          if (what === "update") return send(res, 202, pluginJobs().start(site.id, b, plugin));   // poll GET plugins/jobs/<id>
+          return send(res, 200, await b.rollbackPlugin(plugin, { backup: body.backup ? String(body.backup) : undefined, version: body.version ? String(body.version) : undefined }));
+        }
+        return send(res, 405, { error: "Not allowed" });
+      }
       const tm = url.pathname.match(/^\/sites\/([\w-]+)\/terms$/);
       if (tm && req.method === "GET") { // the blog form's category picker
         const ts = sites.get(tm[1]);
@@ -143,10 +169,23 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         return send(res, 200, list.map((m: any) => ({ id: m.id, url: m.media_details?.sizes?.medium?.source_url ?? m.source_url, full: m.source_url, alt: m.alt_text ?? "", title: m.title?.rendered ?? "" })));
       }
       // ---- PageSpeed reports (Google PageSpeed Insights, or Lighthouse on this machine for a local site)
-      const ps = url.pathname.match(/^\/sites\/([\w-]+)\/pagespeed(?:\/(speed_[a-f0-9]+))?$/);
+      const ps = url.pathname.match(/^\/sites\/([\w-]+)\/pagespeed(?:\/(speed_[a-f0-9]+)(\/fix)?)?$/);
       if (ps) {
         const ss = sites.get(ps[1]);
         if (!ss || !canUseSite(caller, ss.id)) return send(res, 404, { error: "Unknown site" });
+        if (ps[3]) {
+          if (req.method !== "PUT") return send(res, 405, { error: "Use PUT" });
+          const b = await readJson(req);
+          const key = String(b.key ?? "");
+          const status = b.status === null || b.status === "open" ? null : String(b.status);
+          if (!/^(mobile|desktop):[\w-]{1,80}$/.test(key) || (status !== null && !["progress", "fixed", "done", "skipped"].includes(status))) return send(res, 400, { error: "Bad fix key or status" });
+          const prev = speed.get(ps[2]!);
+          if (!prev || prev.siteId !== ss.id) return send(res, 404, { error: "Unknown report" });
+          const jobId = typeof b.jobId === "string" && /^job_[a-f0-9]+$/.test(b.jobId) ? b.jobId : undefined;
+          const requestId = Number.isInteger(b.requestId) && b.requestId > 0 && b.requestId < 1e6 ? Number(b.requestId) : undefined;
+          const r = speed.markFix(ps[2]!, key, status ? { status: status as "progress", jobId, requestId } : null);
+          return r ? send(res, 200, runView(r)) : send(res, 404, { error: "Unknown fix" });
+        }
         if (ps[2] && req.method === "GET") {
           const r = speed.get(ps[2]);
           return r && r.siteId === ss.id ? send(res, 200, runView(r)) : send(res, 404, { error: "Unknown report" });

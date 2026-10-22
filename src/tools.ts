@@ -12,6 +12,7 @@ import { makeComponentTools } from "./componentTools.js";
 import { generateImage, type ImageShape } from "./images.js";
 import { chooseTerms } from "./terms.js";
 import { sameHost, summarize, type SpeedDevice, type SpeedRuns } from "./pagespeed.js";
+import { pluginJobs } from "./pluginJobs.js";
 
 /**
  * The assistant's tools. Every write goes to the site as a DRAFT through the Livecrafts plugin (POST /changes):
@@ -342,8 +343,10 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
         const r = await checkedNew(created, { title: a.title, content: a.content, imageUrl: created?.featured_media?.url });
         const ask = t.suggestedNew.categories.length + t.suggestedNew.tags.length > 0;
         const named = [...t.suggestedNew.categories.map((n) => "category " + n), ...t.suggestedNew.tags.map((n) => "tag " + n)].join(", ");
+        // the WordPress editor for this post (plugin 0.19.1+ sends it; older ones: built from the site address)
+        const edit = r?.edit ?? (r?.id ? `${String(extras.siteUrl || bridge.homeUrl).replace(/\/+$/, "")}/wp-admin/post.php?post=${r.id}&action=edit` : undefined);
         return {
-          ...r, change: changeView(r.change), changeId: r.change?.id, words: htmlWords(a.content),
+          ...r, edit, change: changeView(r.change), changeId: r.change?.id, words: htmlWords(a.content),
           ...(ask ? { suggestedNewTerms: t.suggestedNew } : {}),
           ...(t.fallbackCategory ? { categoryUsed: `${t.fallbackCategory} (the most relevant existing category)` } : {}),
           note: "Draft blog post. Give the person the preview link; it is published when a person deploys." + failedNote(r) + (ask
@@ -482,10 +485,42 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
         const run = await sp.wait(started.id);
         if (!run || run.status !== "done") return { ok: false, error: run?.error ?? "The report did not finish." };
         return { ok: true, url: page, reportId: run.id, reports: run.reports.map(summarize),
-          note: "Shown to the person in the widget's Speed tab too. Lead with the scores and the 2-3 fixes that matter most; fixes with assistantCanFix you can make as drafts (ask first), the others need plugin / hosting settings - explain where." };
+          note: "Shown to the person in the widget too (More, then PageSpeed report). Lead with the scores and the 2-3 fixes that matter most; fixes with assistantCanFix you can make as drafts (ask first), the others need plugin / hosting settings - explain where." };
       }),
     }),
   } : {};
+
+  // ---- plugin updates (Livecrafts plugin 0.19+): backup -> update -> health check -> keep or restore automatically
+  const pluginTools = {
+    list_plugins: tool({
+      description: "List the site's installed plugins: version, active, available update (and whether it is compatible), saved backups for rollback. " +
+        "Use it when the person asks about plugin updates or before updating / rolling back. refresh=true asks WordPress.org again for updates.",
+      inputSchema: z.object({ refresh: z.boolean().default(false) }),
+      execute: async ({ refresh }) => safe(async () => {
+        const r = await bridge.plugins(!!refresh);
+        return { canModify: r.canModify, blocked: r.blocked || undefined, wp: r.wp, php: r.php,
+          plugins: r.plugins.map((p) => ({ plugin: p.plugin, name: p.name, version: p.version, active: p.active, update: p.update, backups: p.backups.map((b) => b.version), self: p.self || undefined, dbHeavy: p.dbHeavy || undefined })),
+          note: "Updates go LIVE at once (no draft). Each update keeps a backup, loads the homepage and wp-admin afterwards and restores the old version by itself if they break. Livecrafts itself is updated by uploading its zip. Update one plugin at a time." };
+      }),
+    }),
+    update_plugin: tool({
+      description: "LIVE AT ONCE: update ONE plugin (its plugin file, e.g. 'wordpress-seo/wp-seo.php', from list_plugins). Saves a backup first; if the homepage or wp-admin break afterwards the old version is restored automatically. " +
+        "For plugins that change the database (Elementor, WooCommerce, Yoast...) say that rollback restores files only and suggest a hosting backup first. Needs approval.",
+      inputSchema: z.object({ plugin: z.string().min(3).max(200) }),
+      execute: async ({ plugin }) => safe(async () => {
+        const jobs = pluginJobs();
+        const j = await jobs.wait(jobs.start(extras.siteId ?? "chat", bridge, plugin).id);
+        if (!j || j.error) throw new Error(j?.error ?? "The update did not finish.");
+        return j.result;
+      }),
+    }),
+    rollback_plugin: tool({
+      description: "LIVE AT ONCE: put a plugin back to an older version - by default the newest saved backup that differs from the installed version; or a given version " +
+        "(from its backups, or an official WordPress.org version). Use when the person says a plugin update broke something or asks to go back. Needs approval.",
+      inputSchema: z.object({ plugin: z.string().min(3).max(200), version: z.string().max(40).optional() }),
+      execute: async ({ plugin, version }) => safe(() => bridge.rollbackPlugin(plugin, version ? { version } : {})),
+    }),
+  };
 
   const sf = extras.siteFiles;
   const fileTools = sf ? {
@@ -588,12 +623,12 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
 
   const componentTools = makeComponentTools({ bridge, safe, postIdOf, checked, changeView, parseValue, ref, pageUrl: () => extras.pageUrl?.(), skillsLoaded, design: extras.browser?.design ? (url?: string) => extras.browser!.design!({ url, device: "desktop" }) as Promise<any> : undefined });
 
-  return { ...reading, ...writing, ...media, ...browser, ...speedTools, ...fileTools, ...apiTools, ...skillTools, ...planTools, ...askTools, ...componentTools };
+  return { ...reading, ...writing, ...media, ...browser, ...speedTools, ...pluginTools, ...fileTools, ...apiTools, ...skillTools, ...planTools, ...askTools, ...componentTools };
 }
 
 /** Tools that must never run without a human saying yes (in "every" mode; one plan approval in "request" mode). */
 export const APPROVAL_REQUIRED = [
-  "make_change", "create_page", "create_blog_post", "generate_image", "set_post_terms", "revert_change", "place_component", "upload_media_from_chat", "upload_media_from_url", "edit_file", "create_file", "restore_file",
+  "make_change", "create_page", "create_blog_post", "generate_image", "set_post_terms", "revert_change", "place_component", "upload_media_from_chat", "upload_media_from_url", "edit_file", "create_file", "restore_file", "update_plugin", "rollback_plugin",
 ] as const;
 
 /** Tools that change the site (they create history entries). */
