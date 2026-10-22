@@ -571,6 +571,18 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     setVoiceMode(mode);
     store.set("lcw_voice_mode", mode);
     dictated.current = "";
+    /**
+     * Decided here, once, for both modes - never left over from the last one.
+     *
+     * Dictation must NEVER send on its own: it types into the box and the person presses send, which is the
+     * whole difference between the two. Switching straight from the agent to dictation (the buttons sit next to
+     * each other, and neither stops the other first) used to leave this set, and dictation would quietly start
+     * sending what it heard.
+     */
+    talkingToAgent.current = mode === "agent";
+    // The two modes listen with different settings (how long a pause ends a sentence), and start() does nothing
+    // if it is already running - so a switch has to close the old session or it keeps the old one's timing.
+    if (voiceOn && voiceMode !== mode) { dictation.stop(); realtime.stop(); voice.stop(); }
     // Dictation never uses the realtime conversation: it only needs the words, and nothing should answer back.
     if (mode === "dictate") {
       const info = await api.voiceInfo({ siteId: site.id, pageUrl: cfg.pageUrl }).catch(() => ({ available: false, voice: "onyx", voices: [] as string[] }));
@@ -600,7 +612,8 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     if (engine === "stream") {
       talkingToAgent.current = true;
       dictatedText.current = "";
-      if (!(await dictation.start({ siteId: site.id, pageUrl: cfg.pageUrl }))) {
+      // forAgent: close the sentence on a short pause. Here the pause is time the agent is NOT yet working.
+      if (!(await dictation.start({ siteId: site.id, pageUrl: cfg.pageUrl, forAgent: true }))) {
         talkingToAgent.current = false;
         store.sset("lcw_voice", "0");
         return;
@@ -690,13 +703,23 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
        * so the running turn is stopped and the new sentence takes its place.
        */
       if (talkingToAgent.current) {
+        /**
+         * Stop what is running, then say the new thing INTO THE SAME CONVERSATION.
+         *
+         * stop() only asks: it sets a flag and the run ends at its next safe point, so for a moment afterwards
+         * the job is still running. Sending in that moment is refused by the backend as "wait for it to finish"
+         * (jobs.ts continue()), and the widget's send() answers a refusal-shaped situation by starting a NEW
+         * job - which silently loses the conversation this correction belongs to. So it is queued, and the
+         * effect below sends it the moment the job is actually free, into the chat it came from.
+         */
         voice.stopSpeaking();
         setSaying("");
         setReadAloud(null);
         readSeq.current = -1;
         partial.current = { seq: -1, chars: 0 };
+        queuedRef.current = text;
+        setQueued(text);
         stop();
-        void send(text, [], voiceContext(), true).catch(() => setProblem("That could not be sent."));
         return;
       }
       queuedRef.current = text; setQueued(text);

@@ -67,6 +67,18 @@ const READY_TIMEOUT_MS = 6_000;
  * text in the box is cut into sentences, and the worst a late one costs is a longer sentence.
  */
 const COMMIT_SILENCE_MS = 2_500;
+/**
+ * The same pause, when somebody is waiting for an answer.
+ *
+ * Dictation can afford to wait: nothing happens at the end of a sentence except that it is cut, so a long pause
+ * is free and keeps a breath from splitting one thought into two. The agent cannot - this pause is time during
+ * which the request has not been sent, nothing is being worked on, and the person has stopped talking and is
+ * waiting. Two and a half seconds of that before the model even starts is most of what makes a spoken turn feel
+ * slow, and it is dead time, not thinking time.
+ *
+ * Long enough to clear a breath (a gap inside speech is 300-600ms), less than half the dictation figure.
+ */
+const AGENT_SILENCE_MS = 1_100;
 
 export class Dictation {
   /** Microphone level 0..1 for the waveform in the input box (read 20+ times a second; never a React render). */
@@ -98,14 +110,17 @@ export class Dictation {
   private rateTimer: number | null = null;
   private rateAt = 0;
   private rateSent = 0;
+  /** How long a pause closes a sentence: short when the agent is waiting on it, long when only the box is. */
+  private endSilenceMs = COMMIT_SILENCE_MS;
 
   constructor(h: DictationHandlers) { this.h = h; }
 
   get active() { return this.state !== "off"; }
 
   /** Open the microphone and the socket. false when it could not start (the reason went to onError). */
-  async start(opts: { siteId?: string; pageUrl?: string; lang?: string } = {}): Promise<boolean> {
+  async start(opts: { siteId?: string; pageUrl?: string; lang?: string; forAgent?: boolean } = {}): Promise<boolean> {
     if (this.state !== "off") return true;
+    this.endSilenceMs = opts.forAgent ? AGENT_SILENCE_MS : COMMIT_SILENCE_MS;
     this.set("starting");
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
@@ -301,7 +316,7 @@ export class Dictation {
     if (edge === "end") voiceLog.add("vad.end", { framesSent: this.sent, quietMs: this.quietMs });
 
     // Crossed into a real pause: close the sentence. Once per pause, not once per reading.
-    if (this.ready && was < COMMIT_SILENCE_MS && this.quietMs >= COMMIT_SILENCE_MS) this.closeSentence("pause");
+    if (this.ready && was < this.endSilenceMs && this.quietMs >= this.endSilenceMs) this.closeSentence("pause");
   }
 
   /** Everything streamed since the last one becomes a finished sentence in the box. */
