@@ -512,6 +512,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
 
     const d = new Dictation({
       onReady: (model) => say({ type: "ready", model }),
+      onSpeech: (speaking) => say({ type: "speech", speaking }),
       onPartial: (text, id) => say({ type: "partial", text, id }),
       onFinal: (text, id) => say({ type: "final", text, id }),
       onError: (message) => say({ type: "error", message }),
@@ -533,7 +534,15 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       let m: any;
       try { m = JSON.parse(String(data)); } catch { return; }
       if (m.type === "commit") { commits++; d.commit(); }
-      if (m.type === "stop") d.stop();
+      /**
+       * "Stop" means the microphone is off, not that the last sentence is forfeit.
+       *
+       * The widget commits whatever it was in the middle of and says stop in the same breath. Tearing the
+       * upstream session down here would cancel that transcript on its way back - the one sentence the person
+       * most expects to see, because they pressed Stop as they finished saying it. The socket closing (below)
+       * ends the session for good either way.
+       */
+      if (m.type === "stop") setTimeout(() => d.stop(), 1_500).unref?.();
     };
     client.on("message", (data, isBinary) => {
       if (!ready) { if (early.length < 500) early.push({ bin: isBinary, data: isBinary ? (data as Buffer) : String(data) }); return; }

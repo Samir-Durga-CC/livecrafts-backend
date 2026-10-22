@@ -55,6 +55,18 @@ const MAX_PENDING_FRAMES = 140;
  * not leave someone staring at "getting ready" with a working microphone in front of them.
  */
 const READY_TIMEOUT_MS = 6_000;
+/**
+ * Silence that means "I have finished dictating", not "I took a breath".
+ *
+ * A commit closes the utterance, and the speech model is only as good as the span it is given: hand it 700ms
+ * between two halves of a thought and it transcribes half a thought, with the site's own keyword list to guess
+ * the rest from - which is how "This is something I wanted to ask you" came back as "section something class".
+ *
+ * So this is deliberately far longer than any pause inside speech. Nothing is waiting on it: the words are
+ * already on screen from the partials, which keep arriving the whole time. The commit only decides where the
+ * text in the box is cut into sentences, and the worst a late one costs is a longer sentence.
+ */
+const COMMIT_SILENCE_MS = 2_500;
 
 export class Dictation {
   /** Microphone level 0..1 for the waveform in the input box (read 20+ times a second; never a React render). */
@@ -76,6 +88,8 @@ export class Dictation {
   private pendingPcm: ArrayBuffer[] = [];
   /** The backend has confirmed the speech session is configured and listening. */
   private ready = false;
+  /** Something has been said since the last commit - committing an empty buffer is an error, not a no-op. */
+  private spoken = false;
   private readyTimer: number | null = null;
   /** For the voice log: a run that produced nothing must say which stage produced nothing. */
   private sent = 0;
@@ -181,6 +195,10 @@ export class Dictation {
 
   /** Close everything. Whatever was already written stays in the box. */
   stop() {
+    // Whatever was said since the last pause has been streamed but not closed. Commit it before the socket goes,
+    // or pressing Stop mid-sentence throws that sentence away - and Stop is exactly when people have just
+    // finished saying something.
+    this.closeSentence("stop");
     if (this.heard5s) { window.clearTimeout(this.heard5s); this.heard5s = null; }
     if (this.readyTimer) { window.clearTimeout(this.readyTimer); this.readyTimer = null; }
     voiceLog.add("dictation.stop", { framesSent: this.sent, sentences: this.sentences });
@@ -189,8 +207,27 @@ export class Dictation {
     this.partialId = "";
     this.pendingPcm = [];
     this.ready = false;
-    try { this.ws?.send(JSON.stringify({ type: "stop" })); } catch { /* already gone */ }
-    if (this.ws) { this.ws.onclose = null; this.ws.close(); this.ws = null; }
+    /**
+     * The microphone stops now; the socket gets a moment to answer.
+     *
+     * The commit above was sent a millisecond ago and the finished sentence is still coming back. Closing the
+     * socket in the same breath cancels it, and the last thing someone said - the sentence they pressed Stop
+     * because they had just finished - is the one that never arrives.
+     */
+    const closing = this.ws;
+    this.ws = null;
+    if (closing) {
+      closing.onclose = null;
+      try { closing.send(JSON.stringify({ type: "stop" })); } catch { /* already gone */ }
+      const shut = () => { closing.onmessage = null; try { closing.close(); } catch { /* already closed */ } };
+      const done = window.setTimeout(shut, 1500);
+      closing.onmessage = (e) => {
+        const m = JSON.parse(e.data);
+        // Still worth having: it goes into the box like any other finished sentence.
+        if (m.type === "final" || m.type === "partial") this.fromServer(m);
+        if (m.type === "final") { window.clearTimeout(done); shut(); }
+      };
+    }
     if (this.node) { this.node.port.onmessage = null; this.node.disconnect(); this.node = null; }
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
@@ -210,26 +247,34 @@ export class Dictation {
     this.heard5s ??= window.setTimeout(() => {
       if (!this.sentences && this.vad) voiceLog.add("vad.nothing-after-5s", { floor: Math.round(this.vad.floor), bar: Math.round(this.vad.bar), lastDb: Math.round(db) });
     }, 5000);
+    /**
+     * The local detector no longer ends sentences. It decides ONE thing: whether the room is quiet enough to
+     * stop streaming an empty room (see onPcm). Where a sentence ends is the speech service's call now - it is
+     * listening to the audio, not to a level meter on a thread that is also rendering a chat window, and every
+     * time this detector guessed wrong it cut a sentence in half and the fragment came back as nonsense.
+     */
     const edge = this.vad?.push(db);
-    // Track silence only to pause an idle microphone; it is NOT a gate on sending (see onPcm). Any sound over
-    // the room's bar resumes it at once - waiting for the detector's 150ms of confirmed speech would spend the
-    // first word of whatever broke the silence.
     const audible = this.vad?.speaking || (this.vad && db > this.vad.bar);
+    const was = this.quietMs;
     this.quietMs = audible ? 0 : this.quietMs + (this.tickMs || 5);
-
     if (edge === "start") {
       voiceLog.add("vad.start", { db: Math.round(db), floor: Math.round(this.vad!.floor), bar: Math.round(this.vad!.bar) });
-      if (this.ready) this.set("hearing"); // before the beep the screen keeps saying it is getting ready
+      if (this.ready) { this.spoken = true; this.set("hearing"); }
     }
-    if (edge === "end") {
-      // The sentence is over: everything sent since the last commit becomes one utterance. Until the session is
-      // configured there is nothing upstream to commit to, and committing an empty buffer is an error.
-      if (!this.ready) return;
-      this.sentences++;
-      voiceLog.add("vad.end", { framesSent: this.sent, sentence: this.sentences, quietMs: this.quietMs });
-      try { this.ws?.send(JSON.stringify({ type: "commit" })); } catch { /* socket gone */ }
-      this.set("transcribing");
-    }
+    if (edge === "end") voiceLog.add("vad.end", { framesSent: this.sent, quietMs: this.quietMs });
+
+    // Crossed into a real pause: close the sentence. Once per pause, not once per reading.
+    if (this.ready && was < COMMIT_SILENCE_MS && this.quietMs >= COMMIT_SILENCE_MS) this.closeSentence("pause");
+  }
+
+  /** Everything streamed since the last one becomes a finished sentence in the box. */
+  private closeSentence(why: "pause" | "stop") {
+    if (!this.ready || !this.spoken) return; // nothing has been said since the last commit: an empty commit is an error
+    this.spoken = false;
+    this.sentences++;
+    voiceLog.add("dictation.commit", { why, framesSent: this.sent, sentence: this.sentences });
+    try { this.ws?.send(JSON.stringify({ type: "commit" })); } catch { /* socket gone */ }
+    this.set("transcribing");
   }
 
   /**
@@ -261,12 +306,23 @@ export class Dictation {
 
   // ---------------------------------------------------------------- the words
 
-  private fromServer(m: { type: string; text?: string; message?: string; model?: string; id?: string }) {
+  private fromServer(m: { type: string; text?: string; message?: string; model?: string; id?: string; speaking?: boolean }) {
     if (m.type === "error") return this.h.onError(m.message ?? "Dictation failed.");
     if (m.type === "ready") { voiceLog.add("dictation.ready", { model: m.model }); return this.live(); }
+    // The service heard a sentence start or end. This is the only thing that moves the strip now.
+    if (m.type === "speech") {
+      if (!this.ready) return;
+      if (m.speaking) { this.sentences++; voiceLog.add("speech.start", { framesSent: this.sent, sentence: this.sentences }); this.set("hearing"); }
+      else { voiceLog.add("speech.end", { framesSent: this.sent }); this.set("transcribing"); }
+      return;
+    }
     if (m.type === "partial") {
       // Deltas belong to one utterance. When a new one starts, the growing text starts over - appending it to
       // the last utterance's tail is how a finished sentence turns back into a fragment on screen.
+      // Words came back, so something WAS said - whatever the local detector made of the room. This is what
+      // guarantees the sentence gets committed: a detector whose bar is set too high for a quiet voice would
+      // otherwise never mark anything as spoken, and nothing would ever be closed.
+      this.spoken = true;
       const id = m.id ?? "";
       if (id !== this.partialId) { this.partialId = id; this.partial = ""; }
       this.partial += m.text ?? "";

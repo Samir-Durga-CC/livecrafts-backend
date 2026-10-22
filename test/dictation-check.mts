@@ -76,6 +76,19 @@ ws.on("message", async (raw) => {
     await new Promise((r) => setTimeout(r, 100));
   }
   ended = Date.now();
+  /**
+   * Then the silence, which is not nothing.
+   *
+   * The service decides where the sentence ended by LISTENING for the pause after it, so the quiet has to be
+   * sent like everything else - which is what the widget does, because a microphone does not stop recording
+   * when someone stops talking. Cutting the stream dead here would test a case the browser never produces.
+   */
+  const quiet = Buffer.alloc(frame);
+  for (let i = 0; i < 26; i++) {
+    ws.send(quiet);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  // Past any pause inside speech, so the widget's detector would have called it the end by now.
   ws.send(JSON.stringify({ type: "commit" }));
 });
 ws.on("error", (e) => { console.error("socket:", (e as Error).message); process.exit(1); });

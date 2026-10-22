@@ -44,6 +44,8 @@ export interface DictationHandlers {
   onFinal: (text: string, itemId?: string) => void;
   onError: (message: string) => void;
   onReady: (model: string) => void;
+  /** The SERVICE's own view of whether someone is speaking - it is the one segmenting the audio. */
+  onSpeech?: (speaking: boolean) => void;
 }
 
 /**
@@ -54,6 +56,28 @@ export interface DictationHandlers {
  * lab, dropping it cost the first two words of every first sentence, and what came back was a sentence, just not
  * theirs.
  */
+/**
+ * Who decides where a sentence ends.
+ *
+ *   server  the service listens for the pause (gpt-4o-transcribe and friends)
+ *   model   nobody is told anything - the model segments the stream itself
+ *   client  the widget's own detector sends a commit, which is what produced fragments
+ *
+ * LC_DICTATE_TURNS overrides it; the default follows the model. gpt-live-transcribe refuses to be told ("Turn
+ * detection is not supported for this transcription model") AND never finalises on its own - measured: partials
+ * stream from 898ms and `completed` never arrives in a minute. So it is committed from the client, but only
+ * after a pause long enough to be the end of dictation rather than a breath (web/src/widget/dictation.ts).
+ */
+export const turnMode = () => (process.env.LC_DICTATE_TURNS || (/live-transcribe/.test(dictateModel()) ? "client" : "server")) as "server" | "model" | "client";
+function turnDetection(): Record<string, unknown> {
+  const mode = turnMode();
+  if (mode === "client") return { turn_detection: null };
+  if (mode === "model") return {}; // say nothing: the model's own segmentation stands
+  // Long silence: nothing waits on the end of a turn in dictation, so a breath must not end the sentence, and
+  // the padding keeps the quiet opening consonants a bare threshold would clip.
+  return { turn_detection: { type: "server_vad", threshold: 0.4, prefix_padding_ms: 400, silence_duration_ms: 800 } };
+}
+
 /**
  * Frames held while the session is being configured.
  *
@@ -111,8 +135,25 @@ export class Dictation {
                 ...(/^[a-z]{2}$/.test(language) ? { languages: [language] } : {}),
                 delay: dictateDelay(),
               },
-              // The browser decides when a sentence ended - it can see the room, and we can fix it.
-              turn_detection: null,
+              /**
+               * THE SERVICE decides where a sentence ends, not us.
+               *
+               * This used to be `null`, with the widget's own detector sending a commit whenever it believed a
+               * sentence had finished. Every commit closes an utterance, so a detector that fires on a breath or
+               * a gap between words slices the sentence into sub-second fragments - and a context-free fragment,
+               * handed a list of the site's own vocabulary as keywords, comes back as that vocabulary: a person
+               * saying "Hey there, how are you? This is something I wanted to ask you" got back "And section
+               * something class make sure". The words it invented were ours, out of the keyword list.
+               *
+               * Measured against the same audio, one commit at the end transcribes perfectly
+               * (test/dictation-check.mts). Server-side detection is that, decided continuously, by something
+               * listening to the audio itself rather than to a level meter on a busy UI thread.
+               *
+               * silence_duration_ms is long for dictation: nothing waits on the end of a turn here, so a pause
+               * for breath should not end the sentence. prefix_padding keeps the quiet opening consonants that a
+               * threshold alone would clip.
+               */
+              ...turnDetection(),
             },
           },
         },
@@ -134,6 +175,8 @@ export class Dictation {
       let e: any;
       try { e = JSON.parse(String(raw)); } catch { return; }
       if (e.type === "session.updated" || e.type === "transcription_session.updated") return this.configure("acknowledged");
+      if (e.type === "input_audio_buffer.speech_started") return this.h.onSpeech?.(true);
+      if (e.type === "input_audio_buffer.speech_stopped") return this.h.onSpeech?.(false);
       if (e.type === "conversation.item.input_audio_transcription.delta") this.h.onPartial(e.delta ?? "", e.item_id);
       else if (e.type === "conversation.item.input_audio_transcription.completed") this.h.onFinal(e.transcript ?? "", e.item_id);
       else if (e.type === "error") this.h.onError(String(e.error?.message ?? "the speech service refused the session"));
@@ -188,10 +231,15 @@ export class Dictation {
     if (this.waiting.length > MAX_WAITING_FRAMES) this.waiting.shift();
   }
 
-  /** "That was a sentence": everything buffered upstream becomes one utterance. */
+  /**
+   * Kept so the widget's older "that was a sentence" message is not an error, and deliberately does nothing.
+   *
+   * The service segments the audio itself now (see turn_detection above). A manual commit on top of that is
+   * rejected outright when the buffer is empty, and when it is not, it cuts the sentence the service is in the
+   * middle of - which is the bug this replaced.
+   */
   commit() {
-    // Nothing has been appended before the session is agreed, and committing an empty buffer is an error the
-    // service answers with - which the widget would show the person as a failed dictation.
+    if (turnMode() !== "client") return; // the service, or the model, decides where sentences end
     if (this.configured && this.up?.readyState === WebSocket.OPEN) this.up.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
   }
 
