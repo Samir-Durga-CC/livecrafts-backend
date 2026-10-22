@@ -22,6 +22,14 @@ export interface VoiceHandlers {
   onError: (message: string) => void;
   /** The browser refused to play sound until the person taps once (autoplay rules). */
   onBlocked: (blocked: boolean) => void;
+  /**
+   * The piece of the answer whose audio is starting now, and when it has finished.
+   *
+   * This is what lets the message on screen follow the voice. It reports the AUDIO, not the queue: text is
+   * handed over sentences ahead of what is being heard, so highlighting what was queued would run away from the
+   * reader - which is worse than not highlighting at all, because it looks like it is reading something else.
+   */
+  onSpeaking?: (part: { text: string; from: number; to: number }, done: boolean) => void;
 }
 
 const TICK = 50;
@@ -70,7 +78,14 @@ export class VoiceAgent {
   private segMs = 0;
   private transcribing = 0;
   // speaking
-  private queue: string[] = [];
+  /**
+   * Each piece to be spoken, with the span of the answer it came from.
+   *
+   * `say` is given a run of text and splits it into sentences of its own, so the caller cannot tell from the
+   * text alone how far through the answer the voice has got - and matching the spoken words back against the
+   * message fails as soon as the markdown is cleaned up before speaking. The span travels with the piece instead.
+   */
+  private queue: { text: string; from: number; to: number }[] = [];
   private playing = false;
   private audio: HTMLAudioElement | null = null;
   private finishClip: (() => void) | null = null;
@@ -152,11 +167,26 @@ export class VoiceAgent {
   }
 
   /** Read text aloud (markdown is cleaned up first). Queued after anything still being said. */
-  say(text: string) {
+  say(text: string, span?: { from: number; to: number }) {
     if (!this.speakReplies || this.state === "off") return;
     const parts = speechChunks(text);
     if (!parts.length) return;
-    this.queue.push(...parts);
+    /**
+     * Where each sentence of this run sits in the answer.
+     *
+     * The run covers span.from..span.to of the message; its sentences are apportioned across that by their own
+     * length, so a long sentence holds the highlight longer than a short one. It is proportional rather than
+     * exact - the text that is spoken has had its markdown removed - and proportional is enough to follow a
+     * voice with.
+     */
+    const total = parts.reduce((n, pt) => n + pt.length, 0) || 1;
+    let at = span?.from ?? 0;
+    const width = span ? span.to - span.from : 0;
+    this.queue.push(...parts.map((pt) => {
+      const from = at;
+      at += (pt.length / total) * width;
+      return { text: pt, from: Math.round(from), to: Math.round(at) };
+    }));
     if (!this.playing) { this.playing = true; void this.playNext(); }
   }
 
@@ -319,18 +349,22 @@ export class VoiceAgent {
   private async playNext(): Promise<void> {
     // never talk over the person: wait until they finished their sentence (it is being recorded)
     while (this.talking && this.state !== "off") await new Promise((r) => window.setTimeout(r, 150));
-    const text = this.queue.shift();
-    if (!text || this.state === "off") return this.doneSpeaking();
+    const part = this.queue.shift();
+    if (!part || this.state === "off") return this.doneSpeaking();
+    const text = part.text;
     this.pauseListening();
     this.set("speaking");
     const signal = this.abort.signal;
     try {
-      if (!this.server) await this.speakWithBrowser(text);
+      if (!this.server) { this.h.onSpeaking?.(part, false); await this.speakWithBrowser(text); this.h.onSpeaking?.(part, true); }
       else {
         const clip = await this.fetchSpeech(text, signal);
-        if (this.queue[0]) void this.fetchSpeech(this.queue[0], signal).catch(() => {}); // prepare the next sentence meanwhile
+        if (this.queue[0]) void this.fetchSpeech(this.queue[0].text, signal).catch(() => {}); // prepare the next sentence meanwhile
         if (signal.aborted) return this.doneSpeaking();
+        // Said around play(), not around fetch: the fetch is where the waiting is, and nothing is audible yet.
+        this.h.onSpeaking?.(part, false);
         await this.play(clip);
+        this.h.onSpeaking?.(part, true);
       }
     } catch (e) {
       if (!signal.aborted && (this.state as VoiceState) !== "off") { this.queue = []; this.h.onError((e as Error).message); } // it may have been stopped meanwhile

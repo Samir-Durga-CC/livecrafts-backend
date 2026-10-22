@@ -269,8 +269,10 @@ function Approval({ item, onAnswer, busy }: { item: Extract<TimelineItem, { kind
   );
 }
 
-export function Transcript({ items, model, busy, working, welcome, onAnswer, onCopy, onEdit, onRetry, onOpen, onAsk, onAskTouch }: {
+export function Transcript({ items, model, busy, working, welcome, spoken, onAnswer, onCopy, onEdit, onRetry, onOpen, onAsk, onAskTouch }: {
   items: TimelineItem[]; model: string; busy: boolean; working: boolean; welcome: React.ReactNode; onOpen?: (url: string) => void;
+  /** How far the voice has read the answer with this seq: everything before `to` has been heard. */
+  spoken?: { seq: number; to: number } | null;
   onAnswer: (approvalId: string, approved: boolean, reason?: string) => void;
   onCopy: (text: string) => void; onEdit: (text: string) => void; onRetry: (text: string) => void;
   /** The answers to an ask_person form go back as one ordinary message. */
@@ -331,10 +333,28 @@ export function Transcript({ items, model, busy, working, welcome, onAnswer, onC
                   </div>
                 </div>
               );
-            case "assistant":
+            case "assistant": {
+              /**
+               * While it is being read aloud, the answer is shown as the voice reaches it: what has been heard in
+               * full contrast, what has not yet in grey.
+               *
+               * Plain text, not markdown, for exactly as long as that lasts. The highlight is a position in the
+               * text, and markdown cannot be cut at an arbitrary character - half a link or an unclosed bold run
+               * does not render. Once the voice has caught up with the text, the real markdown comes back.
+               */
+              const said = spoken && spoken.seq === b.item.seq && spoken.to < b.item.text.length
+                ? Math.max(0, Math.min(spoken.to, b.item.text.length))
+                : null;
               return (
                 <div key={b.key} className="turn bot">
+                  {said !== null ? (
+                    <div className="md reading">
+                      <span className="said">{b.item.text.slice(0, said)}</span>
+                      <span className="unsaid">{b.item.text.slice(said)}</span>
+                    </div>
+                  ) : (
                   <Markdown text={b.item.text} streaming={b.item.streaming} />
+                  )}
                   {!b.item.streaming && (
                     <div className="row-actions bot-actions">
                       <button title="Copy" onClick={() => onCopy(b.item.text)}><Icon.Copy size={14} /></button>
@@ -344,6 +364,7 @@ export function Transcript({ items, model, busy, working, welcome, onAnswer, onC
                   )}
                 </div>
               );
+            }
             case "steps": return <Activity key={b.key} items={b.items} onOpen={onOpen} />;
             case "approval": return <Approval key={b.key} item={b.item} busy={busy} onAnswer={(a, r) => onAnswer(b.item.approvalId, a, r)} />;
             case "error": return <div key={b.key} className="banner error">{b.item.text}</div>;

@@ -337,8 +337,18 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     },
     onError: (m) => setProblem(m),
   }));
+  /**
+   * How far the voice has got through the answer on screen: everything before `to` has been heard.
+   *
+   * It follows the AUDIO, reported by the player as each sentence starts, not the text as it streams in - the
+   * text runs sentences ahead of the voice, and a highlight that runs ahead of what you are hearing reads as the
+   * wrong message being highlighted.
+   */
+  const [readAloud, setReadAloud] = useState<{ seq: number; to: number } | null>(null);
+  const readSeq = useRef(-1);
   const [voice] = useState(() => new VoiceAgent({
     onState: setVoiceState, onUtterance: (t) => onUtterance.current(t), onError: (m) => setProblem(m), onBlocked: setBlocked,
+    onSpeaking: (part, done) => setReadAloud(readSeq.current < 0 ? null : { seq: readSeq.current, to: done ? part.to : part.from }),
   }));
   useEffect(() => () => voice.stop(), [voice]);
   useEffect(() => { voice.rate = voiceRate; }, [voice, voiceRate]);
@@ -406,9 +416,11 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       : (last.text.match(/^[\s\S]*[.!?।]/)?.[0] ?? "");
     if (done.length > partial.current.chars + 15) {
       const chunk = done.slice(partial.current.chars);
+      const from = partial.current.chars;
       partial.current = { seq: last.seq, chars: done.length };
       setSaying(chunk);
-      voice.say(chunk);
+      readSeq.current = last.seq;
+      voice.say(chunk, { from, to: done.length });
     }
   }, [timeline, voiceOn, speakOn, voice]);
 
@@ -483,7 +495,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     try {
       // They have answered (typed, spoken, or filled the form): stop reading out whatever was still queued, or the
       // assistant carries on describing a question that is already answered.
-      if (voiceOn) { voice.stopSpeaking(); setSaying(""); partial.current = { seq: -1, chars: 0 }; }
+      if (voiceOn) { voice.stopSpeaking(); setSaying(""); setReadAloud(null); readSeq.current = -1; partial.current = { seq: -1, chars: 0 }; }
       const args = { prompt, fileIds, pageUrl: cfg.pageUrl, approvalMode: mode, extraContext, ...(spoken ? { voice: true } : {}), ...(pick ? { model: pick } : {}) };
       if (jobId && paused) await api.message(jobId, { ...args, kind: pauseKind });
       else if (jobId && (status === "completed" || status === "failed")) await api.message(jobId, args);
@@ -626,6 +638,8 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     voice.stop();
     dictation.stop();
     talkingToAgent.current = false;
+    setReadAloud(null);
+    readSeq.current = -1;
     setDictateOn(false);
     setVoiceOn(false); setHeard(""); setQueued(""); queuedRef.current = "";
     store.sset("lcw_voice", "0");
@@ -678,6 +692,8 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       if (talkingToAgent.current) {
         voice.stopSpeaking();
         setSaying("");
+        setReadAloud(null);
+        readSeq.current = -1;
         partial.current = { seq: -1, chars: 0 };
         stop();
         void send(text, [], voiceContext(), true).catch(() => setProblem("That could not be sent."));
@@ -768,7 +784,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       <div className="w-body">
         {tab === "chat" && (
           <div className="w-chat">
-            <Transcript items={timeline} model={name} busy={answering} working={working} welcome={welcome}
+            <Transcript items={timeline} model={name} busy={answering} working={working} welcome={welcome} spoken={readAloud}
               onAsk={(t) => void send(t, [])}
               onAskTouch={() => { if (voiceOn) { voice.stopSpeaking(); setSaying(""); } }}
               onAnswer={(a, ok, r) => void answer(a, ok, r)} onCopy={(t) => { navigator.clipboard?.writeText(t); say("Copied"); }}

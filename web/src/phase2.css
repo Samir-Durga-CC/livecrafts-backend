@@ -581,3 +581,11 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
 .c-wave.hearing { color: var(--w-accent, var(--accent)); }
 .c-wave.transcribing { color: var(--warn, #d97706); }
 @media (prefers-reduced-motion: reduce) { .c-wave i { transition: none; } }
+
+/* An answer being read aloud: what has been heard, and what is still ahead of the voice.
+   Plain text for as long as the voice is behind the text (see Transcript), so the two spans are the whole
+   message - the grey is not decoration, it is the part you have not been told yet. */
+.md.reading { white-space: pre-wrap; }
+.md.reading .said { color: var(--text); }
+.md.reading .unsaid { color: var(--muted); opacity: .55; }
+@media (prefers-reduced-motion: no-preference) { .md.reading .said { transition: color .12s linear; } }
