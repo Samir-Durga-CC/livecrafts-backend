@@ -363,17 +363,7 @@ export class VoiceAgent {
   private flushIdle() { const w = this.idle; this.idle = []; w.forEach((f) => f()); }
 
   /** Two short soft tones: listening started / I heard you. */
-  private chime(kind: "start" | "heard") {
-    const ctx = this.ctx;
-    if (!ctx) return;
-    const tones = kind === "start" ? [660, 880] : [880];
-    tones.forEach((hz, i) => {
-      const o = ctx.createOscillator(), g = ctx.createGain(), t = ctx.currentTime + i * 0.09;
-      o.type = "sine"; o.frequency.value = hz;
-      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.05, t + 0.015); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
-      o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.18);
-    });
-  }
+  private chime(kind: "start" | "heard") { if (this.ctx) chime(this.ctx, kind); }
 
   // ------------------------------------------------------------------ without the backend: the browser's own speech
 
@@ -422,6 +412,22 @@ function micProblem(e: unknown): string {
   if (name === "NotFoundError" || name === "OverconstrainedError") return "No microphone was found on this computer.";
   if (name === "NotReadableError") return "The microphone is in use by another app.";
   return `The microphone could not be opened: ${(e as Error)?.message ?? name}`;
+}
+
+/**
+ * Two short soft tones when listening starts, one when something was heard.
+ *
+ * Exported because dictation needs the SAME sound: the beep is how a person knows the microphone is live before
+ * they start talking, and two different beeps for two ways of listening would just be confusing.
+ */
+export function chime(ctx: AudioContext, kind: "start" | "heard") {
+  const tones = kind === "start" ? [660, 880] : [880];
+  tones.forEach((hz, i) => {
+    const o = ctx.createOscillator(), g = ctx.createGain(), t = ctx.currentTime + i * 0.09;
+    o.type = "sine"; o.frequency.value = hz;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.05, t + 0.015); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+    o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.18);
+  });
 }
 
 /** Markdown -> plain words worth saying (no code, links or symbols). Long answers are cut to their start. */

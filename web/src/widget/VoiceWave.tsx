@@ -1,5 +1,8 @@
 import { useEffect, useRef } from "react";
-import type { VoiceAgent, VoiceState } from "./voice";
+import type { VoiceState } from "./voice";
+
+/** Anything that reports a microphone level: the old recorder, or streaming dictation. */
+export interface LevelSource { levelSink: ((level: number) => void) | null }
 
 /**
  * The microphone, drawn in the input box: one bar per sample, newest on the right, scrolling left as you talk.
@@ -13,7 +16,7 @@ import type { VoiceAgent, VoiceState } from "./voice";
  */
 const BARS = 32;
 
-export function VoiceWave({ agent, state }: { agent: VoiceAgent | null; state: VoiceState }) {
+export function VoiceWave({ agent, state }: { agent: LevelSource | null; state: VoiceState }) {
   const host = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {

@@ -276,6 +276,13 @@ html.embed body { font-size: 14px; }
 /* ---- voice mode */
 .mode.mic.on { background: var(--w-accent, var(--accent)); color: #fff; }
 .mode.mic.on:hover:not(:disabled) { background: var(--w-accent, var(--accent)); color: #fff; filter: brightness(1.08); }
+/* Recording: the microphone becomes a Stop button, and it is red because stopping is the only thing it now does. */
+.mode.mic.rec { background: var(--danger, #dc2626); color: #fff; width: auto; gap: 6px; padding: 0 10px; font-weight: 600; }
+.mode.mic.rec b { font-size: 12.5px; font-weight: 600; }
+.mode.mic.rec:hover:not(:disabled) { background: var(--danger, #dc2626); color: #fff; filter: brightness(1.08); }
+.mode.mic.rec::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #fff; animation: rec-pulse 1.4s ease-in-out infinite; }
+@keyframes rec-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .mode.mic.rec::before { animation: none; } }
 .vbar { --vb: var(--w-accent, var(--accent)); margin: 0 10px 8px; padding: 10px 10px 10px 12px; border-radius: 14px; border: 1px solid color-mix(in srgb, var(--vb) 35%, var(--line));
   background: linear-gradient(135deg, color-mix(in srgb, var(--vb) 10%, var(--surface)), var(--surface)); animation: rise .15s ease-out; }
 .vbar.hearing { --vb: var(--ok); }

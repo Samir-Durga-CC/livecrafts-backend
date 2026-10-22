@@ -19,6 +19,7 @@ import { VoiceAgent, type VoiceState } from "./voice";
 import { VoiceBar } from "./VoiceBar";
 import { VoiceStrip } from "./VoiceStrip";
 import { VoiceWave } from "./VoiceWave";
+import { Dictation, type DictateState } from "./dictation";
 import { RealtimeVoice, type RealtimeState } from "./realtime";
 import { voiceLog } from "./voicelog";
 
@@ -288,6 +289,24 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     // do_on_site: hand it to the agent that already exists and wait for the result.
     onRequest: (request) => runForVoice(request),
   }));
+  /**
+   * Dictation that writes while you talk.
+   *
+   * `said` is the sentences it has finished, `saying` the one in progress. The composer is handed both joined, so
+   * the box fills in as the person speaks and keeps filling across sentences until they press Stop.
+   */
+  const dictatedText = useRef("");
+  const [dictateOn, setDictateOn] = useState(false);
+  const [dictation] = useState(() => new Dictation({
+    onState: (s: DictateState) => setVoiceState(s === "transcribing" ? "transcribing" : (s as VoiceState)),
+    onPartial: (text) => setDraft({ text: [dictatedText.current, text].filter(Boolean).join(" "), n: Date.now() }),
+    onFinal: (text) => {
+      dictatedText.current = [dictatedText.current, text].filter(Boolean).join(" ");
+      setDraft({ text: dictatedText.current, n: Date.now() });
+      setHeard(text);
+    },
+    onError: (m) => setProblem(m),
+  }));
   const [voice] = useState(() => new VoiceAgent({
     onState: setVoiceState, onUtterance: (t) => onUtterance.current(t), onError: (m) => setProblem(m), onBlocked: setBlocked,
   }));
@@ -511,6 +530,16 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     // Dictation never uses the realtime conversation: it only needs the words, and nothing should answer back.
     if (mode === "dictate") {
       const info = await api.voiceInfo().catch(() => ({ available: false, voice: "onyx", voices: [] as string[] }));
+      // Streaming: the words arrive while they talk. Only if the backend cannot do it do we record-and-upload,
+      // and then we say so - falling back quietly is how someone concludes the new thing never worked.
+      if ((info as any).stream?.available) {
+        dictatedText.current = "";
+        if (await dictation.start({ siteId: site.id, pageUrl: cfg.pageUrl })) {
+          setDictateOn(true); setVoiceOn(true); setHeard(""); store.sset("lcw_voice", "1");
+          return;
+        }
+        setProblem("Dictation could not stream; using the older recorder.");
+      }
       voiceLog.start("classic", (info as any).sttModel ?? "");
       voice.speakReplies = false;
       if (!(await voice.start(info.available))) { store.sset("lcw_voice", "0"); return; }
@@ -541,6 +570,8 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   function endVoice() {
     realtime.stop();
     voice.stop();
+    dictation.stop();
+    setDictateOn(false);
     setVoiceOn(false); setHeard(""); setQueued(""); queuedRef.current = "";
     store.sset("lcw_voice", "0");
   }
@@ -682,12 +713,12 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
               notice={paused ? <PausedBar kind={pauseKind} onKind={setPauseKind} onContinue={() => void cont()} /> : status === "interrupted" || status === "failed" ? <InterruptedBar failed={status === "failed"} error={String([...events].reverse().find((e) => e.type === "status")?.data.error ?? "")} onContinue={() => void cont()} /> : undefined}
               placeholder={voiceOn && !waiting && !working ? "Voice mode is on - just talk, or type here…" : waiting ? "Answer the approval above…" : working ? (stopping ? "Stopping…" : "Working… (Stop to pause)") : paused ? (pauseKind === "edit" ? "Type your corrected request…" : "Type a note…") : "Ask for any change on this page…"}
               draft={draft}
-              wave={voiceOn && voiceMode === "dictate" ? <VoiceWave agent={voice} state={voiceState} /> : undefined}
+              wave={voiceOn && voiceMode === "dictate" ? <VoiceWave agent={dictateOn ? dictation : voice} state={voiceState} /> : undefined}
               voice={<>
-                <button className={`mode mic ${voiceOn && voiceMode === "dictate" ? "on" : ""}`} aria-pressed={voiceOn && voiceMode === "dictate"}
+                <button className={`mode mic ${voiceOn && voiceMode === "dictate" ? "rec" : ""}`} aria-pressed={voiceOn && voiceMode === "dictate"}
                   onClick={() => (voiceOn && voiceMode === "dictate" ? endVoice() : void startVoice(false, "dictate"))}
-                  title="Dictate: what you say is typed into the box. Nothing is sent until you press send.">
-                  <Icon.Mic size={17} />
+                  title={voiceOn && voiceMode === "dictate" ? "Stop dictating (what was written stays in the box)" : "Dictate: what you say is typed into the box. Nothing is sent until you press send."}>
+                  <Icon.Mic size={17} />{voiceOn && voiceMode === "dictate" ? <b>Stop</b> : null}
                 </button>
                 <button className={`mode mic ${voiceOn && voiceMode === "agent" ? "on" : ""}`} aria-pressed={voiceOn && voiceMode === "agent"}
                   onClick={() => (voiceOn && voiceMode === "agent" ? endVoice() : void startVoice(false, "agent"))}
