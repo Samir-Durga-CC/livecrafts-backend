@@ -599,3 +599,33 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
 .md.reading .unsaid { color: var(--muted); opacity: .55; }
 /* No transition here: the two spans keep their colours and only their text moves between them, so there is
    nothing for one to animate. The smoothness comes from how often the position is updated (voice.ts play). */
+
+/* ---------------- Menus that escape the toolbar ----------------
+   Rendered into document.body (FloatingMenu), so no overflow on an ancestor can clip them and no z-index in the
+   widget can sit above them. Positioned in script; everything here is only how it looks. */
+.fm-scrim { position: fixed; inset: 0; z-index: 2147483000; }
+.fm-card { position: fixed; z-index: 2147483001; min-width: 220px; max-width: min(92vw, 320px); max-height: min(60vh, 420px);
+  overflow-y: auto; overscroll-behavior: contain; padding: 6px; border-radius: 14px; border: 1px solid var(--line-strong, var(--line));
+  background: var(--surface); color: var(--text); box-shadow: 0 12px 34px rgba(0, 0, 0, .22), 0 2px 8px rgba(0, 0, 0, .12);
+  animation: fm-in .11s ease-out; }
+@keyframes fm-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .fm-card { animation: none; } }
+.fm-card .menu-label { padding: 6px 10px 4px; font-size: 11px; font-weight: 600; letter-spacing: .02em; color: var(--muted); text-transform: uppercase; }
+.fm-card .menu-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; border: 0; border-radius: 10px;
+  background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.fm-card .menu-item:hover:not(:disabled) { background: var(--hover, rgba(127, 127, 127, .12)); }
+.fm-card .menu-item:disabled { opacity: .5; cursor: default; }
+.fm-card .menu-item b { display: block; font-size: 13px; font-weight: 600; }
+.fm-card .menu-item small { display: block; font-size: 11.5px; line-height: 1.35; color: var(--muted); }
+.fm-card .grow { flex: 1 1 auto; min-width: 0; }
+
+/* ---------------- The one voice control ----------------
+   A button that does the current mode, and a caret that changes it. They read as one control, so the toolbar
+   spends one slot on voice instead of two. */
+.voice-pick { position: relative; display: inline-flex; align-items: center; flex: none; }
+.voice-pick .mode.mic { border-top-right-radius: 4px; border-bottom-right-radius: 4px; }
+.voice-caret { display: flex; align-items: center; justify-content: center; width: 16px; height: 30px; margin-left: 1px; padding: 0;
+  border: 1px solid var(--line); border-left: 0; border-radius: 4px 9px 9px 4px; background: var(--surface); color: var(--muted); cursor: pointer; }
+.voice-caret:hover { color: var(--text); border-color: var(--line-strong, var(--line)); }
+/* Live, the caret is gone and the button is on its own again - and it is a stop button, so it looks like one. */
+.voice-pick .mode.mic.live { border-radius: 9px; }

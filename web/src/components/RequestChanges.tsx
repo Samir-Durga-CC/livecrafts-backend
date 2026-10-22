@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { FloatingMenu } from "./FloatingMenu";
 import { Icon } from "../icons";
 import type { ApprovalMode, ChangeRecord } from "../types";
 import { chipLabel, type RequestGroup, type RequestState } from "../util";
@@ -103,27 +104,24 @@ const MODES: { id: ApprovalMode; label: string; hint: string }[] = [
 ];
 
 /** Small dropdown in the composer: how the assistant asks before changing the site. */
-export function ApprovalModePicker({ mode, onChange, up = true }: { mode: ApprovalMode; onChange: (m: ApprovalMode) => void; up?: boolean }) {
+export function ApprovalModePicker({ mode, onChange }: { mode: ApprovalMode; onChange: (m: ApprovalMode) => void; up?: boolean }) {
   const [open, setOpen] = useState(false);
+  const btn = useRef<HTMLButtonElement>(null);
   const cur = MODES.find((m) => m.id === mode) ?? MODES[0];
   return (
     <div className="mode-pick">
-      <button className={`model-pill mode-${mode}`} onClick={() => setOpen(!open)} title="How changes get approved" aria-expanded={open}>
+      <button ref={btn} className={`model-pill mode-${mode}`} onClick={() => setOpen(!open)} title="How changes get approved" aria-expanded={open}>
         <Icon.Shield size={13} /> {cur.label} <Icon.ChevronDown size={12} />
       </button>
-      {open && (
-        <>
-          <div className="mode-scrim" onMouseDown={() => setOpen(false)} />
-          <div className={`menu ${up ? "up" : "down"} mode-menu`}>
-            <div className="menu-label">Approval</div>
-            {MODES.map((m) => (
-              <button key={m.id} className="menu-item mode-item" onClick={() => { onChange(m.id); setOpen(false); }}>
-                <span className="grow"><b>{m.label}</b><small>{m.hint}</small></span>{m.id === mode && <Icon.Check size={15} />}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
+      {/* Through a portal: inside the scrolling button row this menu was clipped to a sliver (FloatingMenu). */}
+      <FloatingMenu anchor={btn} open={open} onClose={() => setOpen(false)}>
+        <div className="menu-label">Approval</div>
+        {MODES.map((m) => (
+          <button key={m.id} className="menu-item mode-item" onClick={() => { onChange(m.id); setOpen(false); }}>
+            <span className="grow"><b>{m.label}</b><small>{m.hint}</small></span>{m.id === mode && <Icon.Check size={15} />}
+          </button>
+        ))}
+      </FloatingMenu>
     </div>
   );
 }
