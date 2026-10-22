@@ -264,6 +264,34 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   const [voiceMode, setVoiceMode] = useState<"dictate" | "agent">((store.get("lcw_voice_mode") as any) === "dictate" ? "dictate" : "agent");
   const dictated = useRef("");
   const [draft, setDraft] = useState<{ text: string; n: number } | undefined>();
+  /**
+   * The box fills as you speak - about ten times a second, not on every delta.
+   *
+   * The speech service sends words in small pieces, and each one used to set state, which re-renders the whole
+   * widget: transcript, composer, every button. During a sentence that is a steady stream of re-renders, and a
+   * button that is re-rendered between the press and the release never reports the click - which is exactly the
+   * "sometimes a click does nothing while voice is on" people see.
+   *
+   * Ten a second is faster than anyone reads, so the box looks no different; a finished sentence is passed with
+   * `now` so nothing waits on the timer.
+   */
+  const draftTick = useRef<{ timer: number; text: string } | null>(null);
+  const showDraft = (text: string, now = false) => {
+    const pending = draftTick.current;
+    if (now || !pending) {
+      if (pending) { window.clearTimeout(pending.timer); draftTick.current = null; }
+      setDraft({ text, n: Date.now() });
+      if (now) return;
+      draftTick.current = { text, timer: window.setTimeout(() => {
+        const held = draftTick.current;
+        draftTick.current = null;
+        if (held && held.text !== text) setDraft({ text: held.text, n: Date.now() });
+      }, 100) };
+      return;
+    }
+    pending.text = text; // inside the window: remembered, and shown when it closes
+  };
+  useEffect(() => () => { if (draftTick.current) window.clearTimeout(draftTick.current.timer); }, []);
   // Voice mode shows its own surface; "show the chat" flips back to the transcript without ending voice.
   const [saying, setSaying] = useState("");
   const [voiceState, setVoiceState] = useState<VoiceState>("off");
@@ -321,19 +349,19 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   const [dictation] = useState(() => new Dictation({
     onState: (s: DictateState) => setVoiceState(s === "transcribing" ? "transcribing" : (s as VoiceState)),
     // The words appear in the box either way, as they are said - that is the whole point of streaming them.
-    onPartial: (text) => setDraft({ text: [dictatedText.current, text].filter(Boolean).join(" "), n: Date.now() }),
+    onPartial: (text) => showDraft([dictatedText.current, text].filter(Boolean).join(" ")),
     onFinal: (text) => {
       setHeard(text);
       if (talkingToAgent.current) {
         // The sentence is finished: hand it straight over. onUtterance decides what it means - an answer to a
         // question, a "stop", or a new request that replaces whatever is running.
         dictatedText.current = "";
-        setDraft({ text: "", n: Date.now() });
+        showDraft("", true);
         onUtterance.current(text);
         return;
       }
       dictatedText.current = [dictatedText.current, text].filter(Boolean).join(" ");
-      setDraft({ text: dictatedText.current, n: Date.now() });
+      showDraft(dictatedText.current, true);
     },
     onError: (m) => setProblem(m),
   }));
@@ -348,9 +376,19 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   const readSeq = useRef(-1);
   const [voice] = useState(() => new VoiceAgent({
     onState: setVoiceState, onUtterance: (t) => onUtterance.current(t), onError: (m) => setProblem(m), onBlocked: setBlocked,
-    // The highlight sits where the voice is: across this sentence's span, by how far through its clip it is.
-    onSpeaking: (part, progress) => setReadAloud(readSeq.current < 0 ? null
-      : { seq: readSeq.current, to: Math.round(part.from + (part.to - part.from) * progress) }),
+    /**
+     * The highlight sits where the voice is: across this sentence's span, by how far through its clip it is.
+     *
+     * Only when it has actually moved a few characters. Every one of these re-renders the whole widget - the
+     * transcript, the composer, the buttons - and a re-render between pressing a button and releasing it is a
+     * click that never happens. A character is less than a pixel of travel; six is still smooth.
+     */
+    onSpeaking: (part, progress) => setReadAloud((prev) => {
+      if (readSeq.current < 0) return null;
+      const to = Math.round(part.from + (part.to - part.from) * progress);
+      if (prev && prev.seq === readSeq.current && Math.abs(to - prev.to) < 6 && progress > 0 && progress < 1) return prev;
+      return { seq: readSeq.current, to };
+    }),
   }));
   useEffect(() => () => voice.stop(), [voice]);
   useEffect(() => { voice.rate = voiceRate; }, [voice, voiceRate]);

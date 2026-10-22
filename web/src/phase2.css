@@ -453,7 +453,16 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
 .embed .c-bar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; gap: 4px; }
 .embed .c-bar::-webkit-scrollbar { display: none; }
 .embed .c-bar > * { flex: none; }
-.embed .model-pill { height: 28px; padding: 0 9px; font-size: 11.5px; white-space: nowrap; max-width: 44vw; overflow: hidden; }
+/* The two pills SHRINK before anything scrolls.
+   They were flex: none at up to 44vw each, so on a 480px panel the pair alone could ask for 420px and push
+   themselves off the end - and with the scrollbar hidden there was nothing to say they were still there, so the
+   model and approval pickers were simply gone. They now give up width first and ellipsize, which is what the
+   max-width and the text-overflow below were always for. min-width: 0 is what lets a flex item shrink at all. */
+.embed .c-bar .mode-pick, .embed .c-bar > .model-pill { flex: 0 1 auto; min-width: 0; }
+.embed .model-pill { height: 28px; padding: 0 9px; font-size: 11.5px; white-space: nowrap; max-width: 34vw; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* Recording, in a panel this narrow, is said by the colour and the pulse - the word costs a pill its place. */
+.embed .mode.mic.rec, .embed .mode.mic.warming { width: 30px; padding: 0; gap: 0; }
+.embed .mode.mic.rec b, .embed .mode.mic.warming b { display: none; }
 .embed .model-pill svg:last-child { flex: none; }
 .embed .mode { width: 30px; height: 30px; }
 .embed .composer { padding: 10px 10px 6px; border-radius: 16px; }
