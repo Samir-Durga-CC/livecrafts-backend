@@ -50,6 +50,7 @@ if (!process.argv.includes("--cold")) {
 }
 const ws = new WebSocket(`ws://127.0.0.1:${port}/voice/stream?siteId=${siteId}&lang=en`);
 let started = 0, ended = 0, first = 0, partial = "";
+const ids: string[] = [];
 
 ws.on("open", () => console.log("socket open (sending audio as soon as the session is ready)"));
 ws.on("message", async (raw) => {
@@ -57,12 +58,16 @@ ws.on("message", async (raw) => {
   if (m.type === "error") { console.error("ERROR:", m.message); process.exit(1); }
   if (m.type === "partial") {
     if (!first) { first = Date.now(); console.log(`FIRST WORD  ${first - started}ms after the audio started - while it is still being spoken`); }
+    // Which utterance each delta belongs to. The widget concatenates them to show text while you talk, so
+    // whether the service uses one id for a whole turn or starts a new one mid-turn decides how it must do that.
+    if (!ids.includes(m.id)) { ids.push(m.id); console.log(`  item ${ids.length} begins (${m.id}) at ${Date.now() - started}ms`); }
     partial += m.text;
     return;
   }
   if (m.type === "final") {
     console.log(`FINAL       ${Date.now() - ended}ms after the audio ended`);
     console.log(`HEARD       ${JSON.stringify(m.text || partial)}`);
+    console.log(`PARTIALS    ${JSON.stringify(partial)} (${ids.length} item${ids.length === 1 ? "" : "s"})`);
     ws.close();
     app.close();
     process.exit(0);

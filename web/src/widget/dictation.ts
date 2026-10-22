@@ -95,6 +95,9 @@ export class Dictation {
   private sent = 0;
   private sentences = 0;
   private heard5s: number | null = null;
+  private rateTimer: number | null = null;
+  private rateAt = 0;
+  private rateSent = 0;
 
   constructor(h: DictationHandlers) { this.h = h; }
 
@@ -129,7 +132,10 @@ export class Dictation {
     }
 
     // One reading per 128 samples at the context's own rate.
-    this.tickMs = Math.max(1, Math.round((128 / (this.ctx.sampleRate || RATE)) * 1000));
+    // A starting guess; the worklet's first message replaces it with the interval it actually reports at.
+    this.tickMs = 20;
+    this.rateAt = performance.now();
+    this.rateSent = 0;
     /**
      * Dictation waits longer for the end of a sentence than the conversation does.
      *
@@ -141,9 +147,39 @@ export class Dictation {
     this.vad = new Vad({ tick: this.tickMs, endMs: 900 });
     this.node.port.onmessage = ({ data }) => {
       if (data.pcm) return this.onPcm(data.pcm as ArrayBuffer);
-      if (typeof data.rate === "number") voiceLog.add("dictation.audio", { rate: data.rate, target: data.target, resampling: data.resampling });
+      if (typeof data.rate === "number") {
+        voiceLog.add("dictation.audio", { rate: data.rate, target: data.target, resampling: data.resampling, levelMs: data.levelMs });
+        // The worklet decides how often it reports; the detector's timing is in those units, so take it from
+        // the worklet rather than recomputing it here and hoping the two agree.
+        if (typeof data.levelMs === "number" && data.levelMs > 0) {
+          this.tickMs = data.levelMs;
+          this.vad = new Vad({ tick: this.tickMs, endMs: 900 });
+        }
+        return;
+      }
       if (typeof data.db === "number") this.onLevel(data.db);
     };
+    /**
+     * Is the audio actually leaving this machine, and at the rate it is being recorded?
+     *
+     * Every other question about dictation has been answered by guessing at this one. ~23 frames a second is
+     * what a healthy stream looks like (1024 samples at 24kHz); materially fewer means the microphone, the
+     * worklet or this thread is losing audio, and the service is being asked to transcribe something with holes
+     * in it. This number, next to the room's levels, says which half of the system to look at.
+     */
+    this.rateTimer = window.setInterval(() => {
+      const now = performance.now();
+      const secs = (now - this.rateAt) / 1000;
+      if (secs >= 1) voiceLog.add("dictation.rate", {
+        framesPerSec: Math.round((this.sent - this.rateSent) / secs),
+        expected: Math.round(RATE / 1024),
+        queued: this.pendingPcm.length,
+        floor: this.vad ? Math.round(this.vad.floor) : null,
+        speaking: !!this.vad?.speaking,
+      });
+      this.rateAt = now;
+      this.rateSent = this.sent;
+    }, 3000);
 
     const q = new URLSearchParams();
     if (opts.siteId) q.set("siteId", opts.siteId);
@@ -201,6 +237,7 @@ export class Dictation {
     this.closeSentence("stop");
     if (this.heard5s) { window.clearTimeout(this.heard5s); this.heard5s = null; }
     if (this.readyTimer) { window.clearTimeout(this.readyTimer); this.readyTimer = null; }
+    if (this.rateTimer) { window.clearInterval(this.rateTimer); this.rateTimer = null; }
     voiceLog.add("dictation.stop", { framesSent: this.sent, sentences: this.sentences });
     this.quietMs = 0;
     this.partial = "";

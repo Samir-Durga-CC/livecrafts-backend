@@ -19,18 +19,42 @@ class PcmWorklet extends AudioWorkletProcessor {
     this.carry = new Float32Array(0);  // the tail of the last block: interpolation needs the sample before
     this.out = new Int16Array(1024);
     this.n = 0;
-    this.port.postMessage({ rate: sampleRate, target, resampling: this.ratio !== 1 });
+    /**
+     * A loudness reading every ~20ms, not every 128 samples.
+     *
+     * process() runs 375 times a second at 48kHz, and this used to post a message on every one of them. Each
+     * message wakes the main thread, which then re-measures the room - and the room is measured by sorting a
+     * window of several hundred readings. That is millions of comparisons a second, and hundreds of short-lived
+     * arrays, on the SAME thread as React, the chat and the page the widget is sitting on. A thread that busy
+     * delivers audio late and in bursts, and bursty audio is how a sentence arrives at the service in pieces.
+     *
+     * 20ms is far finer than speech needs - the detector's shortest decision is 150ms - at a fraction of the cost.
+     */
+    this.levelEvery = Math.max(1, Math.round((0.02 * sampleRate) / 128));
+    this.levelMs = (this.levelEvery * 128 / sampleRate) * 1000;
+    this.lvlSum = 0;
+    this.lvlN = 0;
+    this.blocks = 0;
+    this.port.postMessage({ rate: sampleRate, target, resampling: this.ratio !== 1, levelMs: this.levelMs });
+  }
+
+  /** The loudness of the last ~20ms, averaged over every block in it rather than sampled from one. */
+  level(input) {
+    if (input) { for (let i = 0; i < input.length; i++) this.lvlSum += input[i] * input[i]; this.lvlN += input.length; }
+    else { this.lvlN += 128; } // a stalled device is quiet, not absent: say so, or the detector stays mid-sentence
+    if (++this.blocks < this.levelEvery) return;
+    this.blocks = 0;
+    this.port.postMessage({ db: 20 * Math.log10(Math.sqrt(this.lvlSum / this.lvlN) + 1e-9) });
+    this.lvlSum = 0;
+    this.lvlN = 0;
   }
 
   process(inputs) {
     const input = inputs[0]?.[0];
-    // No input at all (a stalled device, a source that ended) is still a reading. A detector that stops being
-    // told anything keeps whatever state it was in - mid-sentence that is "still talking", and the turn never ends.
-    if (!input) { this.port.postMessage({ db: -100 }); return true; }
-
-    let sum = 0;
-    for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
-    this.port.postMessage({ db: 20 * Math.log10(Math.sqrt(sum / input.length) + 1e-9) });
+    this.level(input);
+    // No audio to convert, but the reading above still went out: a detector that stops being told anything keeps
+    // whatever state it was in - mid-sentence that is "still talking", and the turn never ends.
+    if (!input) return true;
 
     const src = this.carry.length ? concat(this.carry, input) : input;
     let p = this.pos;
