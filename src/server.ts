@@ -363,12 +363,25 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       if (m && req.method === "POST") { const s = sites.get(m[1]); if (!s) return send(res, 404, { error: "Unknown site" }); return send(res, 200, await new Bridge(s).ping()); }
 
       // ---- voice: what the person says -> text; the assistant's answer -> speech
-      if (route === "GET /voice") return send(res, 200, {
+      if (route === "GET /voice") {
+        /**
+         * Warm the site's own words while the person is still deciding to press the button.
+         *
+         * They are what keeps "AEROMATIC" from being heard as "aromatic", but reading them means reading the
+         * site - seconds on a slow host - and the dictation socket only waits 400ms for them before starting
+         * without. The widget asks for this endpoint when it opens, so the read happens then and the cache is
+         * warm by the time anybody speaks. Fire and forget: nothing here waits for it.
+         */
+        const ws = sites.get(String(url.searchParams.get("siteId") ?? ""));
+        const wp = url.searchParams.get("pageUrl");
+        if (ws) void warmVoiceSession(ws, wp && /^https?:\/\//.test(wp) ? wp.slice(0, 300) : undefined).catch(() => {});
+        return send(res, 200, {
         ...voiceInfo(),
         realtime: { available: realtimeAvailable(), model: realtimeModel(), voice: realtimeVoice() },
         // Streaming dictation: words while you talk. The widget falls back to uploading a file when it is off.
         stream: { available: realtimeAvailable(), model: dictateModel(), rate: DICTATE_RATE },
-      });
+        });
+      }
       // A short-lived client secret for ONE realtime call. The API key never leaves this machine.
       if (route === "POST /voice/realtime/session") {
         const b = await readJson(req).catch(() => ({} as any));
@@ -531,11 +544,21 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       d.stop();
     });
 
-    // Best effort: without the site's words dictation still works, it just mishears the brand names.
-    const siteWords = site ? await warmVoiceSession(site, pageUrl).catch(() => "") : "";
-    d.start({ siteWords, language: q.get("lang") ?? undefined });
+    /**
+     * The site's own words are worth a SHORT wait and no more.
+     *
+     * They are what keeps "AEROMATIC" from coming back as "aromatic", and they are usually already cached for
+     * this site and page, which costs nothing. But reading them means talking to WordPress, which can hang when
+     * the site is slow or archived, and nobody should wait on a web server before their microphone works. So:
+     * wait a moment, start either way, and apply them later if they were slow - the first sentence then guesses
+     * the brand names, which beats a microphone that takes five seconds to open.
+     */
+    const words = site ? warmVoiceSession(site, pageUrl).catch(() => "") : Promise.resolve("");
+    const inTime = await Promise.race([words, new Promise<"">((r) => setTimeout(() => r(""), 400))]);
+    d.start({ siteWords: inTime, language: q.get("lang") ?? undefined });
     ready = true;
     for (const e of early.splice(0)) handle(e.bin, e.data);
+    if (!inTime) void words.then((w) => d.addSiteWords(w));
   });
 
   return server;

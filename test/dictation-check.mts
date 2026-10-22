@@ -40,6 +40,14 @@ console.log(`saying "${LINE}" (${(pcm.length / 2 / DICTATE_RATE).toFixed(2)}s)`)
 
 // The site is passed so the session gets the site's own words, exactly as the widget will.
 const siteId = process.env.BENCH_SITE || sites.list()[0]?.id || "";
+// The widget asks for /voice when it opens, which starts the read of the site's own words. Do the same here,
+// or this measures a cold cache that production would never have.
+if (!process.argv.includes("--cold")) {
+  const t = Date.now();
+  await fetch(`http://127.0.0.1:${port}/voice?siteId=${siteId}`).catch(() => null);
+  await new Promise((r) => setTimeout(r, 2500)); // give that read a moment, as a person deciding to talk would
+  console.log(`warmed the site's words (${Date.now() - t}ms, as the widget does on open)`);
+}
 const ws = new WebSocket(`ws://127.0.0.1:${port}/voice/stream?siteId=${siteId}&lang=en`);
 let started = 0, ended = 0, first = 0, partial = "";
 

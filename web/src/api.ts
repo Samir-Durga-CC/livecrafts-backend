@@ -80,7 +80,16 @@ export const api = {
   saveHostinger: (token: string) => request<HostingerHealth>("PUT", "/integrations/hostinger", { token }),
   removeHostinger: () => request<HostingerHealth>("DELETE", "/integrations/hostinger"),
 
-  voiceInfo: () => request<{ available: boolean; voice: string; voices: string[] }>("GET", "/voice"),
+  /**
+   * Voice capabilities. Passing the site and page also asks the backend to read the site's own words now, so
+   * that dictation does not have to wait for them later - see the warming note in server.ts.
+   */
+  voiceInfo: (of?: { siteId?: string; pageUrl?: string }) => {
+    const q = new URLSearchParams();
+    if (of?.siteId) q.set("siteId", of.siteId);
+    if (of?.pageUrl) q.set("pageUrl", of.pageUrl);
+    return request<{ available: boolean; voice: string; voices: string[]; stream?: { available: boolean } }>("GET", `/voice${q.toString() ? `?${q}` : ""}`);
+  },
   /**
    * Recorded speech -> text ("" when nothing was said). `ms` is how long the speech service itself took, so a slow
    * turn can be split into upload time and service time instead of being called "voice is slow".

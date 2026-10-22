@@ -529,7 +529,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
     dictated.current = "";
     // Dictation never uses the realtime conversation: it only needs the words, and nothing should answer back.
     if (mode === "dictate") {
-      const info = await api.voiceInfo().catch(() => ({ available: false, voice: "onyx", voices: [] as string[] }));
+      const info = await api.voiceInfo({ siteId: site.id, pageUrl: cfg.pageUrl }).catch(() => ({ available: false, voice: "onyx", voices: [] as string[] }));
       // Streaming: the words arrive while they talk. Only if the backend cannot do it do we record-and-upload,
       // and then we say so - falling back quietly is how someone concludes the new thing never worked.
       if ((info as any).stream?.available) {
@@ -547,7 +547,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       return;
     }
     if (engine === "realtime") {
-      const info = await api.voiceInfo().catch(() => null as any);
+      const info = await api.voiceInfo({ siteId: site.id, pageUrl: cfg.pageUrl }).catch(() => null as any);
       if (info?.realtime?.available) {
         const ok = await realtime.start({ siteId: site.id, botName: name, pageUrl: cfg.pageUrl });
         if (!ok) { store.sset("lcw_voice", "0"); return; }
@@ -558,7 +558,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       setEngine("classic");
       setProblem("Realtime voice is not available on this backend (restart it, or add an OpenAI key). Using the older voice mode.");
     }
-    const info = await api.voiceInfo().catch(() => ({ available: false, voice: "onyx", voices: [] as string[] }));
+    const info = await api.voiceInfo({ siteId: site.id, pageUrl: cfg.pageUrl }).catch(() => ({ available: false, voice: "onyx", voices: [] as string[] }));
     setVoiceList(info.available ? info.voices : []);
     voice.voice = voiceName && info.voices.includes(voiceName) ? voiceName : info.voice;
     voice.speakReplies = speakOn;

@@ -18,9 +18,22 @@ import { sttLanguage, transcriptionPrompt } from "./voice.js";
  * The browser never holds the API key: it talks to this backend, and this opens the upstream socket.
  *
  *   LC_DICTATE_MODEL   default gpt-live-transcribe
+ *   LC_DICTATE_DELAY   minimal (default) | low | medium | high | xhigh
  */
 const UPSTREAM = "wss://api.openai.com/v1/realtime?intent=transcription";
 export const dictateModel = () => process.env.LC_DICTATE_MODEL || "gpt-live-transcribe";
+/**
+ * How long the service may wait before committing to a word. Measured on one line (test/dictation-delay.mts):
+ *
+ *   unset     first word 1307ms after speech starts, finished text  653ms after it ends
+ *   minimal   first word  695ms                   , finished text  929ms
+ *   low       first word 1211ms                   , finished text  778ms
+ *   medium    first word 1384ms                   , finished text  759ms
+ *
+ * Dictation is watched while it is typed, so the first word is what the person is waiting for: minimal nearly
+ * halves it, and pays about a quarter of a second on the end, which lands while they are still reading.
+ */
+export const dictateDelay = () => process.env.LC_DICTATE_DELAY || "minimal";
 /** What the browser is told to send, and what the session is told to expect. One number, agreed in one place. */
 export const DICTATE_RATE = 24_000;
 
@@ -45,19 +58,29 @@ export class Dictation {
   private up: WebSocket | null = null;
   private waiting: Buffer[] = [];
   private closed = false;
+  private language = "";
+  private siteWords = "";
 
   constructor(private h: DictationHandlers) {}
 
   get open() { return !this.closed && this.up?.readyState === WebSocket.OPEN; }
 
-  /** Open the upstream session. `siteWords` are the site's own names; `language` pins the script. */
+  /**
+   * Open the upstream session. `siteWords` are the site's own names; `language` pins the script.
+   *
+   * The site's words are OPTIONAL here and can arrive later through `addSiteWords`: reading them means reading
+   * the site, which takes a moment on a good day and can hang on a bad one, and nobody should wait for a web
+   * server before their microphone starts working.
+   */
   start(opts: { siteWords?: string; language?: string } = {}) {
+    this.language = opts.language ?? "";
     const key = secrets.providerKey("openai");
     if (!key) return this.h.onError("Dictation needs an OpenAI API key (Integrations → AI models → OpenAI).");
 
     const up = new WebSocket(UPSTREAM, { headers: { Authorization: `Bearer ${key}` } });
     this.up = up;
 
+    this.siteWords = opts.siteWords ?? "";
     up.on("open", () => {
       const language = (opts.language || sttLanguage() || "").trim().toLowerCase();
       up.send(JSON.stringify({
@@ -73,6 +96,7 @@ export class Dictation {
                 // The site's own names, as a list the service is told to expect rather than a hint in prose.
                 ...(opts.siteWords?.trim() ? { keywords: siteKeywords(opts.siteWords) } : {}),
                 ...(/^[a-z]{2}$/.test(language) ? { languages: [language] } : {}),
+                delay: dictateDelay(),
               },
               // The browser decides when a sentence ended - it can see the room, and we can fix it.
               turn_detection: null,
@@ -94,6 +118,31 @@ export class Dictation {
 
     up.on("error", (e) => this.h.onError(`the speech service could not be reached: ${(e as Error).message}`));
     up.on("close", () => { this.closed = true; });
+  }
+
+  /**
+   * The site's own words, once reading the site has finished - the session started without waiting for them.
+   * Sent as an update, so they apply to everything said from here on; the first sentence may miss them, which is
+   * a far better trade than a microphone that takes three seconds to open.
+   */
+  addSiteWords(siteWords: string) {
+    if (!siteWords.trim() || siteWords === this.siteWords) return;
+    this.siteWords = siteWords;
+    if (this.up?.readyState !== WebSocket.OPEN) return;
+    const language = (this.language || sttLanguage() || "").trim().toLowerCase();
+    this.up.send(JSON.stringify({
+      type: "session.update",
+      session: {
+        type: "transcription",
+        audio: { input: { transcription: {
+          model: dictateModel(),
+          prompt: transcriptionPrompt(siteWords),
+          keywords: siteKeywords(siteWords),
+          ...(/^[a-z]{2}$/.test(language) ? { languages: [language] } : {}),
+          delay: dictateDelay(),
+        } } },
+      },
+    }));
   }
 
   /** A frame of 16-bit PCM at DICTATE_RATE. Held if the session is not accepted yet. */
