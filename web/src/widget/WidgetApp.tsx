@@ -12,8 +12,9 @@ import { titleOf, writeCount } from "../util";
 import { elementContext, type PickedElement } from "./element";
 import { ElementPanel } from "./ElementPanel";
 import { SiteChanges } from "./SiteChanges";
-import { MorePanel } from "./MorePanel";
+import { BlogPanel, MoreMenu } from "./MorePanel";
 import { SpeedPanel } from "./SpeedPanel";
+import { PluginsPanel } from "./PluginsPanel";
 import { connectParent, uploadToMedia } from "./parent";
 import { VoiceAgent, type VoiceState } from "./voice";
 import { VoiceBar } from "./VoiceBar";
@@ -91,7 +92,7 @@ interface WidgetConfig {
   /** Plugin 0.11+: images from this computer can be saved into the Media Library (and the account may upload). */
   canUpload?: boolean; maxUpload?: number;
 }
-type Tab = "chat" | "actions" | "speed" | "changes" | "more";
+type Tab = "chat" | "actions" | "blog" | "speed" | "plugins" | "changes" | "more";
 
 function readConfig(): WidgetConfig | null {
   try {
@@ -166,10 +167,22 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [jobId, setJobId] = useState(store.get(jobKey) ?? "");
   const [events, setEvents] = useState<JobEvent[]>([]);
-  const [tab, setTabState] = useState<Tab>(cfg.tab ?? "chat");
+  // After a reload on More, open the feature that was open there (blog post, PageSpeed, plugins), not the menu again.
+  const [tab, setTabState] = useState<Tab>(() => {
+    const t = cfg.tab ?? "chat";
+    const v = store.sget("lcw_moreview");
+    return t === "more" && (v === "blog" || v === "speed" || v === "plugins") ? v : t;
+  });
   // The Speed tab stays mounted once opened, so a report (or a running scan) survives switching tabs.
   const [speedSeen, setSpeedSeen] = useState(tab === "speed");
-  useEffect(() => { if (tab === "speed") setSpeedSeen(true); }, [tab]);
+  // Inside More: was the PageSpeed report open? Then More opens it again (also after a page reload).
+  // Inside More: which screen was open (the menu, or one feature). More opens it again, also after a page reload.
+  type MoreView = "menu" | "blog" | "speed" | "plugins";
+  const isMoreView = (t: string): t is Exclude<MoreView, "menu"> => t === "blog" || t === "speed" || t === "plugins";
+  const [moreView, setMoreViewState] = useState<MoreView>(() => isMoreView(tab) ? tab : ((store.sget("lcw_moreview") as MoreView) || "menu"));
+  const setMoreView = (v: MoreView) => { setMoreViewState(v); store.sset("lcw_moreview", v); };
+  useEffect(() => { if (tab === "speed") setSpeedSeen(true); if (isMoreView(tab)) setMoreView(tab); else if (tab === "more") setMoreView("menu"); }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
+  const backToMenu = () => { setMoreView("menu"); setTab("more"); };
   const [mode, setMode] = useState<ApprovalMode>((store.get("lcw_mode") as ApprovalMode) || cfg.approvalMode || "request");
   // Which model answers this chat: "" = the one WordPress / the backend chose. Remembered in this browser.
   const [pick, setPick] = useState<string>(store.get("lcw_model") ?? "");
@@ -561,23 +574,28 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   }, [site.id, cfg.pageUrl, eyesOk, post]);
 
   /** `spoken`: the request was said out loud. The backend then runs it as a voice job (faster model, low effort). */
-  async function send(prompt: string, fileIds: string[], extraContext?: string, spoken = false) {
+  async function send(prompt: string, fileIds: string[], extraContext?: string, spoken = false): Promise<string> {
     setProblem("");
     try {
       // They have answered (typed, spoken, or filled the form): stop reading out whatever was still queued, or the
       // assistant carries on describing a question that is already answered.
       if (voiceOn) { voice.stopSpeaking(); setSaying(""); setReadAloud(null); readSeq.current = -1; partial.current = { seq: -1, chars: 0 }; }
       const args = { prompt, fileIds, pageUrl: cfg.pageUrl, approvalMode: mode, extraContext, ...(spoken ? { voice: true } : {}), ...(pick ? { model: pick } : {}) };
+      let id = jobId;
       if (jobId && paused) await api.message(jobId, { ...args, kind: pauseKind });
       else if (jobId && (status === "completed" || status === "failed")) await api.message(jobId, args);
-      else { const j = await api.createJob(site.id, args); freshJob.current = j.id; setJobId(j.id); }
+      else { const j = await api.createJob(site.id, args); freshJob.current = j.id; setJobId(j.id); id = j.id; }
       setTab("chat");
       refreshJobs();
+      return id;
     } catch (e) { setProblem((e as Error).message); throw e; }
   }
+
+
   /** A blog post always starts its own chat. */
   const [blogOpen, setBlogOpen] = useState<false | { title: string }>(false);
   async function startBlog(prompt: string, fileIds: string[]) {
+    if (working) throw new Error("The assistant is still working on another request. Wait for it to finish (or stop it in Chat), then write the post.");
     setProblem("");
     try { const j = await api.createJob(site.id, { prompt, fileIds, approvalMode: mode }); freshJob.current = j.id; setJobId(j.id); setTab("chat"); refreshJobs(); }
     catch (e) { setProblem((e as Error).message); throw e; }
@@ -611,7 +629,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
       if (failed.length) setProblem(`Not saved to the Media Library: ${failed.join("; ")}`);
     }
     if (voiceOn) extra.push(VOICE_NOTE);
-    return send(prompt, fileIds, extra.filter(Boolean).join("\n\n") || undefined);
+    await send(prompt, fileIds, extra.filter(Boolean).join("\n\n") || undefined);
   }
 
   // ---- voice: start / end, and what a spoken sentence means right now
@@ -870,7 +888,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
         <button role="tab" aria-selected={tab === "chat"} className={tab === "chat" ? "on" : ""} onClick={() => setTab("chat")}><Icon.Chat size={15} /> Chat</button>
         <button role="tab" aria-selected={tab === "actions"} className={tab === "actions" ? "on" : ""} onClick={() => setTab("actions")}><Icon.Cursor size={15} /> Edit{selected && <span className="qa-dot" />}</button>
         <button role="tab" aria-selected={tab === "changes"} className={tab === "changes" ? "on" : ""} onClick={() => setTab("changes")}><Icon.List size={15} /> Changes</button>
-        <button role="tab" aria-selected={tab === "more" || tab === "speed"} className={tab === "more" || tab === "speed" ? "on" : ""} onClick={() => setTab("more")}><Icon.More size={15} /> More</button>
+        <button role="tab" aria-selected={tab === "more" || isMoreView(tab)} className={tab === "more" || isMoreView(tab) ? "on" : ""} onClick={() => setTab(isMoreView(tab) ? "more" : moreView === "menu" ? "more" : moreView)}><Icon.More size={15} /> More</button>
       </nav>
 
       {problem && <div className="banner error w-banner"><span>{problem}</span><button onClick={() => setProblem("")}><Icon.Close size={13} /></button></div>}
@@ -883,7 +901,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
               onAskTouch={() => { if (voiceOn) { voice.stopSpeaking(); setSaying(""); } }}
               onAnswer={(a, ok, r) => void answer(a, ok, r)} onCopy={(t) => { navigator.clipboard?.writeText(t); say("Copied"); }}
               onEdit={() => {}} onRetry={(t) => { if (t && (status === "completed" || status === "failed")) void send(t, []); }}
-              onOpen={(url) => post({ type: "lc:navigate", url })} />
+              onOpen={(url) => post({ type: "lc:navigate", url })} onDeploy={cfg.canDeploy ? () => post({ type: "lc:deploy" }) : undefined} />
             {voiceOn && voiceMode === "agent" && (
               <VoiceBar agent={voice} state={voiceState} heard={heard} busy={working} waiting={waiting} queued={queued} blocked={blocked}
                 voices={voiceList} voice={voiceName && voiceList.includes(voiceName) ? voiceName : voice.voice} speak={speakOn}
@@ -941,14 +959,24 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
         )}
         {tab === "more" && (
           <div className="w-scroll pad">
-            <MorePanel disabled={working || waiting} onBlog={(p) => startBlog(p, [])} onBlogOptions={(title) => setBlogOpen({ title })}
-              siteId={site.id} pageUrl={cfg.pageUrl || cfg.siteUrl} onSpeed={() => setTab("speed")} />
+            <MoreMenu siteId={site.id} pageUrl={cfg.pageUrl || cfg.siteUrl} onOpen={(v) => setTab(v)} />
+          </div>
+        )}
+        {tab === "blog" && (
+          <div className="w-scroll pad">
+            <BlogPanel busy={working ? "working" : waiting ? "waiting" : null} onOpenChat={() => setTab("chat")} onBack={backToMenu}
+              onBlog={(p) => startBlog(p, [])} onBlogOptions={(title) => setBlogOpen({ title })} />
+          </div>
+        )}
+        {tab === "plugins" && (
+          <div className="w-scroll pad">
+            <PluginsPanel siteId={site.id} disabled={working} onBack={backToMenu} onChanged={(m) => say(m)} />
           </div>
         )}
         {speedSeen && (
           <div className="w-scroll pad" style={tab === "speed" ? undefined : { display: "none" }}>
-            <button type="button" className="sp-back more-back" onClick={() => setTab("more")}><Icon.ChevronRight size={13} /> More</button>
-            <SpeedPanel siteId={site.id} pageUrl={cfg.pageUrl || cfg.siteUrl} siteName={site.name} disabled={working || waiting} onAsk={(p) => void send(p, [])} />
+            <button type="button" className="sp-back more-back" onClick={backToMenu}><Icon.ChevronRight size={13} /> More</button>
+            <SpeedPanel siteId={site.id} pageUrl={cfg.pageUrl || cfg.siteUrl} siteName={site.name} disabled={working} />
           </div>
         )}
         {tab === "changes" && (

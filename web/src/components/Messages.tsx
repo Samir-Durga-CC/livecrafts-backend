@@ -61,15 +61,41 @@ function shotCaption(ui: Record<string, any>) {
   return `Live screenshot of ${where} · ${DEVICE_NAME[ui.device] ?? ui.device ?? "Desktop"}`;
 }
 
+/** A new blog post: what was made, that it is a draft, and the three next steps (look, edit, publish). */
+function BlogCard({ item, onOpen, onDeploy }: { item: ToolItem; onOpen?: (url: string) => void; onDeploy?: () => void }) {
+  const ui = item.ui ?? {};
+  const title = String(item.input?.title ?? "New blog post");
+  const cats = (ui.categories as string[] | undefined) ?? [];
+  const tags = (ui.tags as string[] | undefined) ?? [];
+  return (
+    <div className="blog-card">
+      {ui.image ? <img className="bc-img" src={String(ui.image)} alt="" /> : <div className="bc-img bc-noimg"><Icon.Page size={22} /></div>}
+      <div className="bc-body">
+        <span className="bc-status">Draft · not live yet</span>
+        <b className="bc-title">{title}</b>
+        <span className="bc-meta">{ui.words ? `${ui.words} words` : ""}{cats.length ? ` · ${cats.join(", ")}` : ""}{tags.length ? ` · ${tags.slice(0, 4).join(", ")}${tags.length > 4 ? "…" : ""}` : ""}</span>
+        <div className="bc-actions">
+          {onOpen ? <button type="button" className="btn sm" onClick={() => onOpen(String(ui.preview))}><Icon.Eye size={13} /> Preview</button>
+            : <a className="btn sm" href={String(ui.preview)} target="_blank" rel="noreferrer"><Icon.Eye size={13} /> Preview</a>}
+          {ui.edit && <a className="btn sm" href={String(ui.edit)} target="_blank" rel="noreferrer"><Icon.Edit size={13} /> Edit in WordPress</a>}
+          {onDeploy && <button type="button" className="btn sm primary" onClick={onDeploy}><Icon.Check size={13} /> Deploy…</button>}
+        </div>
+        <span className="bc-note">Visitors see it after you deploy. Ask here for changes ("shorter intro", "add a FAQ").</span>
+      </div>
+    </div>
+  );
+}
+
 /** One quiet line that summarises what the assistant did ("Read the page · Updated content"), expandable for details. */
-function Activity({ items, onOpen }: { items: ToolItem[]; onOpen?: (url: string) => void }) {
+function Activity({ items, onOpen, onDeploy }: { items: ToolItem[]; onOpen?: (url: string) => void; onDeploy?: () => void }) {
   const [open, setOpen] = useState(false);
   const running = items.find((i) => i.state === "running");
   const failed = items.filter((i) => i.state === "failed").length;
   const labels = [...new Set(items.filter((i) => i.state !== "running").map((i) => DONE[i.tool] ?? i.tool))];
   const shots = items.filter((i) => i.tool === "screenshot_page" && i.ui?.screenshotId);
   const files = items.filter((i) => (i.tool === "edit_file" || i.tool === "restore_file" || i.tool === "create_file") && i.state === "ok" && i.ui?.path);
-  const pages = items.filter((i) => (i.tool === "create_page" || i.tool === "create_post" || i.tool === "create_blog_post" || i.tool === "edit_post_content" || i.tool === "set_post_status") && i.state === "ok" && i.ui?.link);
+  const pages = items.filter((i) => (i.tool === "create_page" || i.tool === "create_post" || i.tool === "edit_post_content" || i.tool === "set_post_status") && i.state === "ok" && i.ui?.link);
+  const posts = items.filter((i) => i.tool === "create_blog_post" && i.state === "ok" && i.ui?.preview);
   const images = items.filter((i) => i.tool === "generate_image" && i.state === "ok" && i.ui?.url);
   return (
     <div className={`activity ${running ? "live" : ""} ${failed ? "has-fail" : ""}`}>
@@ -110,6 +136,7 @@ function Activity({ items, onOpen }: { items: ToolItem[]; onOpen?: (url: string)
           {onOpen && <button className="fd-link" onClick={() => onOpen(p.ui!.link)}>Show in preview</button>}
         </div>
       ))}
+      {posts.map((p) => <BlogCard key={p.seq} item={p} onOpen={onOpen} onDeploy={onDeploy} />)}
       {images.map((m) => (
         <div key={m.seq} className="file-done">
           <img className="fd-thumb" src={String(m.ui!.url)} alt="" width={56} height={38} />
@@ -269,10 +296,12 @@ function Approval({ item, onAnswer, busy }: { item: Extract<TimelineItem, { kind
   );
 }
 
-export function Transcript({ items, model, busy, working, welcome, spoken, onAnswer, onCopy, onEdit, onRetry, onOpen, onAsk, onAskTouch }: {
+export function Transcript({ items, model, busy, working, welcome, spoken, onAnswer, onCopy, onEdit, onRetry, onOpen, onAsk, onAskTouch, onDeploy }: {
   items: TimelineItem[]; model: string; busy: boolean; working: boolean; welcome: React.ReactNode; onOpen?: (url: string) => void;
   /** How far the voice has read the answer with this seq: everything before `to` has been heard. */
   spoken?: { seq: number; to: number } | null;
+  /** Open the site's deploy dialog (the widget passes it when the person may deploy). */
+  onDeploy?: () => void;
   onAnswer: (approvalId: string, approved: boolean, reason?: string) => void;
   onCopy: (text: string) => void; onEdit: (text: string) => void; onRetry: (text: string) => void;
   /** The answers to an ask_person form go back as one ordinary message. */
@@ -365,7 +394,7 @@ export function Transcript({ items, model, busy, working, welcome, spoken, onAns
                 </div>
               );
             }
-            case "steps": return <Activity key={b.key} items={b.items} onOpen={onOpen} />;
+            case "steps": return <Activity key={b.key} items={b.items} onOpen={onOpen} onDeploy={onDeploy} />;
             case "approval": return <Approval key={b.key} item={b.item} busy={busy} onAnswer={(a, r) => onAnswer(b.item.approvalId, a, r)} />;
             case "error": return <div key={b.key} className="banner error">{b.item.text}</div>;
           }

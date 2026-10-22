@@ -48,7 +48,7 @@ export class Bridge {
     return `${this.site.url}/?${q.toString()}`;
   }
 
-  async request<T = any>(method: "GET" | "POST" | "DELETE", route: string, opts: { query?: Query; json?: unknown; body?: Buffer; headers?: Record<string, string> } = {}): Promise<T> {
+  async request<T = any>(method: "GET" | "POST" | "DELETE", route: string, opts: { query?: Query; json?: unknown; body?: Buffer; headers?: Record<string, string>; timeoutMs?: number } = {}): Promise<T> {
     const attempts = method === "GET" ? 3 : 1; // never auto-retry a write
     let plain = false;
     for (let i = 0; i < attempts; i++) {
@@ -64,7 +64,7 @@ export class Bridge {
             ...(opts.headers ?? {}),
           },
           body: opts.json !== undefined ? JSON.stringify(opts.json) : opts.body ? new Uint8Array(opts.body) : undefined,
-          signal: AbortSignal.timeout(config.bridgeTimeoutMs),
+          signal: AbortSignal.timeout(opts.timeoutMs ?? config.bridgeTimeoutMs),
         });
       } catch (e) {
         if (i < attempts - 1) { await sleep(400 * 2 ** i); continue; }
@@ -87,6 +87,7 @@ export class Bridge {
       if (res.status === 404 && code === "rest_no_route") {
         const need = /livecrafts\/v1\/(status|changes|post|pages|notes|resolve|preview-token|connect|releases)/.test(route) ? ["0.10", "drafts, history and notes"]
           : /livecrafts\/v1\/assistant/.test(route) ? ["0.8", "the assistant settings"]
+          : /livecrafts\/v1\/plugins/.test(route) ? ["0.19", "plugin updates and rollback"]
           : /livecrafts\/v1\/theme-file/.test(route) ? ["0.7", "theme file editing"]
           : /^livecrafts\//.test(route) ? ["0.6", "Livecrafts"] : null;
         msg = need ? `This needs the Livecrafts plugin ${need[0]} or newer for ${need[1]}. Install the latest livecrafts.zip on the site (Plugins → Add New → Upload, replace current).` : msg;
@@ -98,6 +99,29 @@ export class Bridge {
   }
 
   ping() { return this.request("GET", "livecrafts/v1/ping"); }
+
+  // ---- plugin updates (Livecrafts plugin 0.19+): backup, update, health check, rollback. These go live at once.
+  plugins(refresh = false) { return this.request<PluginList>("GET", "livecrafts/v1/plugins", { query: { refresh: refresh ? 1 : undefined }, timeoutMs: 90_000 }); }
+  pluginHistory() { return this.request<{ history: PluginHistoryEntry[] }>("GET", "livecrafts/v1/plugins/history"); }
+  pluginVersions(plugin: string) { return this.request<{ versions: string[]; note?: string }>("GET", "livecrafts/v1/plugins/versions", { query: { plugin }, timeoutMs: 60_000 }); }
+  updatePlugin(plugin: string) { return this.request<PluginActionResult>("POST", "livecrafts/v1/plugins/update", { json: { plugin }, timeoutMs: 300_000 }); }
+  /** Plugin 0.19.1+: one step of an update (prepare -> install). An older plugin ignores "step" and does it all in one go. */
+  updatePluginStep(plugin: string, step: "prepare" | "install", job?: string) {
+    return this.request<any>("POST", "livecrafts/v1/plugins/update", { json: { plugin, step, job }, timeoutMs: 300_000 });
+  }
+  /** Plugin 0.19.1+: repair an update whose install request was cut off (recover.php runs WordPress without plugins). */
+  async recoverPlugin(url: string, job: string, key: string): Promise<PluginActionResult> {
+    const site = new URL(this.site.url), u = new URL(url);
+    if (u.hostname.replace(/^www\./, "") !== site.hostname.replace(/^www\./, "")) throw new BridgeError(400, "bad_recover_url", "The repair address is not on this site.");
+    const res = await fetch(u, { method: "POST", body: new URLSearchParams({ job, key }), signal: AbortSignal.timeout(300_000) });
+    const text = await res.text();
+    let data: any; try { data = JSON.parse(text); } catch { throw new BridgeError(res.status, "not_json", "The repair file did not answer (a security plugin may block it)."); }
+    if (!res.ok && !data?.message) throw new BridgeError(res.status, data?.gone ? "gone" : "recover_failed", data?.error ?? `HTTP ${res.status}`);
+    return data as PluginActionResult;
+  }
+  rollbackPlugin(plugin: string, to: { backup?: string; version?: string } = {}) {
+    return this.request<PluginActionResult>("POST", "livecrafts/v1/plugins/rollback", { json: { plugin, ...to }, timeoutMs: 300_000 });
+  }
   /** Every editable value of a page (ACF, Elementor) + the Elementor outline. view "draft" (default) = what editors see. */
   map(args: { url?: string; post?: number; view?: "draft" | "live" }) { return this.request("GET", "livecrafts/v1/map", { query: { url: args.url, post: args.post, view: args.view } }); }
   readTarget(target: string) { return this.request("GET", "livecrafts/v1/debug/target", { query: { targetId: target } }); }
@@ -206,4 +230,17 @@ export class Bridge {
       note: "Checked the public HTML as a logged-out visitor. If a text is missing, it may be cached, built by JavaScript, or the edit did not apply.",
     };
   }
+}
+
+export interface PluginBackup { id: string; version: string; at: string; size: number }
+export interface PluginInfo {
+  plugin: string; slug: string; name: string; version: string; author: string; active: boolean; self: boolean; wporg: boolean; dbHeavy: boolean;
+  update: { version: string; requires: string; requiresPhp: string; tested: string; compatible: boolean; package: boolean } | null;
+  backups: PluginBackup[];
+}
+export interface PluginList { plugins: PluginInfo[]; wp: string; php: string; canModify: boolean; blocked: string; checkedAt: string | null }
+export interface PluginHistoryEntry { at: string; by: string; plugin: string; name: string; action: "update" | "auto_rollback" | "rollback"; from: string; to: string; result: string; note?: string }
+export interface PluginActionResult {
+  ok: boolean; plugin: string; name: string; from: string; to: string; message: string; rolledBack?: boolean; verified?: boolean; dbHeavy?: boolean; backup?: string | null;
+  health?: { ok: boolean | null; checks: Array<{ name: string; ok: boolean | null; detail: string }> };
 }
