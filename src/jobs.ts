@@ -364,9 +364,18 @@ export class JobRunner {
     try {
       const mode = job.approvalMode ?? "every";
       const persona = await assistantSettings(site);
-      // A voice session reads the site once and keeps it: the turns after the first one get the status, the notes and
-      // the page map from here instead of fetching them again (and every write empties it).
-      const cache: SiteCache | null = job.voice ? voiceSession(job.siteId, job.pageUrl) : null;
+      /**
+       * A session reads the site once and keeps it: every turn after the first gets the status, the notes and the
+       * page map from here instead of fetching them again.
+       *
+       * This was limited to voice, on the reasoning that voice is where the waiting is heard. But the three reads
+       * cost a typed turn exactly what they cost a spoken one - two round trips to WordPress before anything
+       * happens, on every single message - and someone watching a cursor blink is also waiting. The safety is the
+       * same either way and does not depend on which one it is: entries live ten minutes, a session half an hour,
+       * and every write through make_change empties the whole thing (tools.ts), so nothing is ever served from a
+       * site that has been changed since it was read.
+       */
+      const cache: SiteCache | null = voiceSession(job.siteId, job.pageUrl);
       const ctx: JobContext = {
         persona,
         approval: { mode, planApproved: mode === "request" && job.planApprovedFor === (job.requestSeq ?? 1) },

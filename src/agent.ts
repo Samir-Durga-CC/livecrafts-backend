@@ -269,7 +269,16 @@ export function buildAgent(files: FileStore, opts: BuildOptions = {}): AgentFact
       // Voice also asks for low reasoning effort: "change the heading to X" does not need the default thinking budget,
       // and the wait is what the person hears. (Only the providers that have the setting; the others ignore it.)
       providerOptions: {
-        openai: { store: false, ...(job?.voice ? { reasoningEffort: "low" } : {}) },
+        /**
+         * promptCacheKey: send this site's requests to the same cache.
+         *
+         * The prompt is ordered so that everything identical between requests comes first (see the note above
+         * systemPrompt), which is what makes a cached prefix possible at all. But the provider routes requests
+         * across machines, and an identical prefix only helps when the request lands where that prefix is
+         * already warm. Without a key that routing is per-request chance; with one, a site's turns queue behind
+         * their own warm prefix. The site id and nothing else: it must be identical across requests to work.
+         */
+        openai: { store: false, promptCacheKey: `lc-${site.id}`, ...(job?.voice ? { reasoningEffort: "low" } : {}) },
         ...(job?.voice ? { openrouter: { reasoning: { effort: "low" } }, gateway: { reasoningEffort: "low" } } : {}),
       },
       stopWhen: [isStepCount(config.maxSteps), () => !!job?.shouldStop?.()], // step limit (cost safety) + the Stop button
