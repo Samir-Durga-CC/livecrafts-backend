@@ -54,12 +54,25 @@ export interface DictationHandlers {
  * lab, dropping it cost the first two words of every first sentence, and what came back was a sentence, just not
  * theirs.
  */
+/**
+ * Frames held while the session is being configured.
+ *
+ * ~43ms of audio a frame, so about fifty seconds. The old limit was 400 (~17s), which is short enough that a
+ * slow acknowledgement and a talkative first sentence could overflow it and lose the start.
+ */
+const MAX_WAITING_FRAMES = 1_200;
+/** If `session.updated` never arrives, send what is held anyway rather than hold it forever. */
+const CONFIG_TIMEOUT_MS = 4_000;
+
 export class Dictation {
   private up: WebSocket | null = null;
   private waiting: Buffer[] = [];
   private closed = false;
   private language = "";
   private siteWords = "";
+  /** The service has ACKNOWLEDGED the transcription session. Audio sent before this is held, not appended. */
+  private configured = false;
+  private configTimer: NodeJS.Timeout | null = null;
 
   constructor(private h: DictationHandlers) {}
 
@@ -104,13 +117,23 @@ export class Dictation {
           },
         },
       }));
-      for (const b of this.waiting.splice(0)) this.append(b);
-      this.h.onReady(dictateModel());
+      /**
+       * The socket being open is not the session being ready.
+       *
+       * `onReady` is what makes the widget beep and tell the person to speak, so it waits for the service to
+       * acknowledge the configuration (`session.updated`) rather than for the TCP connection. Audio appended
+       * before that acknowledgement is audio appended to a session whose format is not agreed yet.
+       *
+       * The timeout is the safety net: a service that accepts the socket and never answers must not leave a
+       * person holding a microphone that will never beep.
+       */
+      this.configTimer = setTimeout(() => this.configure("timeout"), CONFIG_TIMEOUT_MS);
     });
 
     up.on("message", (raw) => {
       let e: any;
       try { e = JSON.parse(String(raw)); } catch { return; }
+      if (e.type === "session.updated" || e.type === "transcription_session.updated") return this.configure("acknowledged");
       if (e.type === "conversation.item.input_audio_transcription.delta") this.h.onPartial(e.delta ?? "", e.item_id);
       else if (e.type === "conversation.item.input_audio_transcription.completed") this.h.onFinal(e.transcript ?? "", e.item_id);
       else if (e.type === "error") this.h.onError(String(e.error?.message ?? "the speech service refused the session"));
@@ -145,21 +168,36 @@ export class Dictation {
     }));
   }
 
+  /** The session is agreed: everything held goes up in order, and only then is anyone told to speak. */
+  private configure(how: "acknowledged" | "timeout") {
+    if (this.configured || this.closed) return;
+    this.configured = true;
+    if (this.configTimer) { clearTimeout(this.configTimer); this.configTimer = null; }
+    for (const b of this.waiting.splice(0)) this.append(b);
+    void how; // the distinction matters when reading a log, not here
+    this.h.onReady(dictateModel());
+  }
+
   /** A frame of 16-bit PCM at DICTATE_RATE. Held if the session is not accepted yet. */
   send(pcm: Buffer) {
     if (this.closed) return;
-    if (this.up?.readyState === WebSocket.OPEN && !this.waiting.length) return this.append(pcm);
-    // ~17 seconds at 1024 samples a frame. A queue that only grows is a leak, not a buffer.
-    if (this.waiting.length < 400) this.waiting.push(pcm);
+    if (this.configured && this.up?.readyState === WebSocket.OPEN && !this.waiting.length) return this.append(pcm);
+    // A queue that only grows is a leak, not a buffer - so it is bounded, and it drops the OLDEST frame rather
+    // than refusing the newest: what someone is saying now matters more than what they said a minute ago.
+    this.waiting.push(pcm);
+    if (this.waiting.length > MAX_WAITING_FRAMES) this.waiting.shift();
   }
 
   /** "That was a sentence": everything buffered upstream becomes one utterance. */
   commit() {
-    if (this.up?.readyState === WebSocket.OPEN) this.up.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+    // Nothing has been appended before the session is agreed, and committing an empty buffer is an error the
+    // service answers with - which the widget would show the person as a failed dictation.
+    if (this.configured && this.up?.readyState === WebSocket.OPEN) this.up.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
   }
 
   stop() {
     this.closed = true;
+    if (this.configTimer) { clearTimeout(this.configTimer); this.configTimer = null; }
     this.waiting = [];
     try { this.up?.close(); } catch { /* already gone */ }
     this.up = null;

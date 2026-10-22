@@ -36,8 +36,25 @@ const RATE = 24_000;
  * Audio is streamed CONTINUOUSLY rather than only once a detector believes you have started - see onPcm. That is
  * what makes words appear the moment you speak, but an open microphone in an empty room should not stream all
  * afternoon, so a long silence pauses it and any sound at all resumes it.
+ *
+ * Half a minute, not twelve seconds: this also fires while someone is thinking mid-dictation, and a pause to
+ * collect a thought must not be the moment the microphone quietly stops working.
  */
-const IDLE_PAUSE_MS = 12_000;
+const IDLE_PAUSE_MS = 30_000;
+/**
+ * Frames recorded before the socket is open, kept rather than dropped.
+ *
+ * ~43ms of audio a frame (1024 samples at 24kHz), so this is about six seconds - more than the socket and the
+ * upstream session have ever taken, and bounded because a queue that only grows is a leak.
+ */
+const MAX_PENDING_FRAMES = 140;
+/**
+ * If the backend never says the session is configured, start anyway after this long.
+ *
+ * The beep means "it is listening", so it waits for the real thing. But a service that never acknowledges must
+ * not leave someone staring at "getting ready" with a working microphone in front of them.
+ */
+const READY_TIMEOUT_MS = 6_000;
 
 export class Dictation {
   /** Microphone level 0..1 for the waveform in the input box (read 20+ times a second; never a React render). */
@@ -53,6 +70,13 @@ export class Dictation {
   private quietMs = 0;
   private tickMs = 5;
   private partial = "";
+  /** Which utterance `partial` belongs to: a new one must not be appended to the last one's tail. */
+  private partialId = "";
+  /** Recorded before the socket opened. Sent in order the moment it does - see onPcm. */
+  private pendingPcm: ArrayBuffer[] = [];
+  /** The backend has confirmed the speech session is configured and listening. */
+  private ready = false;
+  private readyTimer: number | null = null;
   /** For the voice log: a run that produced nothing must say which stage produced nothing. */
   private sent = 0;
   private sentences = 0;
@@ -92,7 +116,15 @@ export class Dictation {
 
     // One reading per 128 samples at the context's own rate.
     this.tickMs = Math.max(1, Math.round((128 / (this.ctx.sampleRate || RATE)) * 1000));
-    this.vad = new Vad({ tick: this.tickMs });
+    /**
+     * Dictation waits longer for the end of a sentence than the conversation does.
+     *
+     * Nothing is waiting on the end of a turn here - no agent has to answer, the words just keep arriving in the
+     * box - so there is no reason to cut at the first 600ms gap. Someone dictating two or three sentences pauses
+     * for breath inside them; a longer wait keeps those as one utterance, which the service also transcribes
+     * better, and splitting still happens whenever a pause really is the end.
+     */
+    this.vad = new Vad({ tick: this.tickMs, endMs: 900 });
     this.node.port.onmessage = ({ data }) => {
       if (data.pcm) return this.onPcm(data.pcm as ArrayBuffer);
       if (typeof data.rate === "number") voiceLog.add("dictation.audio", { rate: data.rate, target: data.target, resampling: data.resampling });
@@ -107,22 +139,56 @@ export class Dictation {
 
     this.ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/voice/stream?${q}`);
     this.ws.binaryType = "arraybuffer";
+    // Whatever was recorded while this was connecting goes up first, in order: it is the start of the sentence.
+    this.ws.onopen = () => {
+      const queued = this.pendingPcm.splice(0);
+      voiceLog.add("dictation.open", { queuedFrames: queued.length });
+      for (const frame of queued) {
+        if (this.ws?.readyState !== WebSocket.OPEN) break;
+        this.sent++;
+        this.ws.send(frame);
+      }
+    };
     this.ws.onmessage = (e) => this.fromServer(JSON.parse(e.data));
     this.ws.onerror = () => this.h.onError("The dictation connection failed.");
     this.ws.onclose = () => { if (this.state !== "off") this.h.onError("The dictation connection closed."); };
 
     voiceLog.start("classic", "dictation/stream");
-    this.set("listening");
-    chime(this.ctx, "start"); // the beep: they know the microphone is live before they speak
+    /**
+     * The beep waits for the speech session, it does not announce the microphone.
+     *
+     * It used to sound here, the moment the socket object existed - before it had connected and before the
+     * speech session upstream had been configured. People trust a beep, so they started talking into a second
+     * or two of audio that had nowhere to go, and got back the tail of their own sentence: "ling the".
+     *
+     * Audio is recorded and held from this moment either way (onPcm), so nothing said early is lost; the beep
+     * now means what it says, and `starting` stays on screen until it sounds.
+     */
+    this.readyTimer = window.setTimeout(() => {
+      if (this.state === "starting") { voiceLog.add("dictation.ready-timeout", {}); this.live(); }
+    }, READY_TIMEOUT_MS);
     return true;
+  }
+
+  /** The session is configured: beep once, and say so on screen. */
+  private live() {
+    if (this.ready || this.state === "off" || !this.ctx) return;
+    this.ready = true;
+    if (this.readyTimer) { window.clearTimeout(this.readyTimer); this.readyTimer = null; }
+    this.set("listening");
+    chime(this.ctx, "start"); // the beep: it is listening NOW, not merely opening
   }
 
   /** Close everything. Whatever was already written stays in the box. */
   stop() {
     if (this.heard5s) { window.clearTimeout(this.heard5s); this.heard5s = null; }
+    if (this.readyTimer) { window.clearTimeout(this.readyTimer); this.readyTimer = null; }
     voiceLog.add("dictation.stop", { framesSent: this.sent, sentences: this.sentences });
     this.quietMs = 0;
     this.partial = "";
+    this.partialId = "";
+    this.pendingPcm = [];
+    this.ready = false;
     try { this.ws?.send(JSON.stringify({ type: "stop" })); } catch { /* already gone */ }
     if (this.ws) { this.ws.onclose = null; this.ws.close(); this.ws = null; }
     if (this.node) { this.node.port.onmessage = null; this.node.disconnect(); this.node = null; }
@@ -145,17 +211,22 @@ export class Dictation {
       if (!this.sentences && this.vad) voiceLog.add("vad.nothing-after-5s", { floor: Math.round(this.vad.floor), bar: Math.round(this.vad.bar), lastDb: Math.round(db) });
     }, 5000);
     const edge = this.vad?.push(db);
-    // Track silence only to pause an idle microphone; it is NOT a gate on sending (see onPcm).
-    this.quietMs = this.vad?.speaking ? 0 : this.quietMs + (this.tickMs || 5);
+    // Track silence only to pause an idle microphone; it is NOT a gate on sending (see onPcm). Any sound over
+    // the room's bar resumes it at once - waiting for the detector's 150ms of confirmed speech would spend the
+    // first word of whatever broke the silence.
+    const audible = this.vad?.speaking || (this.vad && db > this.vad.bar);
+    this.quietMs = audible ? 0 : this.quietMs + (this.tickMs || 5);
 
     if (edge === "start") {
       voiceLog.add("vad.start", { db: Math.round(db), floor: Math.round(this.vad!.floor), bar: Math.round(this.vad!.bar) });
-      this.set("hearing");
+      if (this.ready) this.set("hearing"); // before the beep the screen keeps saying it is getting ready
     }
     if (edge === "end") {
-      // The sentence is over: everything sent since the last commit becomes one utterance.
+      // The sentence is over: everything sent since the last commit becomes one utterance. Until the session is
+      // configured there is nothing upstream to commit to, and committing an empty buffer is an error.
+      if (!this.ready) return;
       this.sentences++;
-      voiceLog.add("vad.end", { framesSent: this.sent, sentence: this.sentences });
+      voiceLog.add("vad.end", { framesSent: this.sent, sentence: this.sentences, quietMs: this.quietMs });
       try { this.ws?.send(JSON.stringify({ type: "commit" })); } catch { /* socket gone */ }
       this.set("transcribing");
     }
@@ -176,25 +247,37 @@ export class Dictation {
    * but bandwidth - and an idle microphone pauses after IDLE_PAUSE_MS anyway.
    */
   private onPcm(buf: ArrayBuffer) {
-    if (this.ws?.readyState !== WebSocket.OPEN) return;
     if (this.quietMs > IDLE_PAUSE_MS) return; // nothing said for a while: stop until there is sound again
+    // The socket is still connecting: HOLD the audio. Dropping it threw away the opening words of the first
+    // sentence, and a sentence missing its start transcribes as a fragment of itself.
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      if (this.pendingPcm.length >= MAX_PENDING_FRAMES) this.pendingPcm.shift();
+      this.pendingPcm.push(buf);
+      return;
+    }
     this.sent++;
     this.ws.send(buf);
   }
 
   // ---------------------------------------------------------------- the words
 
-  private fromServer(m: { type: string; text?: string; message?: string; model?: string }) {
+  private fromServer(m: { type: string; text?: string; message?: string; model?: string; id?: string }) {
     if (m.type === "error") return this.h.onError(m.message ?? "Dictation failed.");
-    if (m.type === "ready") { voiceLog.add("dictation.ready", { model: m.model }); return; }
+    if (m.type === "ready") { voiceLog.add("dictation.ready", { model: m.model }); return this.live(); }
     if (m.type === "partial") {
+      // Deltas belong to one utterance. When a new one starts, the growing text starts over - appending it to
+      // the last utterance's tail is how a finished sentence turns back into a fragment on screen.
+      const id = m.id ?? "";
+      if (id !== this.partialId) { this.partialId = id; this.partial = ""; }
       this.partial += m.text ?? "";
       this.h.onPartial(this.partial);
       return;
     }
     if (m.type === "final") {
-      const text = (m.text ?? this.partial).trim();
+      const sameTurn = !m.id || !this.partialId || m.id === this.partialId;
+      const text = (m.text ?? (sameTurn ? this.partial : "")).trim();
       this.partial = "";
+      this.partialId = "";
       voiceLog.add("heard", { text });
       if (text) this.h.onFinal(text);
       this.h.onPartial("");

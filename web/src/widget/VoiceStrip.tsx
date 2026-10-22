@@ -22,7 +22,9 @@ export function VoiceStrip({ mode, state, heard, busy, blocked, speak, onSpeak, 
   onEnd: () => void;
 }) {
   const label =
-    state === "starting" ? "Opening the microphone…"
+    // Dictation holds this state until the speech session is live and the beep has sounded, so it says what the
+    // person is waiting for rather than what has already happened.
+    state === "starting" ? (mode === "dictate" ? "Getting ready — speak after the beep" : "Opening the microphone…")
     : state === "hearing" ? "Listening…"
     : state === "transcribing" ? "Writing that down…"
     : state === "speaking" ? "Speaking — talk over me to interrupt"
