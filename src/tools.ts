@@ -13,6 +13,7 @@ import { generateImage, type ImageShape } from "./images.js";
 import { chooseTerms } from "./terms.js";
 import { sameHost, summarize, type SpeedDevice, type SpeedRuns } from "./pagespeed.js";
 import { pluginJobs } from "./pluginJobs.js";
+import type { SiteCache } from "./sessions.js";
 
 /**
  * The assistant's tools. Every write goes to the site as a DRAFT through the Livecrafts plugin (POST /changes):
@@ -53,8 +54,13 @@ export function htmlWords(html: string): number {
   return t ? t.split(/\s+/).length : 0;
 }
 
-/** The page map can be big; give the model a compact, stable view of it. */
-function compactMap(m: any) {
+/**
+ * The page map can be big; give the model a compact, stable view of it.
+ *
+ * Exported because the SAME shape is now put in front of the model at the start of a run (see siteContext in
+ * jobs.ts). Two renderings of a page map would drift, and the model would be told two different things.
+ */
+export function compactMap(m: any) {
   const values = [...(m.acf ?? []).filter((e: any) => e.kind === "acf"), ...(m.elementor ?? []), ...(m.divi ?? [])].slice(0, 200).map((e: any) => ({
     target: e.tid, label: e.label, type: e.ftype,
     value: e.ftype === "image" ? `[image id ${e.value}] ${e.url}` : String(e.value).slice(0, 200),
@@ -95,6 +101,11 @@ export interface ToolExtras {
   speed?: SpeedRuns | null;
   siteId?: string;
   siteUrl?: string;
+  /**
+   * A voice session's memory of the site (sessions.ts): site_status, read_notes and get_page_map are read once and
+   * then answered from here, instead of once per turn. Every write empties it, so a changed page is never read stale.
+   */
+  cache?: SiteCache | null;
 }
 
 const deviceSchema = z.enum(["desktop", "tablet", "mobile"]).optional().describe("Screen size (default desktop)");
@@ -119,11 +130,15 @@ function parseValue(v: string): unknown {
 
 export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras = {}) {
   const ref = () => extras.ref?.() ?? "";
+  /** Read once per voice session (and once per run otherwise). */
+  const once = <T>(key: string, read: () => Promise<T>): Promise<T> => (extras.cache ? extras.cache.get(key, read) : read());
+  /** The site was written to: the session's status, notes and page maps are stale from here on. */
+  const changed = () => extras.cache?.invalidate();
   const postCache = new Map<string, number>();
   const postIdOf = async (url?: string, post?: number) => {
     if (post) return post;
     const u = url || extras.pageUrl?.() || bridge.homeUrl;
-    if (!postCache.has(u)) postCache.set(u, Number((await bridge.map({ url: u, view: "draft" }))?.post?.id));
+    if (!postCache.has(u)) postCache.set(u, Number((await once(`map:${u}:draft`, () => bridge.map({ url: u, view: "draft" })))?.post?.id));
     return postCache.get(u)!;
   };
   /** Run a write; for one that changed a page, check it in a real browser before the model hears back. */
@@ -131,12 +146,15 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     const v = extras.verifier;
     const before = v && pageUrl ? await v.before(pageUrl) : null;
     const res = await write();
+    // The page is not what the session read any more. Done before the browser check, so nothing can read it stale.
+    if (res?.ok !== false && !res?.unchanged) changed();
     if (res?.ok === false || res?.unchanged || !v || !pageUrl || !res?.change) return res;
     return { ...res, verification: await v.after(pageUrl, res.change, before, opts) };
   };
   /** A NEW page / post: open its preview the way the theme / page builder renders it (title, content, image, health). */
   const checkedNew = async (res: any, e: { title: string; content?: string; imageUrl?: string }) => {
     const v = extras.verifier;
+    if (res?.ok) changed();
     if (!res?.ok || !res?.preview) return res;
     if (!v) return { ...res, verification: { passed: true, checks: [], summary: "Not checked in a browser (page checks are off). Open the preview link to see it." } };
     return { ...res, verification: await v.newPost(res.preview, e) };
@@ -146,10 +164,11 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     site_status: tool({
       description:
         "What is going on on this site right now, like `git status`: the draft changes not deployed yet (per page, with ids), conflicts (someone changed the live site under a draft), " +
-        "the last release, and changes made OUTSIDE Livecrafts since then (WP admin, Elementor editor - by whom). Call it at the start of a request that touches existing work, and before reverting.",
+        "the last release, and changes made OUTSIDE Livecrafts since then (WP admin, Elementor editor - by whom). " +
+        "THIS IS ALREADY IN YOUR SITE CONTEXT below, read fresh for this request: do not call this to start a request. Call it only to see changes made since you started working, or before reverting.",
       inputSchema: z.object({}),
       execute: async () => safe(async () => {
-        const s = await bridge.status();
+        const s = await once("status", () => bridge.status());
         return {
           ok: true,
           drafts: (s.drafts?.objects ?? []).map((o: any) => ({ object: o.object.label, url: o.object.url, changes: o.changes.map(changeView) })),
@@ -178,10 +197,12 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
       }),
     }),
     read_notes: tool({
-      description: "Your notes about this site and about a page (what you learned last time: where things are stored, brand rules, pitfalls). Read them before working on a page you have not read notes for in this chat.",
+      description: "Your notes about this site and about a page (what you learned last time: where things are stored, brand rules, pitfalls). " +
+        "The notes for the site and for the page the person is on are ALREADY IN YOUR SITE CONTEXT: call this only for a DIFFERENT page.",
       inputSchema: z.object({ url: z.string().optional().describe("Page URL (default: the page the person is on)") }),
       execute: async ({ url }) => safe(async () => {
-        const r = await bridge.notes(await postIdOf(url));
+        const post = await postIdOf(url);
+        const r = await once(`notes:${post ?? ""}`, () => bridge.notes(post));
         return { ok: true, site: r.site?.text ?? "", page: r.page?.text ?? "", pageUpdated: r.page?.updated ?? null };
       }),
     }),
@@ -192,6 +213,7 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
       inputSchema: z.object({ scope: z.enum(["site", "page"]), url: z.string().optional().describe("For page notes: the page URL (default: the page the person is on)"), text: z.string().max(20000) }),
       execute: async ({ scope, url, text }) => safe(async () => {
         const r = await bridge.setNotes(scope === "page" ? await postIdOf(url) : undefined, text);
+        changed();
         return { ok: true, saved: scope, updated: r.notes?.updated };
       }),
     }),
@@ -208,9 +230,14 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     get_page_map: tool({
       description:
         "Everything editable on a page with its CURRENT value: ACF fields (also inside groups and repeater/flexible rows), Elementor content settings, ACF row lists, and the Elementor outline " +
-        "(element ids, types, nesting, short text). Choose change targets from here. view draft (default) includes unpublished changes.",
+        "(element ids, types, nesting, short text). Choose change targets from here. view draft (default) includes unpublished changes. " +
+        "THE PAGE THE PERSON IS ON IS ALREADY MAPPED IN YOUR SITE CONTEXT below: call this only for a DIFFERENT page, for the live view, or to re-read a page AFTER you have changed it.",
       inputSchema: z.object({ url: z.string().optional().describe("Full page URL (default: the page the person is on, else the home page)"), view: viewSchema }),
-      execute: async ({ url, view }) => safe(async () => compactMap(await bridge.map({ url: url || extras.pageUrl?.() || bridge.homeUrl, view: view ?? "draft" }))),
+      execute: async ({ url, view }) => safe(async () => {
+        const u = url || extras.pageUrl?.() || bridge.homeUrl;
+        const v = view ?? "draft";
+        return compactMap(await once(`map:${u}:${v}`, () => bridge.map({ url: u, view: v })));
+      }),
     }),
     read_post: tool({
       description: "The title, status, template and RAW content (block markup) of a page/post as editors see it now (draft view), or as visitors do (live). Use it before changing blocks or content.",
@@ -578,14 +605,24 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
   const skillTools = sk && sk.list().length ? {
     load_skill: tool({
       description: "Load an official WordPress skill (expert instructions) before work in its area. Default file is SKILL.md; its references/*.md files can be loaded too. Load only the skills that actually apply to THIS request - most requests need just the 3-4 named in your instructions, never the whole catalogue. Loading the same skill+file twice in one request returns a short notice instead of the text again (you already have it).",
-      inputSchema: z.object({ name: z.string(), file: z.string().optional().describe("e.g. references/theme-json.md") }),
-      execute: async ({ name, file }) => safe(async () => {
-        const key = name + "/" + (file || "SKILL.md");
-        if (filesLoaded.has(key)) return { ok: true, name, file: file || "SKILL.md", alreadyLoaded: true, note: "Already loaded earlier in this request - use what you read then, do not load it again." };
-        const r = sk.load(name, file);
-        skillsLoaded.add(name);
-        filesLoaded.add(key);
-        return r;
+      inputSchema: z.object({
+        // Several at once: the instructions name three or four skills for one request, and asking for them one at
+        // a time cost three or four model round trips before any work started.
+        name: z.union([z.string(), z.array(z.string()).max(6)]).describe("One skill name, or several to load in one go"),
+        file: z.string().optional().describe("e.g. references/theme-json.md (only with a single name)"),
+      }),
+      execute: async (a: { name: string | string[]; file?: string }) => safe(async () => {
+        /** One skill, remembered for this request so the same text is never paid for twice. */
+        const loadOne = (name: string, file?: string) => {
+          const key = name + "/" + (file || "SKILL.md");
+          if (filesLoaded.has(key)) return { ok: true, name, file: file || "SKILL.md", alreadyLoaded: true, note: "Already loaded earlier in this request - use what you read then, do not load it again." };
+          const r = sk!.load(name, file);
+          skillsLoaded.add(name);
+          filesLoaded.add(key);
+          return r;
+        };
+        if (Array.isArray(a.name)) return { ok: true, skills: a.name.map((n) => loadOne(n)) };
+        return loadOne(a.name, a.file);
       }),
     }),
   } : {};

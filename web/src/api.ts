@@ -32,7 +32,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 export interface TermItem { id: number; name: string; count: number }
 export interface MediaItem { id: number; url: string; full: string; alt: string; title: string }
-export interface SendArgs { prompt: string; fileIds: string[]; pageUrl?: string; selectedTarget?: string; approvalMode?: ApprovalMode; model?: string; extraContext?: string; kind?: "new" | "note" | "edit" }
+export interface SendArgs { prompt: string; fileIds: string[]; pageUrl?: string; selectedTarget?: string; approvalMode?: ApprovalMode; model?: string; extraContext?: string; kind?: "new" | "note" | "edit"; /** The person spoke this request: the backend runs it as a voice job. */ voice?: boolean }
 
 export const api = {
   health: () => request<{ ok: boolean; model: string; authRequired: boolean }>("GET", "/health"),
@@ -57,6 +57,9 @@ export const api = {
   saveProvider: (id: string, b: { apiKey?: string; baseUrl?: string; testModel?: string }) => request<{ ok: boolean; models: ProviderInfo[]; test?: { ok: boolean; reply?: string; ms: number } }>("PUT", `/integrations/models/${id}`, b),
   removeProvider: (id: string) => request<{ ok: boolean; models: ProviderInfo[] }>("DELETE", `/integrations/models/${id}`),
   models: () => request<ModelsReport>("GET", "/models"),
+  /** A short-lived key for ONE realtime voice call (the API key stays on the backend). */
+  realtimeSession: (b: { siteId?: string; botName?: string; pageUrl?: string }) =>
+    request<{ value: string; model: string; voice: string; expiresAt?: number; tuning?: Record<string, unknown> }>("POST", "/voice/realtime/session", b),
   testModel: (model: string) => request<{ ok: boolean; reply?: string; error?: string; ms: number }>("POST", "/integrations/models/test", { model }),
   jobs: () => request<JobSummary[]>("GET", "/jobs"),
   job: (id: string) => request<JobSummary>("GET", `/jobs/${id}`),
@@ -85,13 +88,28 @@ export const api = {
   saveHostinger: (token: string) => request<HostingerHealth>("PUT", "/integrations/hostinger", { token }),
   removeHostinger: () => request<HostingerHealth>("DELETE", "/integrations/hostinger"),
 
-  voiceInfo: () => request<{ available: boolean; voice: string; voices: string[] }>("GET", "/voice"),
-  /** Recorded speech -> text ("" when nothing was said). */
-  async transcribe(audio: Blob, signal?: AbortSignal): Promise<string> {
-    const res = await fetch("/voice/transcribe", { method: "POST", headers: authHeaders({ "Content-Type": audio.type || "audio/webm" }), body: audio, signal });
+  /**
+   * Voice capabilities. Passing the site and page also asks the backend to read the site's own words now, so
+   * that dictation does not have to wait for them later - see the warming note in server.ts.
+   */
+  voiceInfo: (of?: { siteId?: string; pageUrl?: string }) => {
+    const q = new URLSearchParams();
+    if (of?.siteId) q.set("siteId", of.siteId);
+    if (of?.pageUrl) q.set("pageUrl", of.pageUrl);
+    return request<{ available: boolean; voice: string; voices: string[]; stream?: { available: boolean } }>("GET", `/voice${q.toString() ? `?${q}` : ""}`);
+  },
+  /**
+   * Recorded speech -> text ("" when nothing was said). `ms` is how long the speech service itself took, so a slow
+   * turn can be split into upload time and service time instead of being called "voice is slow".
+   * The browser's language goes with it: without a language, two seconds of audio can be read as the wrong script.
+   */
+  async transcribe(audio: Blob, signal?: AbortSignal): Promise<{ text: string; ms: number }> {
+    const lang = (navigator.language || "").slice(0, 2).toLowerCase();
+    const res = await fetch(`/voice/transcribe${/^[a-z]{2}$/.test(lang) ? `?lang=${lang}` : ""}`,
+      { method: "POST", headers: authHeaders({ "Content-Type": audio.type || "audio/webm" }), body: audio, signal });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new ApiError(res.status, (data as any).error ?? `Transcription failed (HTTP ${res.status})`);
-    return String((data as any).text ?? "");
+    return { text: String((data as any).text ?? ""), ms: Number((data as any).ms) || 0 };
   },
   /** Text -> speech (mp3). */
   async speech(text: string, voice: string, signal?: AbortSignal): Promise<Blob> {

@@ -12,7 +12,11 @@
     "typecheck": "tsc --noEmit && cd web && tsc --noEmit",
     "demo": "node --import tsx test/demo.ts",
     "build:web": "cd web && npm install && npm run build",
-    "test:wp": "node --env-file-if-exists=.env --import tsx test/blog-real-wp.ts"
+    "test:wp": "node --env-file-if-exists=.env --import tsx test/blog-real-wp.ts",
+    "bench:discover": "node --env-file-if-exists=.env --import tsx test/bench/discover.ts",
+    "bench": "node --env-file-if-exists=.env --import tsx test/bench/run.ts",
+    "bench:clean": "node --env-file-if-exists=.env --import tsx test/bench/clean.ts",
+    "bench:voice": "node --env-file-if-exists=.env --import tsx test/bench/voice.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.71",
@@ -23,9 +27,11 @@
     "@ai-sdk/provider": "^4.0.21",
     "@hostinger/mcp": "^2.7.0",
     "@modelcontextprotocol/sdk": "^1.32.0",
+    "@types/ws": "^8.18.2",
     "ai": "^7.0.127",
     "lighthouse": "^12.8.2",
     "playwright-core": "^1.63.0",
+    "ws": "^8.22.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {

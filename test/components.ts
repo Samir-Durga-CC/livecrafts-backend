@@ -154,7 +154,12 @@ console.log("\n2b2) template guards: own section only, real content only, never 
   const job = runner.create(site.id, "add faq", undefined, [], { approvalMode: "request" });
   await runAll(runner, job.id);
   assert.match(out[0].error, /section of its own/); ok("a template inside another section's container is refused");
-  assert.match(out[1].error, /sample text/); ok("sample / placeholder content is refused: the agent must ask for real content");
+  // Sample wording is allowed through now: the section is a draft, and getting it on the page beats another
+  // round of questions. It must still be FLAGGED, so the answer can say what to replace before deploying.
+  assert.equal(out[1].error, undefined);
+  assert.equal(out[1].placeholders, true);
+  assert.ok((out[1].warnings ?? []).some((w: string) => /sample wording/i.test(w)));
+  ok("sample content is placed as a draft and flagged, not refused");
   assert.match(out[2].error, /not written by hand/); ok("a hand-written [ai_...] shortcode is refused");
 }
 

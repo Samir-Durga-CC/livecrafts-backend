@@ -6,6 +6,12 @@ export const config = {
   host: process.env.HOST ?? "127.0.0.1", // keep local until real auth exists
   dataDir: path.resolve(process.env.LC_DATA_DIR ?? "./data"),
   model: process.env.LC_MODEL ?? "gpt-5.5",
+  /**
+   * A faster model JUST for what the voice asks for ("provider:model", same syntax as LC_MODEL). Unset = the voice
+   * uses the same model as the chat. Voice requests also run at low reasoning effort either way, because a spoken
+   * request is a small edit the person is waiting for, not a design review.
+   */
+  voiceModel: process.env.LC_VOICE_MODEL ?? "",
   apiToken: process.env.LC_API_TOKEN ?? "",
   maxSteps: Number(process.env.LC_MAX_STEPS ?? 30),
   jobTimeoutMs: Number(process.env.LC_JOB_TIMEOUT_MS ?? 5 * 60_000),

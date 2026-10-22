@@ -1,4 +1,5 @@
 import { api } from "../api";
+import { voiceLog } from "./voicelog";
 
 /**
  * Hands-free voice for the chat: no button to press, no Enter.
@@ -21,21 +22,39 @@ export interface VoiceHandlers {
   onError: (message: string) => void;
   /** The browser refused to play sound until the person taps once (autoplay rules). */
   onBlocked: (blocked: boolean) => void;
+  /**
+   * The piece of the answer whose audio is starting now, and when it has finished.
+   *
+   * This is what lets the message on screen follow the voice. It reports the AUDIO, not the queue: text is
+   * handed over sentences ahead of what is being heard, so highlighting what was queued would run away from the
+   * reader - which is worse than not highlighting at all, because it looks like it is reading something else.
+   */
+  onSpeaking?: (part: { text: string; from: number; to: number }, done: boolean) => void;
 }
 
 const TICK = 50;
 const START_MS = 150;        // this long above the threshold = they started talking
-const END_MS = 900;          // this long quiet after talking = they finished
+const END_MS = 1000;         // this long quiet after talking = they finished (a thinking pause mid-sentence is shorter)
 const MIN_SPEECH_MS = 300;   // shorter = a click or a cough
-const MAX_UTTERANCE_MS = 30_000;
+const MAX_UTTERANCE_MS = 12_000; // a spoken instruction is never this long; waiting longer just feels broken
+const DROP_DB = 18;          // this far below the sentence's own loudness is a real pause, not the gap between words
+const SETTLE_MS = 1200;      // the relative test only applies once a sentence is under way
 const IDLE_SEGMENT_MS = 5_000; // an idle recording is restarted, so little silence is uploaded with the speech (faster)
-const BARGE_IN_MS = 280;     // talking this long over the answer interrupts it
+const BARGE_IN_MS = 220;     // talking this long over the answer interrupts it
+const BARGE_IN_SHORT_MS = 140; // ... and a short word like "yes" or "stop" is allowed to cut in sooner
 
 interface Segment { rec: MediaRecorder; parts: Blob[]; keep: boolean }
 
 export class VoiceAgent {
   voice = "onyx";
   speakReplies = true;
+  /** How fast the answer is played. The model's own pace is set server-side; this works whatever the model does. */
+  rate = 1.15;
+  /**
+   * The assistant has asked something and is waiting for a word back ("yes", "no", an answer to the form). While
+   * that is true a short reply cuts in faster: nobody waits politely for a question to finish being read out.
+   */
+  expectingShortAnswer = false;
   /** Mic level 0..1 for the animated orb (set by the UI; called 20 times a second). */
   levelSink: ((level: number) => void) | null = null;
 
@@ -49,14 +68,24 @@ export class VoiceAgent {
   private seg: Segment | null = null;
   private timer = 0;
   private noise = -55;
+  /** The last level and the bar it has to cross, so the UI can explain silence instead of just waiting. */
+  level = { db: -99, threshold: -44, recording: false, heardAt: 0 };
   private above = 0;
   private below = 0;
   private talking = false;
   private talkMs = 0;
+  private peak = -99;        // how loud this sentence has been: the pause is measured against it, not a fixed bar
   private segMs = 0;
   private transcribing = 0;
   // speaking
-  private queue: string[] = [];
+  /**
+   * Each piece to be spoken, with the span of the answer it came from.
+   *
+   * `say` is given a run of text and splits it into sentences of its own, so the caller cannot tell from the
+   * text alone how far through the answer the voice has got - and matching the spoken words back against the
+   * message fails as soon as the markdown is cleaned up before speaking. The span travels with the piece instead.
+   */
+  private queue: { text: string; from: number; to: number }[] = [];
   private playing = false;
   private audio: HTMLAudioElement | null = null;
   private finishClip: (() => void) | null = null;
@@ -70,6 +99,26 @@ export class VoiceAgent {
   constructor(h: VoiceHandlers) { this.h = h; }
 
   get active() { return this.state !== "off"; }
+
+  /**
+   * The voice, without the ears.
+   *
+   * In streaming voice mode the microphone belongs to Dictation, which is doing its own capture and its own
+   * transcription - but the answers still have to be read aloud, and this is what knows how to do that (chunking
+   * into sentences, prefetching the next one, interrupting cleanly). Opening a second microphone here would take
+   * a second device stream for nothing and leave two detectors listening to the same room.
+   *
+   * `playNext` waits on `talking`, which nothing sets in this mode, and every path it uses checks `state`, so
+   * announcing "listening" is enough to make it speak and nothing more.
+   */
+  async startSpeaker(): Promise<boolean> {
+    if (this.state !== "off") return true;
+    this.server = true;
+    this.ctx = new AudioContext();
+    await this.ctx.resume().catch(() => {});
+    this.set("listening");
+    return true;
+  }
 
   /** Open the microphone and start listening. false when it could not start (the reason went to onError). */
   async start(serverVoice: boolean): Promise<boolean> {
@@ -118,11 +167,26 @@ export class VoiceAgent {
   }
 
   /** Read text aloud (markdown is cleaned up first). Queued after anything still being said. */
-  say(text: string) {
+  say(text: string, span?: { from: number; to: number }) {
     if (!this.speakReplies || this.state === "off") return;
     const parts = speechChunks(text);
     if (!parts.length) return;
-    this.queue.push(...parts);
+    /**
+     * Where each sentence of this run sits in the answer.
+     *
+     * The run covers span.from..span.to of the message; its sentences are apportioned across that by their own
+     * length, so a long sentence holds the highlight longer than a short one. It is proportional rather than
+     * exact - the text that is spoken has had its markdown removed - and proportional is enough to follow a
+     * voice with.
+     */
+    const total = parts.reduce((n, pt) => n + pt.length, 0) || 1;
+    let at = span?.from ?? 0;
+    const width = span ? span.to - span.from : 0;
+    this.queue.push(...parts.map((pt) => {
+      const from = at;
+      at += (pt.length / total) * width;
+      return { text: pt, from: Math.round(from), to: Math.round(at) };
+    }));
     if (!this.playing) { this.playing = true; void this.playNext(); }
   }
 
@@ -154,20 +218,38 @@ export class VoiceAgent {
 
   // ------------------------------------------------------------------ listening
 
-  private set(s: VoiceState) { if (this.state !== s) { this.state = s; this.h.onState(s); } }
+  private set(s: VoiceState) {
+    if (this.state === s) return;
+    // The old engine decides turns itself, so what it thought it heard is the evidence that matters.
+    if (s === "hearing") voiceLog.add("speech.started", { whileSpeaking: this.state === "speaking", db: Math.round(this.level.db), threshold: Math.round(this.level.threshold) });
+    if (s === "transcribing") voiceLog.add("speech.stopped", { talkMs: this.talkMs });
+    if (s === "speaking") voiceLog.add("reply.first-audio");
+    this.state = s;
+    this.h.onState(s);
+  }
 
   private newSegment() {
     if (!this.stream || this.seg) return;
     const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find((m) => MediaRecorder.isTypeSupported?.(m));
     let rec: MediaRecorder;
-    try { rec = new MediaRecorder(this.stream, mime ? { mimeType: mime, audioBitsPerSecond: 48_000 } : undefined); }
-    catch { rec = new MediaRecorder(this.stream); }
+    try {
+      rec = new MediaRecorder(this.stream, mime ? { mimeType: mime, audioBitsPerSecond: 48_000 } : undefined);
+    } catch {
+      try { rec = new MediaRecorder(this.stream); }
+      catch (e) {
+        // Without a recorder the microphone is open but nothing is ever captured: say so instead of listening forever.
+        this.level.recording = false;
+        this.h.onError(`This browser cannot record from that microphone (${(e as Error).message}). Try Chrome or Edge, or another input device.`);
+        return;
+      }
+    }
     const seg: Segment = { rec, parts: [], keep: false };
     rec.ondataavailable = (e) => { if (e.data.size) seg.parts.push(e.data); };
     rec.onstop = () => { if (seg.keep && seg.parts.length) void this.transcribe(new Blob(seg.parts, { type: rec.mimeType || mime || "audio/webm" })); };
     rec.start(250);
     this.seg = seg;
     this.segMs = 0;
+    this.level.recording = true;
   }
 
   private endSegment(keep: boolean) {
@@ -185,15 +267,21 @@ export class VoiceAgent {
     for (let i = 0; i < this.samples.length; i++) sum += this.samples[i] * this.samples[i];
     const db = 20 * Math.log10(Math.sqrt(sum / this.samples.length) + 1e-9);
     this.levelSink?.(Math.max(0, Math.min(1, (db + 62) / 44)));
+    this.level.db = db;
+    this.level.threshold = Math.min(-26, Math.max(-52, this.noise + 11));
+    this.level.recording = !!this.seg;
+    if (this.state === "hearing" || this.state === "transcribing") this.level.heardAt = Date.now();
 
     if (this.state === "speaking") {
-      // talking over the answer interrupts it (a stricter bar: the answer itself may leak into the microphone)
-      const loud = db > Math.max(this.noise + 24, -34);
+      // Talking over the answer interrupts it. The bar is higher than normal speech because the answer itself can
+      // leak into the microphone - but not so high that "yes" or "stop", said at a normal volume, is ignored, which
+      // is what made it feel like it would not listen until it had finished.
+      const loud = db > Math.max(this.noise + 16, -42);
       this.above = loud ? this.above + TICK : 0;
-      if (this.above >= BARGE_IN_MS) {
+      if (this.above >= (this.expectingShortAnswer ? BARGE_IN_SHORT_MS : BARGE_IN_MS)) {
         this.stopSpeaking();
         this.newSegment();
-        this.talking = true; this.talkMs = this.above; this.below = 0; this.above = 0;
+        this.talking = true; this.talkMs = this.above; this.below = 0; this.above = 0; this.peak = db;
         this.set("hearing");
       }
       return;
@@ -205,7 +293,7 @@ export class VoiceAgent {
     if (!this.talking) {
       if (db > threshold) {
         this.above += TICK;
-        if (this.above >= START_MS) { this.talking = true; this.talkMs = this.above; this.below = 0; this.set("hearing"); }
+        if (this.above >= START_MS) { this.talking = true; this.talkMs = this.above; this.below = 0; this.peak = db; this.set("hearing"); }
       } else {
         this.above = 0;
         this.noise = Math.max(-75, Math.min(-35, this.noise * 0.97 + db * 0.03)); // follow the room's background noise
@@ -214,10 +302,24 @@ export class VoiceAgent {
       return;
     }
     this.talkMs += TICK;
-    this.below = db < threshold - 3 ? this.below + TICK : 0;
+    this.peak = Math.max(this.peak - 0.05, db); // decays slowly, so one loud word does not set the bar for ever
+    // Finished speaking = quiet for the room OR clearly quieter than this sentence has been. The second test is what
+    // makes it work in a noisy room, where the background alone never falls under the first.
+    // Quiet for the room, or clearly quieter than this sentence has been. The second test is what makes it work in a
+    // noisy room - but only once they are properly under way, or the gap after the first word ends the sentence.
+    const quiet = db < threshold - 3 || (this.talkMs > SETTLE_MS && db < this.peak - DROP_DB);
+    this.below = quiet ? this.below + TICK : 0;
     if (this.below >= END_MS || this.talkMs >= MAX_UTTERANCE_MS) {
       const keep = this.talkMs - this.below >= MIN_SPEECH_MS;
-      this.talking = false; this.above = 0; this.below = 0;
+      // Cut by the clock, never by a pause: in twelve seconds this room never went quiet, so the bar is too low for
+      // it (a fan, traffic, an open window) and everything counts as speech. The person then waits chunk after
+      // chunk, and near-silence gets transcribed into words nobody said. Raise the floor to what was just measured;
+      // if it is still too low, the next cut raises it again.
+      if (this.below < END_MS) {
+        this.noise = Math.min(-35, Math.max(-75, this.peak - 12));
+        voiceLog.add("vad.floor-raised", { noise: Math.round(this.noise), peak: Math.round(this.peak), talkMs: this.talkMs });
+      }
+      this.talking = false; this.above = 0; this.below = 0; this.peak = -99;
       this.endSegment(keep);
       this.newSegment();
       this.set(keep ? "transcribing" : "listening");
@@ -227,9 +329,14 @@ export class VoiceAgent {
   private async transcribe(audio: Blob) {
     this.transcribing++;
     try {
-      const text = (await api.transcribe(audio)).trim();
+      const began = Date.now();
+      const r = await api.transcribe(audio);
+      const text = r.text.trim();
+      // Both numbers, so a slow turn says WHERE it was slow: ms - serverMs is the upload, serverMs is the service.
+      voiceLog.add("heard", { text, bytes: audio.size, ms: Date.now() - began, serverMs: r.ms });
       if (text && this.state !== "off") { this.chime("heard"); this.h.onUtterance(text); }
     } catch (e) {
+      voiceLog.add("error", { message: (e as Error).message, where: "transcribe" });
       if (this.state !== "off") this.h.onError((e as Error).message);
     } finally {
       this.transcribing--;
@@ -242,18 +349,22 @@ export class VoiceAgent {
   private async playNext(): Promise<void> {
     // never talk over the person: wait until they finished their sentence (it is being recorded)
     while (this.talking && this.state !== "off") await new Promise((r) => window.setTimeout(r, 150));
-    const text = this.queue.shift();
-    if (!text || this.state === "off") return this.doneSpeaking();
+    const part = this.queue.shift();
+    if (!part || this.state === "off") return this.doneSpeaking();
+    const text = part.text;
     this.pauseListening();
     this.set("speaking");
     const signal = this.abort.signal;
     try {
-      if (!this.server) await this.speakWithBrowser(text);
+      if (!this.server) { this.h.onSpeaking?.(part, false); await this.speakWithBrowser(text); this.h.onSpeaking?.(part, true); }
       else {
         const clip = await this.fetchSpeech(text, signal);
-        if (this.queue[0]) void this.fetchSpeech(this.queue[0], signal).catch(() => {}); // prepare the next sentence meanwhile
+        if (this.queue[0]) void this.fetchSpeech(this.queue[0].text, signal).catch(() => {}); // prepare the next sentence meanwhile
         if (signal.aborted) return this.doneSpeaking();
+        // Said around play(), not around fetch: the fetch is where the waiting is, and nothing is audible yet.
+        this.h.onSpeaking?.(part, false);
         await this.play(clip);
+        this.h.onSpeaking?.(part, true);
       }
     } catch (e) {
       if (!signal.aborted && (this.state as VoiceState) !== "off") { this.queue = []; this.h.onError((e as Error).message); } // it may have been stopped meanwhile
@@ -277,6 +388,8 @@ export class VoiceAgent {
       this.finishClip = done;
       audio.onended = done;
       audio.onerror = done;
+      audio.preservesPitch = true; // faster, not higher
+      audio.playbackRate = Math.min(2, Math.max(0.6, this.rate));
       audio.src = url;
       audio.play().catch((e) => {
         if ((e as DOMException)?.name === "NotAllowedError") { // autoplay rules: wait for one tap
@@ -304,17 +417,7 @@ export class VoiceAgent {
   private flushIdle() { const w = this.idle; this.idle = []; w.forEach((f) => f()); }
 
   /** Two short soft tones: listening started / I heard you. */
-  private chime(kind: "start" | "heard") {
-    const ctx = this.ctx;
-    if (!ctx) return;
-    const tones = kind === "start" ? [660, 880] : [880];
-    tones.forEach((hz, i) => {
-      const o = ctx.createOscillator(), g = ctx.createGain(), t = ctx.currentTime + i * 0.09;
-      o.type = "sine"; o.frequency.value = hz;
-      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.05, t + 0.015); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
-      o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.18);
-    });
-  }
+  private chime(kind: "start" | "heard") { if (this.ctx) chime(this.ctx, kind); }
 
   // ------------------------------------------------------------------ without the backend: the browser's own speech
 
@@ -363,6 +466,22 @@ function micProblem(e: unknown): string {
   if (name === "NotFoundError" || name === "OverconstrainedError") return "No microphone was found on this computer.";
   if (name === "NotReadableError") return "The microphone is in use by another app.";
   return `The microphone could not be opened: ${(e as Error)?.message ?? name}`;
+}
+
+/**
+ * Two short soft tones when listening starts, one when something was heard.
+ *
+ * Exported because dictation needs the SAME sound: the beep is how a person knows the microphone is live before
+ * they start talking, and two different beeps for two ways of listening would just be confusing.
+ */
+export function chime(ctx: AudioContext, kind: "start" | "heard") {
+  const tones = kind === "start" ? [660, 880] : [880];
+  tones.forEach((hz, i) => {
+    const o = ctx.createOscillator(), g = ctx.createGain(), t = ctx.currentTime + i * 0.09;
+    o.type = "sine"; o.frequency.value = hz;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.05, t + 0.015); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+    o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.18);
+  });
 }
 
 /** Markdown -> plain words worth saying (no code, links or symbols). Long answers are cut to their start. */

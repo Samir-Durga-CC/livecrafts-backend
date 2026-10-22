@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Icon } from "../icons";
 
 /**
@@ -10,14 +10,20 @@ import { Icon } from "../icons";
  */
 export interface AskQuestion { key: string; question: string; options?: string[]; placeholder?: string; optional?: boolean }
 
-export function AskForm({ intro, questions, busy, onSend }: {
+export function AskForm({ intro, questions, busy, onSend, onTouch }: {
   intro?: string;
   questions: AskQuestion[];
   busy: boolean;
   onSend: (text: string) => void;
+  /** The moment they start answering - voice mode stops reading the questions out. */
+  onTouch?: () => void;
 }) {
   const [answers, setAnswers] = useState<Record<string, string>>({});
-  const set = (k: string, v: string) => setAnswers((a) => ({ ...a, [k]: v }));
+  const touched = useRef(false);
+  const set = (k: string, v: string) => {
+    if (!touched.current) { touched.current = true; onTouch?.(); }
+    setAnswers((a) => ({ ...a, [k]: v }));
+  };
 
   const missing = useMemo(
     () => questions.filter((q) => !q.optional && !(answers[q.key] ?? "").trim()).length,

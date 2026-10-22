@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 import fs from "node:fs";
 import path from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
+import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 import { config } from "./config.js";
 import { newId } from "./store.js";
 import { measureComponent, type ComponentReport } from "./library/check.js";
@@ -14,6 +14,19 @@ import { measureComponent, type ComponentReport } from "./library/check.js";
  * Only URLs on the site's own origin are allowed.
  */
 let browserP: Promise<Browser> | null = null;
+
+/**
+ * One browser context per site and screen size, kept open between checks.
+ *
+ * A context is a profile: its own cookies, and its own HTTP CACHE. Building a new one for every page open - which
+ * is what this did - means every check re-downloads the theme's CSS, its JavaScript, its fonts and every image,
+ * on a site that has just served them. Measured on a real page: 2.0s every time with a new context, 0.65s once a
+ * reused one has them cached, and `make_change` opens four or five pages per change.
+ *
+ * Pages are still created and closed per check; only the profile survives. A context whose browser has gone is
+ * dropped and rebuilt, and closeBrowser() takes them all with it.
+ */
+const contexts = new Map<string, Promise<BrowserContext>>();
 
 async function launch(): Promise<Browser> {
   const tries: Array<() => Promise<Browser>> = [];
@@ -31,7 +44,10 @@ export async function getBrowser() {
   return b;
 }
 
-export async function closeBrowser() { if (browserP) { const b = await browserP.catch(() => null); browserP = null; await b?.close().catch(() => {}); } }
+export async function closeBrowser() {
+  contexts.clear(); // closing the browser closes its contexts; the map must not outlive it
+  if (browserP) { const b = await browserP.catch(() => null); browserP = null; await b?.close().catch(() => {}); }
+}
 
 export const DEVICES = { desktop: { width: 1366, height: 850 }, tablet: { width: 820, height: 1180 }, mobile: { width: 390, height: 844 } } as const;
 export type Device = keyof typeof DEVICES;
@@ -51,42 +67,72 @@ export const cleanUrl = (u: string) => { try { const x = new URL(u); x.searchPar
 /** How a page is looked at: preview = a preview token (draft view); none = as a visitor (live site). */
 export interface View { preview?: string }
 
-async function openPage(siteUrl: string, url: string | undefined, device: Device, view: View = {}, before?: (page: Page) => void) {
-  const b = await getBrowser();
-  const ctx = await b.newContext({
-    viewport: DEVICES[device], deviceScaleFactor: 1, ignoreHTTPSErrors: true,
-    // An allow-list header / user agent the site owner configured (LC_BROWSER_HEADERS / LC_BROWSER_USER_AGENT), only sent to the site's own origin.
-    userAgent: config.browserUserAgent || undefined,
-  });
+/** The context for this site and screen size, built once and then reused. */
+async function contextFor(siteUrl: string, device: Device): Promise<BrowserContext> {
   const origin = new URL(siteUrl + "/").origin;
-  if (Object.keys(config.browserHeaders).length) {
-    await ctx.route("**/*", (route) => {
-      const req = route.request();
-      if (new URL(req.url()).origin !== origin) return route.continue();
-      return route.continue({ headers: { ...req.headers(), ...config.browserHeaders } });
-    });
+  const key = `${origin}|${device}`;
+  const existing = contexts.get(key);
+  if (existing) {
+    const ctx = await existing.catch(() => null);
+    if (ctx && ctx.browser()?.isConnected()) return ctx;
+    contexts.delete(key); // its browser died (a crash, closeBrowser): build a fresh one below
   }
-  // The server runs through tsx/esbuild, which wraps named functions in __name(); code sent to the page needs it too.
-  await ctx.addInitScript("window.__name = window.__name || ((f) => f);");
+  const made = (async () => {
+    const b = await getBrowser();
+    const ctx = await b.newContext({
+      viewport: DEVICES[device], deviceScaleFactor: 1, ignoreHTTPSErrors: true,
+      // An allow-list header / user agent the site owner configured (LC_BROWSER_HEADERS / LC_BROWSER_USER_AGENT), only sent to the site's own origin.
+      userAgent: config.browserUserAgent || undefined,
+    });
+    if (Object.keys(config.browserHeaders).length) {
+      await ctx.route("**/*", (route) => {
+        const req = route.request();
+        if (new URL(req.url()).origin !== origin) return route.continue();
+        return route.continue({ headers: { ...req.headers(), ...config.browserHeaders } });
+      });
+    }
+    // The server runs through tsx/esbuild, which wraps named functions in __name(); code sent to the page needs it too.
+    await ctx.addInitScript("window.__name = window.__name || ((f) => f);");
+    return ctx;
+  })();
+  contexts.set(key, made);
+  made.catch(() => contexts.delete(key));
+  return made;
+}
+
+/**
+ * `settle` says how long to wait before reading the page.
+ *
+ *   "load"   stylesheets and images are in - what every check here is written against. The default.
+ *   "idle"   also waits for the network to go quiet, for when final geometry is the question (component checks).
+ *
+ * It used to always be "idle", which on a page with analytics or a chat widget never arrives: measured on a real
+ * site it hit the 30-second timeout on every single open. "load" sees the same page - same text, same 41 of 48
+ * images - without that risk. "domcontentloaded" would be faster still and is NOT used: it sees 12 of 48 images,
+ * and a broken-image check that runs before the images load is not a check.
+ */
+async function openPage(siteUrl: string, url: string | undefined, device: Device, view: View = {}, before?: (page: Page) => void, settle: "load" | "idle" = "load") {
+  const ctx = await contextFor(siteUrl, device);
   const page = await ctx.newPage();
   before?.(page);
   const target = sameOrigin(siteUrl, url, view.preview);
-  const response = await page.goto(target, { waitUntil: "networkidle", timeout: 30_000 }).catch(() => page.goto(target, { waitUntil: "load", timeout: 30_000 }));
+  const response = await page.goto(target, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => null);
+  await page.waitForLoadState(settle === "idle" ? "networkidle" : "load", { timeout: settle === "idle" ? 10_000 : 15_000 }).catch(() => { /* a page that never settles is read as it stands */ });
   const status = response ? response.status() : null;
   // Hosting/CDN bot protection shows a "checking your browser" page to automated browsers - say so, never pretend
   const check = await page.evaluate(() => ({ title: document.title, text: (document.body?.innerText ?? "").slice(0, 600), size: document.body?.innerText.length ?? 0 })).catch(() => null);
   if (check && /just a moment|checking (your|the) browser|verify(ing)? (that )?you are (a )?human|attention required|ddos protection|security check|enable javascript and cookies/i.test(check.title + " " + check.text) && check.size < 3000) {
-    await ctx.close();
+    await page.close().catch(() => {});
     throw new Error("BOT_CHECK: the site's bot protection showed a 'checking your browser' page to the server's browser, so it cannot see the page. Fix for the site owner: in the host's security settings (WAF / bot protection) add a rule that allows requests carrying a secret header, then set LC_BROWSER_HEADERS={\"X-Livecrafts-Check\":\"<secret>\"} in the backend .env and restart it. Until then ask the person to open the Livecrafts widget on this page (then you look through their own browser). Nothing was checked: do not claim the page looks right.");
   }
-  return { ctx, page, status };
+  return { page, status };
 }
 
 const PROPS = ["color", "background-color", "background-image", "font-family", "font-size", "font-weight", "line-height", "letter-spacing", "text-transform", "text-align", "margin", "padding", "border-radius", "display"];
 
 export async function inspectElement(siteUrl: string, a: { url?: string; text?: string; selector?: string; device?: Device }, view: View = {}) {
   if (!a.text && !a.selector) throw new Error("Give the visible text of the element (text) or a CSS selector.");
-  const { ctx, page } = await openPage(siteUrl, a.url, a.device ?? "desktop", view);
+  const { page } = await openPage(siteUrl, a.url, a.device ?? "desktop", view);
   try {
     const found = await page.evaluate(({ text, selector, PROPS }) => {
       const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
@@ -127,7 +173,7 @@ export async function inspectElement(siteUrl: string, a: { url?: string; text?: 
       if (typeof r.stylesheet === "string" && r.stylesheet.startsWith(siteUrl + "/")) r.file = r.stylesheet.slice(siteUrl.length + 1).split("?")[0];
     }
     return { ok: true, url: cleanUrl(page.url()), ...found, howToRead: "computed = what the visitor sees. rules = every CSS rule that sets those properties, in cascade order (later ones win unless !important). Edit the rule in `file` that sets the property." };
-  } finally { await ctx.close(); }
+  } finally { await page.close().catch(() => {}); }
 }
 
 /**
@@ -135,7 +181,7 @@ export async function inspectElement(siteUrl: string, a: { url?: string; text?: 
  * buttons, container width, spacing, CSS variables and the breakpoints the theme uses. New work should match these.
  */
 export async function analyzeDesign(siteUrl: string, a: { url?: string; device?: Device }, view: View = {}) {
-  const { ctx, page } = await openPage(siteUrl, a.url, a.device ?? "desktop", view);
+  const { page } = await openPage(siteUrl, a.url, a.device ?? "desktop", view);
   try {
     const data = await page.evaluate(() => {
       const cs = (el: Element) => getComputedStyle(el);
@@ -216,12 +262,12 @@ export async function analyzeDesign(siteUrl: string, a: { url?: string; device?:
       };
     });
     return { ok: true, url: cleanUrl(page.url()), ...data, howToUse: "Reuse these fonts, sizes, colours (prefer the CSS variables), radii, spacing and breakpoints so new work looks native to this site." };
-  } finally { await ctx.close(); }
+  } finally { await page.close().catch(() => {}); }
 }
 
 /** The visible content of a page: title, headings, text, images, links - what a visitor actually reads. */
 export async function readPage(siteUrl: string, a: { url?: string; device?: Device }, view: View = {}) {
-  const { ctx, page } = await openPage(siteUrl, a.url, a.device ?? "desktop", view);
+  const { page } = await openPage(siteUrl, a.url, a.device ?? "desktop", view);
   try {
     const data = await page.evaluate(() => ({
       title: document.title,
@@ -231,12 +277,12 @@ export async function readPage(siteUrl: string, a: { url?: string; device?: Devi
       links: Array.from(document.querySelectorAll("a[href]")).slice(0, 50).map((l) => ({ text: (l.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 60), href: (l as HTMLAnchorElement).href })),
     }));
     return { ok: true, url: cleanUrl(page.url()), ...data };
-  } finally { await ctx.close(); }
+  } finally { await page.close().catch(() => {}); }
 }
 
 export async function screenshotPage(siteUrl: string, a: { url?: string; selector?: string; text?: string; device?: Device; fullPage?: boolean }, view: View = {}) {
   const device = a.device ?? "desktop";
-  const { ctx, page } = await openPage(siteUrl, a.url, device, view);
+  const { page } = await openPage(siteUrl, a.url, device, view);
   try {
     const dir = path.join(config.dataDir, "screens");
     fs.mkdirSync(dir, { recursive: true });
@@ -260,7 +306,7 @@ export async function screenshotPage(siteUrl: string, a: { url?: string; selecto
       }
     } else await page.screenshot({ path: file, timeout: 20_000 });
     return { ok: true, screenshotId: id, device, target, url: cleanUrl(page.url()), note };
-  } finally { await ctx.close(); }
+  } finally { await page.close().catch(() => {}); }
 }
 
 export function screenshotPath(id: string) {
@@ -298,10 +344,11 @@ export interface PageAudit {
 export async function auditPage(siteUrl: string, a: { url?: string; device?: Device; selector?: string; declarations?: Record<string, string>; shot?: boolean; component?: string }, view: View = {}): Promise<PageAudit> {
   const device = a.device ?? "desktop";
   const consoleErrors: string[] = [];
-  const { ctx, page, status } = await openPage(siteUrl, a.url, device, view, (p) => {
+  const { page, status } = await openPage(siteUrl, a.url, device, view, (p) => {
     p.on("console", (m) => { if (m.type() === "error" && consoleErrors.length < 10) consoleErrors.push(m.text().slice(0, 200)); });
     p.on("pageerror", (e) => { if (consoleErrors.length < 10) consoleErrors.push(String(e.message).slice(0, 200)); });
-  });
+    // Measuring a placed component means measuring final geometry, so that one waits for the network to go quiet.
+  }, a.component ? "idle" : "load");
   try {
     const data = await page.evaluate(({ selector, declarations }) => {
       const body = document.body;
@@ -361,7 +408,7 @@ export async function auditPage(siteUrl: string, a: { url?: string; device?: Dev
       lines: data.text.split(/\n+/).map((l: string) => l.replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 2000),
       element: data.element, component, shot,
     };
-  } finally { await ctx.close(); }
+  } finally { await page.close().catch(() => {}); }
 }
 
 /**
@@ -399,7 +446,7 @@ export async function compareShots(a: Buffer, b: Buffer): Promise<{ changed: num
       }
       return { changed: Math.round(changedPx / (W * h) * 1000) / 10, bands };
     }, { a: "data:image/jpeg;base64," + a.toString("base64"), b: "data:image/jpeg;base64," + b.toString("base64") });
-  } finally { await ctx.close(); }
+  } finally { await ctx.close().catch(() => {}); } // this one builds its own throwaway context: no site, no cache to keep
 }
 
 /**

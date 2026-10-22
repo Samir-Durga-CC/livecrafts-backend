@@ -1,4 +1,5 @@
 import http from "node:http";
+import { WebSocketServer, WebSocket } from "ws";
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
@@ -19,7 +20,10 @@ import { log } from "./usage.js";
 import { eyes } from "./eyes.js";
 import { assistantSettings, forgetAssistantSettings } from "./persona.js";
 import { closeBrowser, screenshotPath } from "./browser.js";
-import { speak, transcribe, voiceInfo } from "./voice.js";
+import { speak, siteWordsFromMap, transcribe, voiceInfo } from "./voice.js";
+import { Dictation, DICTATE_RATE, dictateModel } from "./dictation.js";
+import { voiceSession } from "./sessions.js";
+import { createSession as createRealtimeSession, realtimeAvailable, realtimeModel, realtimeVoice } from "./realtime.js";
 import { defaultSpeedRuns, needsLocalRun, runSummary, runView, sameHost, type SpeedDevice, type SpeedRuns } from "./pagespeed.js";
 
 export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: FileStore, opts: { speed?: SpeedRuns } = {}) {
@@ -49,10 +53,11 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
   const requestOpts = (b: any, caller: Caller) => ({
     approvalMode: b.approvalMode, model: typeof b.model === "string" ? b.model.trim() : undefined, kind: ["new", "note", "edit"].includes(b.kind) ? b.kind : undefined,
     pageUrl: typeof b.pageUrl === "string" && /^https?:\/\//.test(b.pageUrl) ? b.pageUrl : undefined,
+    voice: b.voice === true,
     actor: caller.via === "widget" ? { token: caller.token, name: caller.user.name, login: caller.user.login } : undefined,
   });
   // What the chat inside the WordPress widget may call (with its signed per-person token).
-  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/sites|POST \/voice\/(transcribe|speak)|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms|pagespeed)|(POST \/sites\/[\w-]+\/pagespeed|GET \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+|PUT \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+\/fix|GET \/sites\/[\w-]+\/plugins(\/(history|versions|jobs\/plj_[a-f0-9]+))?|POST \/sites\/[\w-]+\/plugins\/(update|rollback))|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
+  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/sites|POST \/voice\/(transcribe|speak|realtime\/session)|GET \/voice\/stream|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms|pagespeed)|(POST \/sites\/[\w-]+\/pagespeed|GET \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+|PUT \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+\/fix|GET \/sites\/[\w-]+\/plugins(\/(history|versions|jobs\/plj_[a-f0-9]+))?|POST \/sites\/[\w-]+\/plugins\/(update|rollback))|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
 
   async function readBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
     const chunks: Buffer[] = []; let size = 0;
@@ -76,6 +81,25 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
   }
   const fileIdsOf = (b: any): string[] => (Array.isArray(b.fileIds) ? b.fileIds.map(String) : []);
 
+  /**
+   * Read the site ONCE for a voice session: status, notes and the page map, in parallel, into the session's cache
+   * (sessions.ts). Every turn of that session then starts with all three in hand instead of fetching them again,
+   * and the page map also gives the vocabulary hint the realtime engine needs to hear the site's own names.
+   * Best effort: a site that cannot be reached must not stop the voice from starting.
+   */
+  async function warmVoiceSession(site: Site, pageUrl?: string): Promise<string> {
+    const cache = voiceSession(site.id, pageUrl);
+    const bridge = new Bridge(site);
+    const url = pageUrl || bridge.homeUrl;
+    const [map] = await Promise.all([
+      cache.get(`map:${url}:draft`, () => bridge.map({ url, view: "draft" })).catch(() => null),
+      cache.get("status", () => bridge.status()).catch(() => null),
+    ]);
+    const post = Number((map as any)?.post?.id) || undefined;
+    await cache.get(`notes:${post ?? ""}`, () => bridge.notes(post)).catch(() => null);
+    return map ? siteWordsFromMap(map) : "";
+  }
+
   // The chat UI is a static React build in web/dist, served from the same origin (so no CORS, and the plugin can iframe it).
   const webRoot = path.resolve(process.cwd(), "web", "dist");
   const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".woff2": "font/woff2", ".map": "application/json" };
@@ -90,7 +114,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     return true;
   }
 
-  return http.createServer(async (req, res) => {
+  const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://x");
     const route = `${req.method} ${url.pathname}`;
     try {
@@ -378,10 +402,47 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       if (m && req.method === "POST") { const s = sites.get(m[1]); if (!s) return send(res, 404, { error: "Unknown site" }); return send(res, 200, await new Bridge(s).ping()); }
 
       // ---- voice: what the person says -> text; the assistant's answer -> speech
-      if (route === "GET /voice") return send(res, 200, voiceInfo());
+      if (route === "GET /voice") {
+        /**
+         * Warm the site's own words while the person is still deciding to press the button.
+         *
+         * They are what keeps "AEROMATIC" from being heard as "aromatic", but reading them means reading the
+         * site - seconds on a slow host - and the dictation socket only waits 400ms for them before starting
+         * without. The widget asks for this endpoint when it opens, so the read happens then and the cache is
+         * warm by the time anybody speaks. Fire and forget: nothing here waits for it.
+         */
+        const ws = sites.get(String(url.searchParams.get("siteId") ?? ""));
+        const wp = url.searchParams.get("pageUrl");
+        if (ws) void warmVoiceSession(ws, wp && /^https?:\/\//.test(wp) ? wp.slice(0, 300) : undefined).catch(() => {});
+        return send(res, 200, {
+        ...voiceInfo(),
+        realtime: { available: realtimeAvailable(), model: realtimeModel(), voice: realtimeVoice() },
+        // Streaming dictation: words while you talk. The widget falls back to uploading a file when it is off.
+        stream: { available: realtimeAvailable(), model: dictateModel(), rate: DICTATE_RATE },
+        });
+      }
+      // A short-lived client secret for ONE realtime call. The API key never leaves this machine.
+      if (route === "POST /voice/realtime/session") {
+        const b = await readJson(req).catch(() => ({} as any));
+        const site = typeof b.siteId === "string" ? sites.get(b.siteId) : undefined;
+        const voicePage = typeof b.pageUrl === "string" && /^https?:\/\//.test(b.pageUrl) ? b.pageUrl.slice(0, 300) : undefined;
+        // The site is read once here, so the first thing the person says does not wait for it - and its own words go
+        // to the realtime model, which otherwise hears "AEROMATIC" as "aromatic".
+        const siteWords = site ? await warmVoiceSession(site, voicePage) : "";
+        try {
+          return send(res, 200, await createRealtimeSession({
+            botName: typeof b.botName === "string" ? b.botName.slice(0, 60) : undefined,
+            siteName: site?.name,
+            pageUrl: voicePage,
+            siteWords,
+          }));
+        } catch (e) {
+          return send(res, (e as any).status ?? 502, { error: (e as Error).message });
+        }
+      }
       if (route === "POST /voice/transcribe") {
         const buf = await readBody(req, 12_000_000);
-        return send(res, 200, await transcribe(buf, String(req.headers["content-type"] ?? "")));
+        return send(res, 200, await transcribe(buf, String(req.headers["content-type"] ?? ""), "", String(url.searchParams.get("lang") ?? "")));
       }
       if (route === "POST /voice/speak") {
         const b = await readJson(req);
@@ -470,6 +531,85 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       return send(res, status, { error: (e as Error).message });
     }
   });
+
+  /**
+   * Dictation, streamed: /voice/stream.
+   *
+   * The widget opens this socket, says which site and page it is on, and then sends raw 16-bit PCM at
+   * DICTATE_RATE as it records, with a "commit" whenever its own voice detector says a sentence ended. Words come
+   * back as they are heard. The OpenAI key stays here (see dictation.ts).
+   *
+   * The site is named so the session can be given the site's OWN words - the page map is already read and cached
+   * for every voice session, and it is the difference between "AEROMATIC" and "aromatic".
+   */
+  const wss = new WebSocketServer({ server, path: "/voice/stream" });
+  wss.on("connection", async (client, req) => {
+    const q = new URL(req.url ?? "/", "http://x").searchParams;
+    const site = sites.get(String(q.get("siteId") ?? ""));
+    const pageUrl = q.get("pageUrl") && /^https?:\/\//.test(q.get("pageUrl")!) ? q.get("pageUrl")!.slice(0, 300) : undefined;
+    const say = (o: Record<string, unknown>) => { if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(o)); };
+
+    const d = new Dictation({
+      onReady: (model) => say({ type: "ready", model }),
+      onSpeech: (speaking) => say({ type: "speech", speaking }),
+      onPartial: (text, id) => say({ type: "partial", text, id }),
+      onFinal: (text, id) => say({ type: "final", text, id }),
+      onError: (message) => say({ type: "error", message }),
+    });
+
+    /**
+     * The listener goes on NOW, before anything is awaited.
+     *
+     * Reading the site's words needs the site, which can take a second or be unreachable altogether - and ws
+     * drops messages that arrive with no listener attached. Someone who presses the button and speaks straight
+     * away would have had that first sentence thrown away here, with no error anywhere: an open socket, an idle
+     * session and a person repeating themselves.
+     */
+    let frames = 0, commits = 0;
+    const early: Array<{ bin: boolean; data: Buffer | string }> = [];
+    let ready = false;
+    const handle = (bin: boolean, data: Buffer | string) => {
+      if (bin) { frames++; return d.send(data as Buffer); }
+      let m: any;
+      try { m = JSON.parse(String(data)); } catch { return; }
+      if (m.type === "commit") { commits++; d.commit(); }
+      /**
+       * "Stop" means the microphone is off, not that the last sentence is forfeit.
+       *
+       * The widget commits whatever it was in the middle of and says stop in the same breath. Tearing the
+       * upstream session down here would cancel that transcript on its way back - the one sentence the person
+       * most expects to see, because they pressed Stop as they finished saying it. The socket closing (below)
+       * ends the session for good either way.
+       */
+      if (m.type === "stop") setTimeout(() => d.stop(), 1_500).unref?.();
+    };
+    client.on("message", (data, isBinary) => {
+      if (!ready) { if (early.length < 500) early.push({ bin: isBinary, data: isBinary ? (data as Buffer) : String(data) }); return; }
+      handle(isBinary, isBinary ? (data as Buffer) : String(data));
+    });
+    client.on("close", () => {
+      log("info", "dictation closed", { site: site?.id, frames, commits });
+      d.stop();
+    });
+
+    /**
+     * The site's own words are worth a SHORT wait and no more.
+     *
+     * They are what keeps "AEROMATIC" from coming back as "aromatic", and they are usually already cached for
+     * this site and page, which costs nothing. But reading them means talking to WordPress, which can hang when
+     * the site is slow or archived, and nobody should wait on a web server before their microphone works. So:
+     * wait a moment, start either way, and apply them later if they were slow - the first sentence then guesses
+     * the brand names, which beats a microphone that takes five seconds to open.
+     */
+    const words = site ? warmVoiceSession(site, pageUrl).catch(() => "") : Promise.resolve("");
+    const inTime = await Promise.race([words, new Promise<"">((r) => setTimeout(() => r(""), 400))]);
+    d.start({ siteWords: inTime, language: q.get("lang") ?? undefined });
+    ready = true;
+    for (const e of early.splice(0)) handle(e.bin, e.data);
+    if (!inTime) void words.then((w) => d.addSiteWords(w));
+  });
+
+  return server;
 }
 
 // Start only when run directly (the tests import createApp).

@@ -24,6 +24,8 @@ export const Icon = {
   Close: (p: P) => svg(<path d="M18 6 6 18M6 6l12 12" />, p),
   Mic: (p: P) => svg(<><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></>, p),
   MicOff: (p: P) => svg(<><path d="M15 9.3V6a3 3 0 0 0-5.7-1.3M9 9v2a3 3 0 0 0 4.6 2.5M5 11a7 7 0 0 0 11.3 5.5M19 11a7 7 0 0 1-.6 2.8M12 18v3M3 3l18 18" /></>, p),
+  /** Voice conversation: the sound bars every voice assistant uses, so nobody has to guess what the button does. */
+  Waveform: (p: P) => svg(<><path d="M5 10v4M9 7v10M12 4.5v15M15 7v10M19 10v4" /></>, p),
   Speaker: (p: P) => svg(<><path d="M11 5 6 9H3v6h3l5 4z" /><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13" /></>, p),
   SpeakerOff: (p: P) => svg(<><path d="M11 5 6 9H3v6h3l5 4z" /><path d="m16 9 5 6M21 9l-5 6" /></>, p),
   Upload: (p: P) => svg(<path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3M16 8l-4-4-4 4M12 4v12" />, p),

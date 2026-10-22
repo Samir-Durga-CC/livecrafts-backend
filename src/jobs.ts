@@ -11,7 +11,8 @@ import { Bridge } from "./bridge.js";
 import { log, recordUsage, tokensOf } from "./usage.js";
 import type { ApprovalMode, Job, JobEvent, JobStatus, PendingApproval, Site } from "./types.js";
 import { APPROVAL_MODES } from "./types.js";
-import { WRITE_TOOLS } from "./tools.js";
+import { WRITE_TOOLS, compactMap } from "./tools.js";
+import { voiceSession, type SiteCache } from "./sessions.js";
 
 export interface RequestOptions {
   approvalMode?: ApprovalMode; model?: string; /** "note" / "edit" = said while paused: same request continues */ kind?: "new" | "note" | "edit";
@@ -19,6 +20,8 @@ export interface RequestOptions {
   actor?: { token: string; name: string; login: string };
   /** The page the person is on. */
   pageUrl?: string;
+  /** The request came from voice (the realtime tool or the voice chat): faster model, context read once per session. */
+  voice?: boolean;
 }
 const cleanMode = (m: unknown): ApprovalMode | undefined => (APPROVAL_MODES.includes(m as ApprovalMode) ? (m as ApprovalMode) : undefined);
 
@@ -65,7 +68,7 @@ export class JobRunner {
     const now = new Date().toISOString();
     const text = context ? `${context}\n\n${prompt}` : prompt;
     const job: Job = { id: newId("job"), siteId, prompt, status: "queued", messages: [userMessage(text, fileIds)], pending: [], events: [], changes: [], createdAt: now, updatedAt: now,
-      approvalMode: cleanMode(opts.approvalMode) ?? "request", requestSeq: 1, model: opts.model || undefined, pageUrl: opts.pageUrl || undefined,
+      approvalMode: cleanMode(opts.approvalMode) ?? "request", requestSeq: 1, model: opts.model || undefined, pageUrl: opts.pageUrl || undefined, voice: opts.voice || undefined,
       actorToken: opts.actor?.token, actor: opts.actor ? { name: opts.actor.name, login: opts.actor.login } : undefined };
     this.jobs.put(job);
     this.emit(job, "user", { text: prompt, fileIds, requestId: 1, approvalMode: job.approvalMode });
@@ -97,6 +100,7 @@ export class JobRunner {
     if (cleanMode(opts.approvalMode)) job.approvalMode = cleanMode(opts.approvalMode);
     if (opts.model !== undefined) job.model = opts.model || undefined;
     if (opts.pageUrl) job.pageUrl = opts.pageUrl;
+    if (opts.voice !== undefined) job.voice = opts.voice || undefined;
     if (opts.actor) { job.actorToken = opts.actor.token; job.actor = { name: opts.actor.name, login: opts.actor.login }; }
     this.emit(job, "user", { text: prompt, fileIds, requestId: job.requestSeq, approvalMode: job.approvalMode, ...(kind !== "new" ? { kind } : {}) });
     this.setStatus(job, "queued");
@@ -361,6 +365,18 @@ export class JobRunner {
     try {
       const mode = job.approvalMode ?? "every";
       const persona = await assistantSettings(site);
+      /**
+       * A session reads the site once and keeps it: every turn after the first gets the status, the notes and the
+       * page map from here instead of fetching them again.
+       *
+       * This was limited to voice, on the reasoning that voice is where the waiting is heard. But the three reads
+       * cost a typed turn exactly what they cost a spoken one - two round trips to WordPress before anything
+       * happens, on every single message - and someone watching a cursor blink is also waiting. The safety is the
+       * same either way and does not depend on which one it is: entries live ten minutes, a session half an hour,
+       * and every write through make_change empties the whole thing (tools.ts), so nothing is ever served from a
+       * site that has been changed since it was read.
+       */
+      const cache: SiteCache | null = voiceSession(job.siteId, job.pageUrl);
       const ctx: JobContext = {
         persona,
         approval: { mode, planApproved: mode === "request" && job.planApprovedFor === (job.requestSeq ?? 1) },
@@ -368,7 +384,9 @@ export class JobRunner {
         actorToken: job.actorToken,
         pageUrl: job.pageUrl,
         ref: `${job.id}#${job.requestSeq ?? 1}`,
-        siteContext: await siteContext(new Bridge(site, job.actorToken), job.pageUrl),
+        siteContext: await siteContext(new Bridge(site, job.actorToken), job.pageUrl, cache),
+        voice: job.voice,
+        cache,
         shouldStop: () => ctl.stop,
       };
       const { agent, model } = this.factory(site, ctx);
@@ -576,13 +594,28 @@ function lastRequestText(job: Job): string {
 }
 
 /**
- * What the assistant should know before it starts: drafts not deployed yet, conflicts, changes made outside Livecrafts
- * since the last release (who / what), and the notes of the site and of the page the person is on.
+ * What the assistant should know before it starts: drafts not deployed yet, conflicts, changes made outside
+ * Livecrafts since the last release (who / what), the notes of the site and of the page the person is on, and the
+ * MAP of that page - everything editable on it, with its current value.
+ *
+ * WHY THE MAP IS HERE NOW. Every turn used to open with the same three tool calls - site_status, read_notes,
+ * get_page_map - three model round trips, about eighteen seconds, before any work began. Two of the three were
+ * already being handed over in this very text and the model fetched them again anyway, because its instructions
+ * told it to. So the third one joins them, the instructions now say they are given, and a turn starts at the work.
+ *
+ * It is read fresh for every run (once per voice session, see sessions.ts) and any write empties that cache, so
+ * what is pasted here is never older than the request it belongs to.
  */
-async function siteContext(bridge: Bridge, pageUrl?: string): Promise<string> {
+async function siteContext(bridge: Bridge, pageUrl?: string, cache?: SiteCache | null): Promise<string> {
   const lines: string[] = [];
+  const once = <T>(key: string, read: () => Promise<T>): Promise<T> => (cache ? cache.get(key, read) : read());
+  // The status and the page map do not depend on each other, so they are asked for together; the notes need the
+  // post id that the map returns, so they follow. Two waits instead of three.
+  const mapUrl = pageUrl || bridge.homeUrl;
+  const statusP = once("status", () => bridge.status());
+  const mapP = once(`map:${mapUrl}:draft`, () => bridge.map({ url: mapUrl, view: "draft" })).catch(() => null);
   try {
-    const s: any = await bridge.status();
+    const s: any = await statusP;
     const drafts = (s.drafts?.objects ?? []) as any[];
     lines.push(drafts.length ? `Drafts not deployed yet (${s.drafts.count}):` : "No drafts: the preview equals the live site.");
     for (const o of drafts.slice(0, 8)) lines.push(`- ${o.object.label}: ${o.changes.slice(0, 6).map((c: any) => `#${c.id} ${c.summary} (${c.user?.name ?? c.source})`).join("; ")}`);
@@ -592,13 +625,38 @@ async function siteContext(bridge: Bridge, pageUrl?: string): Promise<string> {
     if (s.last_release) lines.push(`Last release: #${s.last_release.id} ${s.last_release.kind} - ${s.last_release.summary} (${s.last_release.at})`);
     if (s.legacy_overlay) lines.push("This site still has an old Livecrafts 0.9 overlay (see site_status).");
   } catch (e) { lines.push(`(Could not read the site status: ${(e as Error).message})`); }
+  const map: any = await mapP;
   try {
-    let post: number | undefined;
-    if (pageUrl) post = Number((await bridge.map({ url: pageUrl, view: "draft" }).catch(() => null))?.post?.id) || undefined;
-    const n: any = await bridge.notes(post);
+    const post = Number(map?.post?.id) || undefined;
+    const n: any = await once(`notes:${post ?? ""}`, () => bridge.notes(post));
     if (n.site?.text) lines.push(`\nYOUR SITE NOTES:\n${String(n.site.text).slice(0, 4000)}`);
     if (n.page?.text) lines.push(`\nYOUR NOTES FOR THIS PAGE:\n${String(n.page.text).slice(0, 4000)}`);
     if (!n.site?.text && !n.page?.text) lines.push("No notes yet - write them as you learn the site (write_notes).");
   } catch { /* notes are optional */ }
+  if (map) lines.push(`\nTHIS PAGE, MAPPED (get_page_map for ${mapUrl}, draft view - do not call it again for this page unless you change it):\n${mapText(map)}`);
   return lines.join("\n");
+}
+
+/**
+ * The page map as the model gets it from the tool, trimmed to what fits in front of every request.
+ *
+ * The tool's own view allows 200 values and two 250-line outlines, which on a built page is thousands of tokens
+ * re-sent on every step of the turn. Sixty values and sixty outline lines keep what makes the map worth having -
+ * the target ids and what is currently in them - and the tool is still there for the rest.
+ */
+function mapText(map: any, limit = 6000): string {
+  const c: any = compactMap(map);
+  const short = {
+    post: c.post, builders: c.builders, drafts: c.drafts,
+    values: (c.values ?? []).slice(0, 60).map((v: any) => ({ ...v, value: String(v.value ?? "").slice(0, 120) })),
+    acfRows: c.acfRows,
+    elementorOutline: c.elementorOutline?.slice(0, 60),
+    diviOutline: c.diviOutline?.slice(0, 60),
+    howToChange: c.howToChange,
+  };
+  const text = JSON.stringify(short);
+  if (text.length <= limit) return text;
+  // Still too big (a page with very long field values): keep the shape, drop the tail, and say so rather than
+  // letting the model believe it has seen everything.
+  return text.slice(0, limit) + " …TRUNCATED - call get_page_map for the full map of this page.";
 }

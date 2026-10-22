@@ -201,7 +201,7 @@ export function normalize(lhr: any, o: { device: SpeedDevice; url: string; sourc
   for (const [cat, c] of Object.entries<any>(cats)) {
     const key = CATEGORY_KEY[cat];
     if (!key) continue;
-    for (const ref of c.auditRefs ?? []) {
+    for (const ref of Array.isArray(c?.auditRefs) ? c.auditRefs : []) {
       const a = audits[ref.id];
       if (!a || seen.has(ref.id) || ref.group === "metrics" || ref.group === "hidden") continue;
       if (a.score === null || a.score === undefined || a.score >= 0.9 || ["notApplicable", "manual", "informative", "error"].includes(a.scoreDisplayMode)) continue;
@@ -224,7 +224,7 @@ export function normalize(lhr: any, o: { device: SpeedDevice; url: string; sourc
   const order = { performance: 0, accessibility: 1, seo: 2, "best-practices": 3 };
   fixes.sort((a, b) => order[a.category] - order[b.category] || (b.savingsMs + b.savingsCls * 4000) - (a.savingsMs + a.savingsCls * 4000));
 
-  const warnings = (lhr?.runWarnings ?? []).map((w: string) => clip(plain(w), 240));
+  const warnings = (Array.isArray(lhr?.runWarnings) ? lhr.runWarnings : []).map((w: string) => clip(plain(w), 240));
   return {
     device: o.device, url: o.url, finalUrl: String(lhr?.finalDisplayedUrl ?? lhr?.finalUrl ?? o.url), fetchedAt: String(lhr?.fetchTime ?? new Date().toISOString()),
     source: o.source, lighthouseVersion: String(lhr?.lighthouseVersion ?? ""),
@@ -235,14 +235,18 @@ export function normalize(lhr: any, o: { device: SpeedDevice; url: string; sourc
 
 function itemsOf(d: any): SpeedFixItem[] {
   const out: SpeedFixItem[] = [];
-  const walk = (list: any[]) => {
-    for (const it of list ?? []) {
+  // Lighthouse puts different shapes in "items" depending on the audit: a list for a table or an opportunity, but an
+  // OBJECT for debugdata and criticalrequestchain. "?? []" does not help there - the value is not null, it is simply
+  // not iterable - which is what threw "(list ?? []) is not iterable" and lost the whole report.
+  const walk = (list: unknown) => {
+    if (!Array.isArray(list)) return;
+    for (const it of list as any[]) {
       if (out.length >= 6) return;
       if ((it?.type === "table" || it?.type === "opportunity") && Array.isArray(it.items)) { walk(it.items); continue; } // "list" details: tables inside
       const node = it.node ?? (it.element?.type === "node" ? it.element : undefined);
       const url = typeof it.url === "string" && /^https?:/.test(it.url) ? it.url : typeof it.source?.url === "string" ? it.source.url : undefined;
       if (node || url) out.push({ ...(url ? { url } : {}), ...(node?.nodeLabel ? { label: clip(String(node.nodeLabel), 90) } : {}), ...(node?.snippet ? { snippet: clip(String(node.snippet), 160) } : {}), ...(node?.selector ? { selector: clip(String(node.selector), 160) } : {}) });
-      if (it.subItems?.items) walk(it.subItems.items);
+      walk(it.subItems?.items);
     }
   };
   walk(d.items);

@@ -64,10 +64,22 @@ export function expectationOf(change: any): { text?: string; selector?: string; 
 export class Verifier {
   private audit: typeof auditPage;
   private compare: typeof compareShots;
+  /**
+   * The last full desktop audit of each page, kept for the NEXT change to the same page.
+   *
+   * A request usually makes several changes to one page, and the "after" of one change is the "before" of the
+   * next: the agent is the only thing writing, and it writes one change at a time. Re-opening the page and taking
+   * a second full-page screenshot to learn what we measured a moment ago is a page load per change for nothing.
+   * Only desktop audits that have a screenshot are kept, because that is what `before` is for - the text and the
+   * picture that the diff compares against.
+   */
+  private lastDesktopAudit = new Map<string, PageAudit>();
   constructor(private d: VerifyDeps) { this.audit = d.audit ?? auditPage; this.compare = d.compare ?? compareShots; }
 
   /** The draft page right before a change (picture + text), to compare with afterwards. null when it cannot be opened. */
   async before(url: string): Promise<PageAudit | null> {
+    const known = this.lastDesktopAudit.get(url);
+    if (known) return known;
     try { return await this.audit(this.d.siteUrl, { url, shot: true }, { preview: await this.d.previewToken() }); } catch { return null; }
   }
 
@@ -105,24 +117,32 @@ export class Verifier {
     }
     checks.push(...health(main, before, device));
     if (opts.component && main.component) checks.push(...componentChecks(main.component, device, opts));
-    const others: Device[] = opts.component ? ["desktop", "tablet", "mobile"] : ["desktop", "mobile"];
-    for (const other of others.filter((x) => x !== device)) {
-      try {
-        const a = await this.audit(this.d.siteUrl, { url, device: other, component: opts.component }, { preview });
-        checks.push(...health(a, null, other).filter((c) => c.ok === false));
-        if (opts.component && a.component) { const cc = componentChecks(a.component, other, opts); checks.push(...cc.filter((c) => c.ok === false)); if (cc.every((c) => c.ok !== false)) checks.push({ name: `component (${other})`, ok: true, detail: `Fits, nothing overlaps or is covered on ${other}.` }); }
-      } catch { /* reported by the main audit */ }
+    // The other screen sizes and the live page have nothing to do with each other, and each is a page load of a
+    // second or more. They used to run one after another, so a change paid for all of them in sequence; now they
+    // run together and the slowest one sets the cost. Each still has its own screen size, so its own context.
+    const others: Device[] = (opts.component ? ["desktop", "tablet", "mobile"] : ["desktop", "mobile"]).filter((x) => x !== device) as Device[];
+    const livePromise = exp.text ? this.d.liveText(url).then((t) => norm(t), (e) => ({ error: (e as Error).message })) : null;
+    const otherAudits = await Promise.all(others.map((other) =>
+      this.audit(this.d.siteUrl, { url, device: other, component: opts.component }, { preview })
+        .then((a) => ({ other, a }), () => null))); // a failure here is already reported by the main audit
+
+    for (const r of otherAudits) {
+      if (!r) continue;
+      const { other, a } = r;
+      checks.push(...health(a, null, other).filter((c) => c.ok === false));
+      if (opts.component && a.component) { const cc = componentChecks(a.component, other, opts); checks.push(...cc.filter((c) => c.ok === false)); if (cc.every((c) => c.ok !== false)) checks.push({ name: `component (${other})`, ok: true, detail: `Fits, nothing overlaps or is covered on ${other}.` }); }
     }
 
     // 4: still a draft for visitors
-    if (exp.text) {
-      try {
-        const live = norm(await this.d.liveText(url));
+    if (exp.text && livePromise) {
+      const live = await livePromise;
+      if (typeof live !== "string") checks.push({ name: "live", ok: null, detail: "Could not open the live page: " + live.error });
+      else {
         const wasThere = before ? norm(before.lines.join(" ")).includes(exp.text) : false;
         checks.push(live.includes(exp.text) && !wasThere
           ? { name: "live", ok: null, detail: `“${short(exp.text)}” also appears on the live page (perhaps elsewhere already) - visitors may see this text.` }
           : { name: "live", ok: true, detail: "Visitors still see the live page without this change (it is a draft until deployed)." });
-      } catch (e) { checks.push({ name: "live", ok: null, detail: "Could not open the live page: " + (e as Error).message }); }
+      }
     }
 
     // 5: what else changed
@@ -137,6 +157,10 @@ export class Verifier {
         } catch { /* not essential */ }
       }
     }
+    // What this change left behind is what the next change to this page starts from. Anything else (another
+    // device, no screenshot) is not a usable "before", so the page's entry is dropped rather than kept stale.
+    if (device === "desktop" && main.shot) this.lastDesktopAudit.set(url, main);
+    else this.lastDesktopAudit.delete(url);
     return done(checks);
   }
 }

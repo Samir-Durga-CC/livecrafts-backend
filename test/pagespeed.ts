@@ -250,5 +250,37 @@ console.log("\n7) the app's report helpers");
   ok("the printable report (Print / PDF): escaped, real visitors, lab test, fixes, print styles");
 }
 
+console.log("\n9) a Lighthouse audit whose details are not a list");
+{
+  // debugdata and criticalrequestchain put an OBJECT in details.items, and some audits put nothing there at all.
+  // Walking those as a list threw "(list ?? []) is not iterable" and lost the whole report - which is what the
+  // person saw instead of their scores.
+  const odd = JSON.parse(JSON.stringify(LHR));
+  odd.audits["uses-long-cache-ttl"] = {
+    id: "uses-long-cache-ttl", title: "Serve static assets with an efficient cache policy", score: 0.4,
+    scoreDisplayMode: "numeric", description: "A long cache life speeds up repeat visits.",
+    details: { type: "debugdata", items: { stylesheet: 3, script: 7 } },
+    numericValue: 1200,
+  };
+  odd.audits["critical-request-chains"] = {
+    id: "critical-request-chains", title: "Avoid chaining critical requests", score: 0.5,
+    scoreDisplayMode: "numeric", description: "Chained requests delay the first paint.",
+    details: { type: "criticalrequestchain", chains: { a: { request: {} } } },
+    numericValue: 800,
+  };
+  odd.audits["render-blocking-resources"] = {
+    id: "render-blocking-resources", title: "Eliminate render-blocking resources", score: 0.3,
+    scoreDisplayMode: "numeric", description: "These block the first paint.",
+    details: { type: "opportunity", items: [{ url: "https://example.test/a.css", subItems: { items: "nope" } }] },
+    numericValue: 1500, overallSavingsMs: 1500,
+  };
+  const r = normalize(odd, { device: "mobile", url: "https://example.test/hello-world/", source: "google" });
+  assert.ok(r.fixes.length >= 3, "the report still comes back");
+  assert.ok(r.fixes.some((f: any) => f.id === "render-blocking-resources"), "a normal finding is still read");
+  const chained = r.fixes.find((f: any) => f.id === "critical-request-chains");
+  if (chained) assert.deepEqual(chained.items, [], "an audit with no list contributes no items");
+  ok("audits whose details hold an object (debugdata, request chains) no longer break the whole report");
+}
+
 console.log(`\n${passed} checks passed.`);
 process.exit(0);

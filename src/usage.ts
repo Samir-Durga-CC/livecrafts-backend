@@ -17,14 +17,24 @@ export interface UsageRow {
 const dir = (name: string) => { const d = path.join(config.dataDir, name); fs.mkdirSync(d, { recursive: true }); return d; };
 const append = (file: string, row: unknown) => { try { fs.appendFileSync(file, JSON.stringify(row) + "\n"); } catch { /* never break a job over a log line */ } };
 
-/** Token counts from an AI SDK usage object (shapes differ a little between versions and providers). */
+/**
+ * Token counts from an AI SDK usage object (shapes differ a little between versions and providers).
+ *
+ * The cached count is read from `inputTokenDetails.cacheReadTokens`, which is where this SDK puts it. It used to be
+ * read from two field names that do not exist, so every row said "0 cached" and the cost view was simply wrong:
+ * the provider was in fact serving about three quarters of each prompt from cache. A cost number nobody can trust
+ * is worse than no cost number, because it gets planned around. The older spellings are still tried, in case a
+ * provider or a version uses them.
+ */
 export function tokensOf(u: any): Pick<UsageRow, "input" | "output" | "cachedInput" | "reasoning" | "total"> {
   const num = (v: any) => (typeof v === "number" ? v : typeof v?.total === "number" ? v.total : 0);
   const input = num(u?.inputTokens), output = num(u?.outputTokens);
+  const cached = u?.inputTokenDetails?.cacheReadTokens ?? u?.cachedInputTokens ?? u?.inputTokens?.cacheRead;
+  const reasoning = u?.outputTokenDetails?.reasoningTokens ?? u?.reasoningTokens ?? u?.outputTokens?.reasoning;
   return {
     input, output,
-    cachedInput: u?.cachedInputTokens ?? u?.inputTokens?.cacheRead ?? undefined,
-    reasoning: u?.reasoningTokens ?? u?.outputTokens?.reasoning ?? undefined,
+    cachedInput: typeof cached === "number" ? cached : undefined,
+    reasoning: typeof reasoning === "number" ? reasoning : undefined,
     total: typeof u?.totalTokens === "number" ? u.totalTokens : input + output,
   };
 }

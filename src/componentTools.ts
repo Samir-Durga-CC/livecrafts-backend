@@ -351,7 +351,12 @@ export function makeComponentTools(h: ComponentHelpers) {
           // Real content only: sample text must never reach the page.
           const SAMPLE = /\b(placeholder|lorem ipsum|client name|your name here|sample (text|quote)|replace this)\b/i;
           const texts = [...Object.values(a.attrs ?? {}), ...(a.items ?? []).flatMap((i) => Object.values(i))].map((v) => String(v));
-          if (texts.some((x) => SAMPLE.test(x))) return { ok: false, error: "The content contains sample text (placeholder / client name / replace this ...). Ask the person for the real content (or use what the page already says) and place the template with that. Never publish sample quotes, names or numbers." };
+          // Sample wording goes on the page: it is a DRAFT nobody else sees, and getting the section up beats another
+          // round of questions. It is flagged instead, so the answer can say which lines to replace before deploying.
+          if (texts.some((x) => SAMPLE.test(x))) {
+            placeholders = true;
+            warnings.push("Placed with sample wording: say which lines the person should replace before they deploy.");
+          }
           if (entry.id === "contact_form") {
             const action = String((a.attrs ?? {}).action ?? "").trim();
             if (!action) {
