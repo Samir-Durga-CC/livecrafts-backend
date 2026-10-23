@@ -63,6 +63,17 @@ tr.d-gap button:hover { text-decoration: underline; }
 .sc-names a { color: var(--muted); font-size: 12.5px; text-decoration: none; display: inline-flex; gap: 4px; align-items: center; }
 .sc-names a:hover { color: var(--accent); }
 .prov-top small { color: var(--muted); font-size: 12px; }
+/* The models a provider can be asked for: the ones we ship, plus any the person added (those can be removed). */
+.prov-models { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-left: 20px; }
+.prov-models .chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 4px 2px 9px; font-size: 12px; }
+.prov-models .chip code { font-size: 11.5px; color: var(--text-2); }
+.prov-models .chip:has(.chip-x) { padding-right: 2px; }
+.prov-models .chip:not(:has(.chip-x)) { padding-right: 9px; }
+.chip-x { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 5px; border-radius: 999px; }
+.chip-x:hover:not(:disabled) { background: var(--bad-soft); color: var(--bad); }
+.chip-add { display: inline-flex; align-items: center; gap: 6px; }
+.chip-add input { width: 150px; border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 12px; background: transparent; color: inherit; }
+.chip-add input:focus { outline: none; border-color: var(--accent); }
 .sc-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--line-strong); }
 .sc-dot.ok { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); } .sc-dot.bad { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft); }
 .sc-dot.wait { background: var(--accent); animation: pulse 1.2s infinite; }
@@ -354,9 +365,11 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
 
 /* Model picker (which brain answers: an API model, or the Claude CLI on the backend machine) */
 .model-pill.model-cli svg:first-child { color: var(--accent); }
-.mode-menu .menu-note { padding: 7px 12px; color: var(--muted); }
-.mode-menu .menu-note b { display: block; font-size: 12.5px; color: var(--text-2); }
-.mode-menu .menu-note small { font-size: 11.5px; line-height: 1.35; display: block; }
+/* The menu is drawn through a portal, so it is NOT inside .mode-menu - these may not be nested under it. */
+.menu-note { padding: 7px 12px; color: var(--muted); }
+.menu-note b { display: block; font-size: 12.5px; color: var(--text-2); }
+.menu-note small { font-size: 11.5px; line-height: 1.35; display: block; }
+.menu-note .rbtn { margin-top: 6px; }
 
 /* Component gallery (/components): every template rendered by the site itself, in a frame per layout. */
 .cmp-page { max-width: 1400px; }

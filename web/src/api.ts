@@ -57,6 +57,11 @@ export const api = {
   saveProvider: (id: string, b: { apiKey?: string; baseUrl?: string; testModel?: string }) => request<{ ok: boolean; models: ProviderInfo[]; test?: { ok: boolean; reply?: string; ms: number } }>("PUT", `/integrations/models/${id}`, b),
   removeProvider: (id: string) => request<{ ok: boolean; models: ProviderInfo[] }>("DELETE", `/integrations/models/${id}`),
   models: () => request<ModelsReport>("GET", "/models"),
+  /** Re-reads the Claude CLI on the backend machine now - what "Check again" does after `claude auth login`. */
+  recheckProviders: () => request<{ ok: boolean; models: ProviderInfo[] }>("POST", "/integrations/models/recheck"),
+  /** Teach a provider a model name its built-in list does not have. It is tested before it is kept. */
+  addProviderModel: (id: string, model: string) => request<{ ok: boolean; models: ProviderInfo[] }>("POST", `/integrations/models/${id}/models`, { model }),
+  removeProviderModel: (id: string, model: string) => request<{ ok: boolean; models: ProviderInfo[] }>("DELETE", `/integrations/models/${id}/models`, { model }),
   /** A short-lived key for ONE realtime voice call (the API key stays on the backend). */
   realtimeSession: (b: { siteId?: string; botName?: string; pageUrl?: string }) =>
     request<{ value: string; model: string; voice: string; expiresAt?: number; tuning?: Record<string, unknown> }>("POST", "/voice/realtime/session", b),

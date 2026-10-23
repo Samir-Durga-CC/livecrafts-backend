@@ -50,9 +50,16 @@ export interface SiteStatus {
 
 export interface ProviderInfo {
   id: string; name: string; needsBaseUrl?: boolean; needsNoKey?: boolean; examples: string[]; keyHelp: string;
-  configured: boolean; keySource: "env" | "saved" | "none" | "cli"; baseUrl?: string;
-  /** Only the Claude CLI provider: whether the CLI on the backend machine is installed and signed in. */
-  cli?: { installed: boolean; version?: string; loggedIn: boolean; authMethod?: string; error?: string };
+  /** Can this provider answer right now? (`configured` is the same thing, kept for older callers.) */
+  ready: boolean;
+  configured: boolean;
+  /** Why it cannot answer, and the one thing to do about it. Both empty when it is ready. */
+  reason?: string; fix?: string;
+  /** Every model name available here: the built-in examples plus the ones added by hand. */
+  models: string[];
+  keySource: "env" | "saved" | "none" | "cli"; baseUrl?: string;
+  /** Only the Claude CLI provider: how the CLI on the backend machine is doing. */
+  cli?: { installed: boolean; version?: string; loggedIn: boolean; ready: boolean; authMethod?: string; error?: string; fix?: string; bin?: string };
 }
 
 /** One model the person can pick right now, e.g. "claudecli:sonnet" or "openai:gpt-5.5". */

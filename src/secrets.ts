@@ -8,7 +8,8 @@ import { config } from "./config.js";
  * Before real customers: move this to an encrypted store / secret manager.
  */
 export type ProviderId = "openai" | "anthropic" | "claudecli" | "openrouter" | "groq" | "custom" | "gateway";
-interface Secrets { hostingerToken?: string; pagespeedKey?: string; providers?: Partial<Record<ProviderId, { apiKey?: string; baseUrl?: string }>>; sites?: Record<string, { secret?: string }> }
+interface ProviderSecret { apiKey?: string; baseUrl?: string; /** Extra model names the person added for this provider (beyond the built-in examples). */ models?: string[] }
+interface Secrets { hostingerToken?: string; pagespeedKey?: string; providers?: Partial<Record<ProviderId, ProviderSecret>>; sites?: Record<string, { secret?: string }> }
 const file = () => path.join(config.dataDir, "secrets.json");
 
 function read(): Secrets { try { return JSON.parse(fs.readFileSync(file(), "utf8")); } catch { return {}; } }
@@ -44,6 +45,32 @@ export const secrets = {
   providerSource(p: ProviderId): "env" | "saved" | "none" { return process.env[PROVIDER_ENV[p]] ? "env" : read().providers?.[p]?.apiKey ? "saved" : "none"; },
   /** Only the custom (any OpenAI-compatible) provider needs an address. */
   providerBaseUrl(p: ProviderId): string { return (p === "custom" ? process.env.LC_CUSTOM_BASE_URL : "") || read().providers?.[p]?.baseUrl || ""; },
+  /**
+   * Model names the person added by hand for this provider. The built-in examples are only a starting point: a key
+   * works with whatever its provider offers, including models that did not exist when this was written.
+   */
+  providerModels(p: ProviderId): string[] {
+    const env = (process.env[`LC_MODELS_${p.toUpperCase()}`] ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+    const saved = read().providers?.[p]?.models ?? [];
+    return [...new Set([...env, ...saved])];
+  },
+  /** Adds one name (no duplicates, newest last). Returns the whole list. */
+  addProviderModel(p: ProviderId, model: string): string[] {
+    const name = model.trim();
+    const s = read(); s.providers ??= {}; s.providers[p] ??= {};
+    const list = (s.providers[p]!.models ?? []).filter((m) => m !== name);
+    if (name) list.push(name);
+    s.providers[p]!.models = list;
+    write(s);
+    return this.providerModels(p);
+  },
+  removeProviderModel(p: ProviderId, model: string): string[] {
+    const s = read();
+    const cur = s.providers?.[p];
+    if (cur?.models) { cur.models = cur.models.filter((m) => m !== model); write(s); }
+    return this.providerModels(p);
+  },
+
   setProvider(p: ProviderId, v: { apiKey?: string; baseUrl?: string } | null) {
     const s = read(); s.providers ??= {};
     if (!v) delete s.providers[p];

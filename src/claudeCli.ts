@@ -40,7 +40,6 @@ export interface ClaudeCliSettings {
 }
 
 const DEFAULTS = {
-  bin: () => process.env.LC_CLAUDE_BIN || "claude",
   timeoutMs: () => Number(process.env.LC_CLAUDE_CLI_TIMEOUT_MS ?? 4 * 60_000),
   effort: () => process.env.LC_CLAUDE_EFFORT || "",
   maxToolResultChars: 60_000,
@@ -291,7 +290,10 @@ function cliError(msg: string, code: number | null): Error {
     return new Error(`The Claude CLI is not signed in (${m.slice(0, 160)}). Run "claude auth login" on the backend machine, then try again.`);
   }
   if (/ENOENT|not recognized|no such file/i.test(m)) {
-    return new Error(`The Claude CLI ("${DEFAULTS.bin()}") was not found on this machine. Install Claude Code, or set LC_CLAUDE_BIN to its full path.`);
+    return new Error(`The Claude Code CLI was not found on this machine. Install it from claude.com/claude-code, or set LC_CLAUDE_BIN to the full path of the executable.`);
+  }
+  if (/unknown option|unknown argument|unrecognized option/i.test(m)) {
+    return new Error(`This Claude Code CLI is too old for Livecrafts (${m.slice(0, 120)}). Update it ("claude update", or reinstall from claude.com/claude-code) and try again.`);
   }
   if (/rate.?limit|usage limit|quota|too many requests/i.test(m)) {
     return new Error(`The Claude subscription refused for rate-limit or usage-limit reasons: ${m.slice(0, 200)}`);
@@ -328,12 +330,50 @@ const childEnv = () => ({ ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFF
 interface Run { stdout: string; stderr: string; code: number | null }
 interface RunOpts { timeoutMs: number; abortSignal?: AbortSignal }
 
+/**
+ * How to start the CLI on THIS machine. The name is not enough: Claude Code installs as a native `claude.exe`
+ * (the installer), as a `claude.cmd` shim (npm on Windows, which node cannot spawn directly - it needs cmd.exe),
+ * or as a plain `claude` on PATH everywhere else. We find out once instead of assuming.
+ */
+export interface Bin { cmd: string; prefix: string[]; label: string }
+
+const asBin = (p: string): Bin =>
+  process.platform === "win32" && /\.(cmd|bat)$/i.test(p)
+    ? { cmd: process.env.ComSpec || "cmd.exe", prefix: ["/d", "/s", "/c", p], label: p } // node cannot spawn a .cmd itself
+    : { cmd: p, prefix: [], label: p };
+
+/** Every name worth trying, best first. LC_CLAUDE_BIN, when set, is the only one: a wrong path should say so. */
+const candidates = (): Bin[] => {
+  const pinned = process.env.LC_CLAUDE_BIN?.trim();
+  if (pinned) return [asBin(pinned)];
+  return process.platform === "win32"
+    ? [asBin("claude.exe"), asBin("claude"), asBin("claude.cmd")]
+    : [asBin("claude")];
+};
+
+let binCache: { at: number; bin: Bin } | null = null;
+
+/** The first candidate that answers `--version`, remembered for 5 minutes (an install can appear while we run). */
+export async function resolveBin(force = false): Promise<Bin> {
+  if (!force && binCache && Date.now() - binCache.at < 5 * 60_000) return binCache.bin;
+  const tried: string[] = [];
+  for (const bin of candidates()) {
+    tried.push(bin.label);
+    try {
+      const v = await run(bin, ["--version"], "", { timeoutMs: 20_000 });
+      if (v.code === 0 && /\d+\.\d+/.test(v.stdout)) { binCache = { at: Date.now(), bin }; return bin; }
+    } catch { /* this name is not it: try the next */ }
+  }
+  binCache = null;
+  throw new Error(`The Claude Code CLI was not found on this machine (tried: ${tried.join(", ")}). Install it from claude.com/claude-code, or set LC_CLAUDE_BIN to the full path of the executable.`);
+}
+
 /** Spawns the CLI in the background, feeds it stdin, and (optionally) hands every NDJSON line to onEvent. */
-function run(bin: string, args: string[], stdin: string, o: RunOpts, onEvent?: (ev: any) => void): Promise<Run> {
+function run(bin: Bin, args: string[], stdin: string, o: RunOpts, onEvent?: (ev: any) => void): Promise<Run> {
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawn(bin, args, { cwd: scratch(), windowsHide: true, stdio: ["pipe", "pipe", "pipe"], env: childEnv() });
+      child = spawn(bin.cmd, [...bin.prefix, ...args], { cwd: scratch(), windowsHide: true, stdio: ["pipe", "pipe", "pipe"], env: childEnv() });
     } catch (e) { return reject(cliError(String((e as Error).message), null)); }
 
     let stdout = "", stderr = "", buf = "", done = false;
@@ -386,7 +426,9 @@ function stdinFor(transcript: string, images: Img[]): { text: string; streamJson
 /* ------------------------------------------------------------------ the provider */
 
 export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}): LanguageModelV4 {
-  const bin = settings.bin ?? DEFAULTS.bin();
+  // Found on first use, not here: the model object is built long before a step runs, and an install (or a fixed
+  // LC_CLAUDE_BIN) can appear in between.
+  const bin = () => (settings.bin ? Promise.resolve(asBin(settings.bin)) : resolveBin());
   const timeoutMs = settings.timeoutMs ?? DEFAULTS.timeoutMs();
   const maxTool = settings.maxToolResultChars ?? DEFAULTS.maxToolResultChars;
 
@@ -427,7 +469,7 @@ export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}
       const p = prepare(o, false);
       let res: any;
       try {
-        const out = await run(bin, p.args, p.stdin, { timeoutMs, abortSignal: o.abortSignal });
+        const out = await run(await bin(), p.args, p.stdin, { timeoutMs, abortSignal: o.abortSignal });
         res = resultOf(out.stdout, out.stderr, out.code);
         if (res.is_error || res.subtype === "error_during_execution") throw cliError(String(res.result ?? res.error ?? out.stderr), out.code);
       } finally { try { fs.unlinkSync(p.file); } catch { /* best effort */ } }
@@ -532,7 +574,7 @@ export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}
           };
 
           try {
-            const out = await run(bin, p.args, p.stdin, { timeoutMs, abortSignal: o.abortSignal }, onEvent);
+            const out = await run(await bin(), p.args, p.stdin, { timeoutMs, abortSignal: o.abortSignal }, onEvent);
             if (errored) throw cliError(errored, out.code);
             if (out.code !== 0 && !full.trim() && !calls.length) throw cliError(out.stderr || "the CLI exited without an answer", out.code);
             if (held) {
@@ -571,29 +613,74 @@ export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}
 
 /* ------------------------------------------------------------------ is it usable? */
 
-export interface CliStatus { installed: boolean; version?: string; loggedIn: boolean; authMethod?: string; error?: string }
+export interface CliStatus {
+  /** The CLI answered `--version`. */
+  installed: boolean;
+  version?: string;
+  /** It has credentials it can use right now (a subscription login, or an API key in the backend's environment). */
+  loggedIn: boolean;
+  /** "subscription" (claude auth login), "apiKey" / "bedrock" / "vertex" (the environment), or what the CLI reported. */
+  authMethod?: string;
+  /** Installed AND signed in: the only thing the rest of the app should test. */
+  ready: boolean;
+  /** What is wrong, in one line. */
+  error?: string;
+  /** The one thing the person has to do about it - shown in the UI, so keep it a command or a short instruction. */
+  fix?: string;
+  /** Which executable answered, so a wrong LC_CLAUDE_BIN is visible. */
+  bin?: string;
+}
+
 let cached: { at: number; status: CliStatus } | null = null;
 
-/** Whether this machine can answer at all: the CLI is installed and signed in (cached for 30s). */
+/** The CLI also runs on a key from the environment, with no `claude auth login` at all. */
+function envAuth(): string | null {
+  if (process.env.CLAUDE_CODE_USE_BEDROCK === "1") return "bedrock";
+  if (process.env.CLAUDE_CODE_USE_VERTEX === "1") return "vertex";
+  if (process.env.ANTHROPIC_API_KEY) return "apiKey";
+  if (process.env.ANTHROPIC_AUTH_TOKEN) return "authToken";
+  return null;
+}
+
+/**
+ * Whether this machine can answer at all (cached for 30s; `force` re-reads at once, which is what the UI's
+ * "Check again" does after someone has just run `claude auth login`).
+ */
 export async function claudeCliStatus(force = false): Promise<CliStatus> {
   if (!force && cached && Date.now() - cached.at < 30_000) return cached.status;
-  const bin = DEFAULTS.bin();
-  const status: CliStatus = { installed: false, loggedIn: false };
+  const status: CliStatus = { installed: false, loggedIn: false, ready: false };
   try {
+    const bin = await resolveBin(force);
+    status.bin = bin.label;
+
     const v = await run(bin, ["--version"], "", { timeoutMs: 20_000 });
     if (v.code !== 0) throw cliError(v.stderr || v.stdout, v.code);
     status.installed = true;
     status.version = v.stdout.trim().split("\n")[0]?.slice(0, 60);
 
     const a = await run(bin, ["auth", "status"], "", { timeoutMs: 25_000 });
-    const json = a.stdout.slice(a.stdout.indexOf("{"));
-    const o = JSON.parse(json);
+    const at = a.stdout.indexOf("{");
+    const o = at === -1 ? {} : JSON.parse(a.stdout.slice(at));
     status.loggedIn = !!o.loggedIn;
-    status.authMethod = typeof o.authMethod === "string" ? o.authMethod : undefined;
-    if (!status.loggedIn) status.error = 'Not signed in. Run "claude auth login" on the backend machine.';
+    status.authMethod = typeof o.authMethod === "string" && o.authMethod !== "none" ? o.authMethod : undefined;
+
+    if (!status.loggedIn) {
+      // No subscription login, but a key in the backend's own environment works just as well.
+      const env = envAuth();
+      if (env) { status.loggedIn = true; status.authMethod = env; }
+      else {
+        status.error = "The Claude CLI is installed but not signed in.";
+        status.fix = 'Run "claude auth login" on the backend machine, then press Check again.';
+      }
+    }
   } catch (e) {
-    status.error = String((e as Error).message ?? e).slice(0, 300);
+    const msg = String((e as Error).message ?? e).slice(0, 300);
+    status.error = msg;
+    status.fix = status.installed
+      ? 'Run "claude auth login" on the backend machine, then press Check again.'
+      : "Install Claude Code on the backend machine (claude.com/claude-code), or set LC_CLAUDE_BIN to its full path.";
   }
+  status.ready = status.installed && status.loggedIn;
   cached = { at: Date.now(), status };
   return status;
 }

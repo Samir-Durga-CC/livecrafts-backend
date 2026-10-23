@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { claudeCliModel, claudeCliStatus, parseReply } from "../src/claudeCli.js";
-import { parseModelSpec, resolveModel } from "../src/models.js";
+import { PROVIDER_IDS, parseModelSpec, providerStatus, resolveModel } from "../src/models.js";
+import { secrets } from "../src/secrets.js";
 
 /**
  * The Claude CLI provider: parsing its replies (offline), and - when the CLI on this machine is signed in - one real
@@ -116,12 +117,43 @@ check('"claudecli:sonnet" resolves without any API key', () => {
   assert.equal(m.modelId, "sonnet");
 });
 
+check("every provider id parses back to itself", () => {
+  for (const id of PROVIDER_IDS) assert.deepEqual(parseModelSpec(`${id}:some-model`), { provider: id, model: "some-model" });
+  // No prefix still means what it used to: a bare name is OpenAI, "vendor/model" is the gateway.
+  assert.deepEqual(parseModelSpec("gpt-5.5"), { provider: "openai", model: "gpt-5.5" });
+  assert.deepEqual(parseModelSpec("anthropic/claude-sonnet-5.5"), { provider: "gateway", model: "anthropic/claude-sonnet-5.5" });
+});
+
+await (async () => {
+  const st = await providerStatus();
+  check("every provider says whether it is ready, and what to do when it is not", () => {
+    for (const p of st) {
+      assert.equal(typeof p.ready, "boolean", `${p.id} has no ready flag`);
+      assert.equal(p.configured, p.ready, `${p.id}: configured and ready disagree`);
+      assert.ok(p.models.length, `${p.id} offers no model names`);
+      if (!p.ready) assert.ok(p.fix && p.reason, `${p.id} is not ready but does not say what to do`);
+    }
+  });
+
+  check("a model name added by hand joins that provider's list, and leaves it again", () => {
+    const before = secrets.providerModels("openai");
+    try {
+      const added = secrets.addProviderModel("openai", "a-model-that-did-not-exist-yet");
+      assert.ok(added.includes("a-model-that-did-not-exist-yet"));
+      assert.equal(added.filter((m) => m === "a-model-that-did-not-exist-yet").length, 1, "added twice");
+      assert.ok(!secrets.removeProviderModel("openai", "a-model-that-did-not-exist-yet").includes("a-model-that-did-not-exist-yet"));
+    } finally {
+      for (const m of secrets.providerModels("openai")) if (!before.includes(m)) secrets.removeProviderModel("openai", m);
+    }
+  });
+})();
+
 /* ---------------------------------------------------- live, only when the CLI is signed in */
 
 const live = async () => {
   const status = await claudeCliStatus(true);
   console.log(`the CLI on this machine: ${JSON.stringify(status)}`);
-  if (!status.installed || !status.loggedIn) {
+  if (!status.ready) {
     console.log('  skipped the live call: run "claude auth login" first.');
     return;
   }

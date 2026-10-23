@@ -117,8 +117,38 @@ function ModelsSection() {
   const [form, setForm] = useState({ apiKey: "", baseUrl: "", model: "" });
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState<{ id: string; ok: boolean; text: string } | null>(null);
+  const [newModel, setNewModel] = useState<Record<string, string>>({});
 
   useEffect(() => { api.integrations().then((r) => { setList(r.models); setDef(r.defaultModel); }).catch((e) => setMsg({ id: "", ok: false, text: e.message })); }, []);
+
+  /** Looks at the Claude CLI on the backend machine again, so signing in there needs no restart and no reload. */
+  async function recheck() {
+    setBusy("recheck"); setMsg(null);
+    try {
+      const r = await api.recheckProviders();
+      setList(r.models);
+      const cli = r.models.find((x) => x.id === "claudecli");
+      setMsg({ id: "claudecli", ok: !!cli?.ready, text: cli?.ready ? `The Claude CLI is ready${cli.cli?.version ? ` (${cli.cli.version})` : ""} - no API key needed.` : (cli?.fix ?? cli?.reason ?? "The Claude CLI still cannot answer.") });
+    } catch (e) { setMsg({ id: "claudecli", ok: false, text: (e as Error).message }); }
+    finally { setBusy(""); }
+  }
+
+  /** Adds a model name to a provider after one real request proves the key can use it. */
+  async function addModel(p: ProviderInfo) {
+    const name = (newModel[p.id] ?? "").trim();
+    if (!name) return;
+    setBusy(`add:${p.id}`); setMsg(null);
+    try {
+      const r = await api.addProviderModel(p.id, name);
+      setList(r.models); setNewModel({ ...newModel, [p.id]: "" });
+      setMsg({ id: p.id, ok: true, text: `${name} works. Pick it as ${p.id}:${name}.` });
+    } catch (e) { setMsg({ id: p.id, ok: false, text: (e as Error).message }); }
+    finally { setBusy(""); }
+  }
+  async function dropModel(p: ProviderInfo, model: string) {
+    setBusy(`add:${p.id}`);
+    try { const r = await api.removeProviderModel(p.id, model); setList(r.models); } finally { setBusy(""); }
+  }
 
   async function save(p: ProviderInfo) {
     setBusy(p.id); setMsg(null);
@@ -147,20 +177,45 @@ function ModelsSection() {
         {list?.map((p) => (
           <div key={p.id} className="prov">
             <div className="prov-top">
-              <span className={`sc-dot ${p.configured ? "ok" : "off"}`} />
-              <div className="grow"><b>{p.name}</b><small>{p.configured ? (p.keySource === "env" ? "Key from the backend .env" : p.id === "custom" ? `Address: ${p.baseUrl}` : "Key saved on the backend") : "Not set up"} · e.g. <code>{p.id}:{p.examples[0]}</code></small></div>
-              {p.configured && p.keySource !== "env" && <button className="rbtn danger" disabled={!!busy} onClick={() => void remove(p)}>Remove</button>}
-              <button className="rbtn" onClick={() => { setOpen(open === p.id ? "" : p.id); setForm({ apiKey: "", baseUrl: p.baseUrl ?? "", model: p.examples[0] }); setMsg(null); }}>{p.configured ? "Change" : "Set up"}</button>
+              <span className={`sc-dot ${p.ready ? "ok" : "off"}`} />
+              <div className="grow"><b>{p.name}</b><small>{p.ready
+                ? `${p.keySource === "env" ? "Key from the backend .env" : p.keySource === "cli" ? `Signed in on this machine${p.cli?.authMethod ? ` (${p.cli.authMethod})` : ""} - no API key needed` : p.id === "custom" ? `Address: ${p.baseUrl}` : "Key saved on the backend"} · e.g. `
+                // "Add it in Integrations" is the right thing to say in the model picker, but not here - this IS
+                // Integrations. Providers that sign themselves in keep their own instruction.
+                : `${p.needsNoKey ? p.fix ?? p.reason : `${p.reason ?? "Not set up"} Get one at ${p.keyHelp}.`} · `}<code>{p.id}:{p.models[0] ?? p.examples[0]}</code></small></div>
+              {/* The CLI signs itself in, so it has no key to save or remove - only a state to look at again. */}
+              {p.needsNoKey
+                ? <button className="rbtn" disabled={!!busy} onClick={() => void recheck()}>{busy === "recheck" ? "Checking…" : "Check again"}</button>
+                : <>
+                    {p.ready && p.keySource !== "env" && <button className="rbtn danger" disabled={!!busy} onClick={() => void remove(p)}>Remove</button>}
+                    <button className="rbtn" onClick={() => { setOpen(open === p.id ? "" : p.id); setForm({ apiKey: "", baseUrl: p.baseUrl ?? "", model: p.examples[0] }); setMsg(null); }}>{p.ready ? "Change" : "Set up"}</button>
+                  </>}
             </div>
+            {/* Which models this provider can be asked for. A key is not limited to the names we shipped, so any
+                name can be added here - it is only kept once one real request proves it answers. */}
+            {p.ready && (
+              <div className="prov-models">
+                {p.models.map((mdl) => (
+                  <span key={mdl} className="chip">
+                    <code>{mdl}</code>
+                    {!p.examples.includes(mdl) && <button className="chip-x" title="Remove this model" disabled={!!busy} onClick={() => void dropModel(p, mdl)}>×</button>}
+                  </span>
+                ))}
+                <form className="chip-add" onSubmit={(e) => { e.preventDefault(); void addModel(p); }}>
+                  <input value={newModel[p.id] ?? ""} onChange={(e) => setNewModel({ ...newModel, [p.id]: e.target.value })} placeholder="add a model name…" aria-label={`Add a model for ${p.name}`} />
+                  <button className="rbtn" disabled={!!busy || !(newModel[p.id] ?? "").trim()}>{busy === `add:${p.id}` ? "Testing…" : "Add"}</button>
+                </form>
+              </div>
+            )}
             {open === p.id && (
               <form className="sc-form" onSubmit={(e) => { e.preventDefault(); void save(p); }}>
                 {p.needsBaseUrl && <label>API address <input value={form.baseUrl} onChange={(e) => setForm({ ...form, baseUrl: e.target.value })} placeholder="https://api.example.com/v1" /></label>}
-                {p.keySource !== "env" && <label>API key {p.id === "custom" && <small className="muted">(optional)</small>}<input type="password" value={form.apiKey} onChange={(e) => setForm({ ...form, apiKey: e.target.value })} placeholder={p.configured ? "leave empty to keep the current key" : "paste the key"} autoComplete="off" /></label>}
+                {p.keySource !== "env" && <label>API key {p.id === "custom" && <small className="muted">(optional)</small>}<input type="password" value={form.apiKey} onChange={(e) => setForm({ ...form, apiKey: e.target.value })} placeholder={p.ready ? "leave empty to keep the current key" : "paste the key"} autoComplete="off" /></label>}
                 <label>Test with model <input value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} placeholder={p.examples[0]} list={`ex-${p.id}`} />
-                  <datalist id={`ex-${p.id}`}>{p.examples.map((x) => <option key={x} value={x} />)}</datalist></label>
+                  <datalist id={`ex-${p.id}`}>{p.models.map((x) => <option key={x} value={x} />)}</datalist></label>
                 <p className="muted small">Where to get a key: {p.keyHelp}. Saving makes one tiny real request to check it.</p>
                 <div className="dialog-actions left">
-                  <button className="btn primary sm" disabled={!!busy || (!p.configured && !form.apiKey.trim() && p.id !== "custom") || (p.needsBaseUrl && !form.baseUrl.trim())}>{busy === p.id ? "Testing…" : "Save & test"}</button>
+                  <button className="btn primary sm" disabled={!!busy || (!p.ready && !form.apiKey.trim() && p.id !== "custom") || (p.needsBaseUrl && !form.baseUrl.trim())}>{busy === p.id ? "Testing…" : "Save & test"}</button>
                   <button type="button" className="btn sm" onClick={() => setOpen("")}>Cancel</button>
                 </div>
               </form>

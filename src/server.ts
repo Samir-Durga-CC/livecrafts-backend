@@ -13,6 +13,14 @@ import type { Job, Site } from "./types.js";
 import { hostinger, type HostingerHealth } from "./hostinger.js";
 import { secrets, type ProviderId } from "./secrets.js";
 import { PROVIDERS, providerStatus, testModel } from "./models.js";
+
+/**
+ * The Integrations routes come straight from the provider list, so adding a provider in models.ts is all it takes:
+ * the hand-written list that used to be here was a second place to forget.
+ */
+const SETTABLE = PROVIDERS.filter((p) => !p.needsNoKey).map((p) => p.id).join("|");
+const PROVIDER_RE = new RegExp(`^/integrations/models/(${SETTABLE})$`);
+const PROVIDER_MODELS_RE = new RegExp(`^/integrations/models/(${PROVIDERS.map((p) => p.id).join("|")})/models$`);
 import { claudeCliStatus } from "./claudeCli.js";
 import { diffOf } from "./changes.js";
 import { canUseSite, verifyWidgetToken, type Caller } from "./auth.js";
@@ -337,7 +345,29 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       if (route === "DELETE /integrations/pagespeed") { secrets.setPagespeedKey(""); return send(res, 200, { ok: true, pagespeed: { keySource: secrets.pagespeedSource() } }); }
 
       // ---- AI providers: keys are stored on the backend only, never sent back
-      m = url.pathname.match(/^\/integrations\/models\/(openai|anthropic|openrouter|groq|custom)$/);
+      // "Check again": re-reads the Claude CLI on this machine at once, so logging in does not need a restart.
+      if (route === "POST /integrations/models/recheck") { await claudeCliStatus(true); return send(res, 200, { ok: true, models: await providerStatus() }); }
+
+      // Add or drop a model name by hand, so a key can be used with models these lists have never heard of.
+      m = url.pathname.match(PROVIDER_MODELS_RE);
+      if (m && (req.method === "POST" || req.method === "DELETE")) {
+        const id = m[1] as ProviderId;
+        const b = await readJson(req);
+        const name = typeof b.model === "string" ? b.model.trim() : "";
+        if (!name) return send(res, 400, { error: "model is required (the model's name at this provider)." });
+        if (name.includes(":")) return send(res, 400, { error: 'A model name cannot contain ":" - give the name only, the provider is already chosen.' });
+        // Remove first, THEN read the status back - an object literal is built in writing order, so asking for the
+        // status on the same line would report the list as it was a moment before.
+        if (req.method === "DELETE") { secrets.removeProviderModel(id, name); return send(res, 200, { ok: true, models: await providerStatus() }); }
+        if (b.test !== false) {
+          const t = await testModel(`${id}:${name}`);
+          if (!t.ok) return send(res, 400, { error: t.error, test: t });
+        }
+        secrets.addProviderModel(id, name);
+        return send(res, 200, { ok: true, models: await providerStatus() });
+      }
+
+      m = url.pathname.match(PROVIDER_RE);
       if (m && req.method === "PUT") {
         const id = m[1] as ProviderId;
         const b = await readJson(req);
@@ -363,10 +393,9 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         return send(res, 200, await testModel(String(b.model)));
       }
       if (route === "GET /models") {
-        const st = await providerStatus();
-        const providers = PROVIDERS.map((p) => ({ ...p, configured: st.find((x) => x.id === p.id)?.configured, cli: (st.find((x) => x.id === p.id) as any)?.cli }));
-        // Ready to pick right now: every example model of a provider that is configured, "provider:model".
-        const choices = providers.filter((p) => p.configured).flatMap((p) => p.examples.map((model) => ({ id: `${p.id}:${model}`, provider: p.id, providerName: p.name, model })));
+        const providers = await providerStatus();
+        // Ready to pick right now: every model of every provider that can answer, as "provider:model".
+        const choices = providers.filter((p) => p.ready).flatMap((p) => p.models.map((model) => ({ id: `${p.id}:${model}`, provider: p.id, providerName: p.name, model })));
         return send(res, 200, { defaultModel: config.model, providers, choices });
       }
       if (route === "POST /integrations/hostinger/test") return send(res, 200, await checkHostinger());
@@ -645,9 +674,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(im
     console.log(`Livecrafts backend on http://${config.host}:${config.port}  (model: ${config.model})`);
     if (!config.apiToken) console.log("WARNING: LC_API_TOKEN is not set - fine on localhost, set it before exposing this server.");
     if (config.model.startsWith("claudecli:")) {
-      void claudeCliStatus(true).then((c) => console.log(c.installed && c.loggedIn
+      void claudeCliStatus(true).then((c) => console.log(c.ready
         ? `Claude CLI ready (${c.version}, ${c.authMethod ?? "signed in"}) - it answers in the background, no API credit needed.`
-        : `WARNING: LC_MODEL is ${config.model} but the Claude CLI is not usable: ${c.error ?? "unknown reason"}`));
+        : `WARNING: LC_MODEL is ${config.model} but the Claude CLI cannot answer: ${c.error ?? "unknown reason"}
+   -> ${c.fix ?? 'Run "claude auth login" on the backend machine.'}`));
     } else if (!process.env.OPENAI_API_KEY && !config.model.includes("/") && !config.model.includes(":")) {
       console.log("WARNING: OPENAI_API_KEY is not set - jobs will fail until it is (or switch the model, e.g. LC_MODEL=claudecli:sonnet).");
     }

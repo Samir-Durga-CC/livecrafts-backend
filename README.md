@@ -122,7 +122,9 @@ Copy `.env.example` to `.env`. Everything is optional except one model key.
 | `LC_MODEL` | Default model, e.g. `gpt-5.5`, `anthropic:claude-sonnet-5-5`, `claudecli:sonnet`, `openrouter:google/gemini-3-pro`, `groq:openai/gpt-oss-120b`, `custom:<name>`. A plain id uses OpenAI. |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENROUTER_API_KEY` / `GROQ_API_KEY` | Key for the provider you chose. Only the one you use is needed. `OPENAI_API_KEY` is also used by voice mode. |
 | `LC_CUSTOM_BASE_URL` / `LC_CUSTOM_API_KEY` | Any OpenAI-compatible server (LM Studio, vLLM, Together ...), used with `LC_MODEL=custom:<name>`. |
-| `LC_CLAUDE_BIN` / `LC_CLAUDE_CLI_TIMEOUT_MS` / `LC_CLAUDE_EFFORT` | The local Claude CLI used by `claudecli:<model>` (see below): its path (default `claude` on PATH), how long one step may take (default 4 min), and the thinking effort (`low` … `max`). |
+| `LC_CLAUDE_BIN` / `LC_CLAUDE_CLI_TIMEOUT_MS` / `LC_CLAUDE_EFFORT` | The local Claude CLI used by `claudecli:<model>` (see below): its full path (found automatically when unset), how long one step may take (default 4 min), and the thinking effort (`low` … `max`). |
+| `AI_GATEWAY_API_KEY` | Vercel AI Gateway, used by `gateway:<vendor>/<model>` and by a bare `vendor/model`. |
+| `LC_MODELS_<PROVIDER>` | Extra model names for one provider, comma-separated, e.g. `LC_MODELS_OPENAI=gpt-5.6,o5-pro`. They join the ones added in the app. |
 | `PORT` / `HOST` | Where the app listens. Default `8790` / `127.0.0.1` (own computer only). |
 | `LC_API_TOKEN` | Required `Authorization: Bearer ...` for the app/admin routes. **Set it for anything not on localhost.** The widget uses its own signed per-person token. |
 | `LC_DATA_DIR` | Where chats, sites, usage and logs are stored. Default `./data`. |
@@ -138,13 +140,33 @@ Copy `.env.example` to `.env`. Everything is optional except one model key.
 | `LC_TTS_MODEL` / `LC_STT_MODEL` | Speech and transcription models. Default `gpt-4o-mini-tts` / `gpt-4o-mini-transcribe`. Voice uses the OpenAI key. |
 | `LC_IMAGE_MODEL` / `LC_IMAGE_QUALITY` | AI featured images (`generate_image`). Default `gpt-image-1` / `medium` (about $0.04 per landscape image). Uses the OpenAI key. |
 
+## Any provider, any model
+Every model is named `provider:model` - `openai:gpt-5.5`, `anthropic:claude-sonnet-5-5`, `claudecli:sonnet`,
+`openrouter:google/gemini-3-pro`, `groq:openai/gpt-oss-120b`, `gateway:anthropic/claude-sonnet-5.5`, `custom:<name>`.
+A bare name (`gpt-5.5`) means OpenAI; a bare `vendor/model` means the Vercel AI Gateway.
+
+Providers are declared once, in `PROVIDERS` in `src/models.ts`: the spec parser, the Integrations routes and the UI
+all read that one list, so adding a provider is a single edit. Each one reports the same three things - whether it can
+answer now (`ready`), why not (`reason`), and the one thing to do about it (`fix`) - which is what the model menu and
+Integrations → AI models both show.
+
+**Models are not a fixed list.** A key works with whatever its provider offers, including models released after this
+was written, so Integrations → AI models has an *add a model name* box per provider. The name is kept only after one
+real request proves the key can use it, and it then appears in the model menu like any other. `LC_MODELS_<PROVIDER>`
+(comma-separated) does the same from the environment, e.g. `LC_MODELS_OPENAI=gpt-5.6,o5-pro`.
+
 ## The local Claude CLI as the model (no API credit)
 `claudecli:<model>` makes the **Claude Code CLI on the backend machine** the assistant's brain, on that machine's own
-Claude subscription - useful when an API key runs out of credit.
+Claude subscription - useful when an API key runs out of credit, or before there is one at all.
 
     npm i -g @anthropic-ai/claude-code     # or any Claude Code install
     claude auth login                      # once, on the machine that runs this backend
     # then:  LC_MODEL=claudecli:sonnet      # or pick it per chat in the UI
+
+After signing in, press **Check again** (Integrations → AI models, or in the model menu): the backend re-reads the CLI
+at once, so nothing has to be restarted or reloaded. The CLI is found wherever it is installed - `claude.exe` from the
+installer, a `claude.cmd` npm shim on Windows, or plain `claude` on PATH - and `LC_CLAUDE_BIN` pins a full path.
+It also counts as signed in when the backend's own environment carries `ANTHROPIC_API_KEY` (or a Bedrock/Vertex setup).
 
 How it works: every agent step spawns `claude --print` **in the background** - no terminal window, no interactive
 session, nothing saved in `~/.claude/projects`. The conversation goes in on stdin and the answer comes back on stdout,
@@ -156,35 +178,14 @@ Because the CLI has no function-calling API, the tools are described in the syst
 `<tool_call>{"name":…,"input":{…}}` blocks, which the provider turns back into real tool calls. That is a little less
 reliable than OpenAI's native tool calling and each step pays the CLI's start-up (~1-3 s), so keep it for the days an
 API key is unavailable. Screenshots are still seen (images go in as `stream-json` image blocks).
+**Voice mode does not run on it** - dictation and speech use the OpenAI key, so voice needs `OPENAI_API_KEY` whatever
+the chat model is.
 
 Switching in the UI: the pill next to the composer (app **and** the on-site widget) lists every model that can answer
-right now - the Claude CLI appears only when the CLI is installed and signed in, and the menu says why a provider is
-not ready. The choice is remembered per browser and sent with each message; "Default" falls back to `LC_MODEL` or the
-site's own model (WordPress → Settings → Livecrafts Assistant, which also accepts `claudecli:sonnet`).
-
-## The local Claude CLI as the model (no API credit)
-`claudecli:<model>` makes the **Claude Code CLI on the backend machine** the assistant's brain, on that machine's own
-Claude subscription - useful when an API key runs out of credit.
-
-    npm i -g @anthropic-ai/claude-code     # or any Claude Code install
-    claude auth login                      # once, on the machine that runs this backend
-    # then:  LC_MODEL=claudecli:sonnet      # or pick it per chat in the UI
-
-How it works: every agent step spawns `claude --print` **in the background** - no terminal window, no interactive
-session, nothing saved in `~/.claude/projects`. The conversation goes in on stdin and the answer comes back on stdout,
-streamed, so the chat UI, the approval cards, the browser checks and the change ledger all behave exactly as with
-OpenAI. The CLI runs with its own brain switched off (`--system-prompt-file` = the Livecrafts prompt, `--tools ""`,
-`--safe-mode`, `--strict-mcp-config`) in an empty temp folder, so it cannot touch this project: it only answers.
-
-Because the CLI has no function-calling API, the tools are described in the system prompt and asked for in
-`<tool_call>{"name":…,"input":{…}}` blocks, which the provider turns back into real tool calls. That is a little less
-reliable than OpenAI's native tool calling and each step pays the CLI's start-up (~1-3 s), so keep it for the days an
-API key is unavailable. Screenshots are still seen (images go in as `stream-json` image blocks).
-
-Switching in the UI: the pill next to the composer (app **and** the on-site widget) lists every model that can answer
-right now - the Claude CLI appears only when the CLI is installed and signed in, and the menu says why a provider is
-not ready. The choice is remembered per browser and sent with each message; "Default" falls back to `LC_MODEL` or the
-site's own model (WordPress → Settings → Livecrafts Assistant, which also accepts `claudecli:sonnet`).
+right now, and says why each of the others cannot. The list is re-read every time the menu opens, so a key added in
+Integrations or a `claude auth login` in a terminal shows up without reloading the page. The choice is remembered per
+browser and sent with each message; "Default" falls back to `LC_MODEL` or the site's own model (WordPress → Settings →
+Livecrafts Assistant, which also accepts `claudecli:sonnet`).
 
 ## One record of every change
 

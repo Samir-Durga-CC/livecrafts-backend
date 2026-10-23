@@ -29,14 +29,23 @@ export function ModelPicker({ value, onChange, fallback }: {
   const [open, setOpen] = useState(false);
   const btn = useRef<HTMLButtonElement>(null);
   const [report, setReport] = useState<ModelsReport | null>(cache);
+  const [checking, setChecking] = useState(false);
 
-  useEffect(() => {
-    if (cache) return;
-    api.models().then((r) => { cache = r; setReport(r); }).catch(() => {});
-  }, []);
+  const load = () => api.models().then((r) => { cache = r; setReport(r); }).catch(() => {});
+
+  // The cached list is shown at once, then refreshed every time the menu opens: a key added in Integrations, or a
+  // "claude auth login" in a terminal, has to show up here without reloading the page.
+  useEffect(() => { if (!cache || open) void load(); }, [open]);
+
+  /** Asks the backend to look at the Claude CLI again, right now. */
+  const recheck = async () => {
+    setChecking(true);
+    try { await api.recheckProviders(); await load(); } catch { /* the list just stays as it was */ }
+    finally { setChecking(false); }
+  };
 
   const choices = report?.choices ?? [];
-  const missing = (report?.providers ?? []).filter((p) => !p.configured);
+  const missing = (report?.providers ?? []).filter((p) => !p.ready);
   const byProvider = choices.reduce<Record<string, ModelChoice[]>>((acc, c) => { (acc[c.providerName] ??= []).push(c); return acc; }, {});
   const usingCli = value.startsWith("claudecli:");
 
@@ -74,7 +83,11 @@ export function ModelPicker({ value, onChange, fallback }: {
                 {missing.map((p) => (
                   <div key={p.id} className="menu-note">
                     <b>{p.name}</b>
-                    <small>{p.id === "claudecli" ? (p.cli?.error ?? 'run "claude auth login" on the backend machine') : "no API key yet - add it in Integrations"}</small>
+                    <small>{p.fix ?? p.reason ?? "not set up yet"}</small>
+                    {p.id === "claudecli" && (
+                      <button type="button" className="rbtn" disabled={checking}
+                        onClick={(e) => { e.stopPropagation(); void recheck(); }}>{checking ? "Checking…" : "Check again"}</button>
+                    )}
                   </div>
                 ))}
               </>
