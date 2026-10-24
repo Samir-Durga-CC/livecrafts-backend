@@ -31,6 +31,12 @@ export default function App() {
   const [live, setLive] = useState(true);
   const [dialog, setDialog] = useState<"" | "site" | "sites" | "token" | "integrations">("");
   const [mode, setMode] = useState<ApprovalMode>(() => (localStorage.getItem("lc_mode") as ApprovalMode) || "request");
+  // Whether the assistant may offer a choice of layouts. "Don't ask me again" writes this, and it is sent with every
+  // message, so the backend does not even hand the model the tool. Kept per browser, like the approval mode.
+  // Read at send time, not from state: "Don't ask me again" sends its message in the same tick that turns the
+  // setting off, and a state update is not visible yet - that first message would still have carried the old value.
+  const layoutPickerOn = () => localStorage.getItem("lc_layout_picker") !== "off";
+  const neverAskLayout = () => localStorage.setItem("lc_layout_picker", "off");
   // Which model answers: "" = the backend default (or the site's own, set in WordPress). Remembered per browser.
   const [pick, setPick] = useState<string>(() => localStorage.getItem("lc_model") ?? "");
   const [panelTab, setPanelTab] = useState<PanelTab>(() => (localStorage.getItem("lc_tab") as PanelTab) || "preview");
@@ -122,7 +128,7 @@ export default function App() {
     setProblem("");
     if (!siteId) { setDialog("site"); return; }
     try {
-      const args = { prompt, fileIds, pageUrl: ctx.pageUrl, selectedTarget: ctx.selectedTarget, approvalMode: mode, ...(pick ? { model: pick } : {}) };
+      const args = { prompt, fileIds, pageUrl: ctx.pageUrl, selectedTarget: ctx.selectedTarget, approvalMode: mode, ...(layoutPickerOn() ? {} : { layoutPicker: false }), ...(pick ? { model: pick } : {}) };
       if (jobId && paused) await api.message(jobId, { ...args, kind: pauseKind });
       else if (jobId && (status === "completed" || status === "failed")) await api.message(jobId, args);
       else { const j = await api.createJob(siteId, args); setJobId(j.id); }
@@ -210,7 +216,8 @@ export default function App() {
               onAsk={(t) => void send(t, [])}
               onAnswer={(a, ok, r) => void answer(a, ok, r)} onCopy={copy} onOpen={openInPreview}
               onEdit={(t) => setDraft({ text: t, n: Date.now() })}
-              onRetry={(t) => { if (t && (status === "completed" || status === "failed")) void send(t, []); }} />
+              onRetry={(t) => { if (t && (status === "completed" || status === "failed")) void send(t, []); }}
+              siteId={siteId} onNeverAskLayout={neverAskLayout} />
             <Composer disabled={!siteId || working || waiting} model={model} context={ctx} draft={draft}
               onStop={working && jobId ? stop : undefined} stopping={stopping}
               notice={paused ? <PausedBar kind={pauseKind} onKind={setPauseKind} onContinue={() => void cont()} /> : undefined}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { fileUrl } from "../api";
 import { Icon } from "../icons";
 import { AskForm, type AskQuestion } from "./AskForm";
+import { LayoutPicker } from "./LayoutPicker";
 import type { TimelineItem } from "../types";
 import { toBlocks, type ToolItem } from "../util";
 import { Markdown } from "./Markdown";
@@ -296,7 +297,7 @@ function Approval({ item, onAnswer, busy }: { item: Extract<TimelineItem, { kind
   );
 }
 
-export function Transcript({ items, model, busy, working, welcome, spoken, onAnswer, onCopy, onEdit, onRetry, onOpen, onAsk, onAskTouch, onDeploy }: {
+export function Transcript({ items, model, busy, working, welcome, spoken, onAnswer, onCopy, onEdit, onRetry, onOpen, onAsk, onAskTouch, onDeploy, siteId, onNeverAskLayout }: {
   items: TimelineItem[]; model: string; busy: boolean; working: boolean; welcome: React.ReactNode; onOpen?: (url: string) => void;
   /** How far the voice has read the answer with this seq: everything before `to` has been heard. */
   spoken?: { seq: number; to: number } | null;
@@ -308,6 +309,10 @@ export function Transcript({ items, model, busy, working, welcome, spoken, onAns
   onAsk?: (text: string) => void;
   /** Called when they start filling the question form in (voice mode stops reading it out). */
   onAskTouch?: () => void;
+  /** The site whose own styling the layout tiles are rendered with. */
+  siteId?: string;
+  /** The person turned the layout picker off for good. */
+  onNeverAskLayout?: () => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true); // follow the stream only while the reader is at the bottom
@@ -316,6 +321,20 @@ export function Transcript({ items, model, busy, working, welcome, spoken, onAns
   const lastUser = [...items].reverse().find((i) => i.kind === "user");
   const toolRunning = items.some((i) => i.kind === "tool" && i.state === "running");
   // The assistant asked for facts and is waiting: show the form until the person sends something.
+  // The assistant offered a choice of layouts and is waiting. Read the same way as the question form: the newest
+  // offer still unanswered, i.e. with no message of the person's after it.
+  const picking = (() => {
+    if (working || !onAsk || !siteId) return null;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "user") return null;                             // already chosen
+      if (it.kind === "tool" && it.tool === "offer_layouts" && it.state !== "failed") {
+        const template = it.input?.template as string | undefined;
+        return template ? { template, intro: it.input?.intro as string | undefined, only: (it.input?.variants ?? null) as string[] | null } : null;
+      }
+    }
+    return null;
+  })();
   const asking = (() => {
     if (working || !onAsk) return null;
     for (let i = items.length - 1; i >= 0; i--) {
@@ -400,6 +419,12 @@ export function Transcript({ items, model, busy, working, welcome, spoken, onAns
           }
         })}
         {asking && onAsk && <AskForm intro={asking.intro} questions={asking.questions} busy={busy} onSend={onAsk} onTouch={onAskTouch} />}
+        {picking && onAsk && siteId && (
+          <LayoutPicker siteId={siteId} template={picking.template} intro={picking.intro} only={picking.only} busy={busy}
+            onSend={onAsk}
+            onDismiss={() => onAsk("You choose the layout - pick whichever fits the page best.")}
+            onNeverAsk={() => { onNeverAskLayout?.(); onAsk("You choose the layout, and do not ask me about layouts again."); }} />
+        )}
         {thinking && <div className="thinking"><span className="dots"><i /><i /><i /></span><span className="shimmer">Thinking</span></div>}
       </div>
     </div>

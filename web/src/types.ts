@@ -74,6 +74,8 @@ export interface JobSummary {
   id: string; siteId: string; prompt: string; status: JobStatus; pending: Pending[];
   result?: string; error?: string; createdAt: string; updatedAt: string; lastEventSeq: number; changes?: ChangeRecord[];
   approvalMode?: ApprovalMode; model?: string | null; requestSeq?: number;
+  /** false = the layout picker is off for this conversation. */
+  layoutPicker?: boolean;
 }
 
 export interface JobEvent { seq: number; ts: string; type: string; data: Record<string, any> }

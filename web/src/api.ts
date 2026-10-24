@@ -32,7 +32,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 export interface TermItem { id: number; name: string; count: number }
 export interface MediaItem { id: number; url: string; full: string; alt: string; title: string }
-export interface SendArgs { prompt: string; fileIds: string[]; pageUrl?: string; selectedTarget?: string; approvalMode?: ApprovalMode; model?: string; extraContext?: string; kind?: "new" | "note" | "edit"; /** The person spoke this request: the backend runs it as a voice job. */ voice?: boolean }
+export interface SendArgs { prompt: string; fileIds: string[]; pageUrl?: string; selectedTarget?: string; approvalMode?: ApprovalMode; model?: string; extraContext?: string; kind?: "new" | "note" | "edit"; /** The person spoke this request: the backend runs it as a voice job. */ voice?: boolean; /** false = the assistant is not offered the layout picker in this conversation. */ layoutPicker?: boolean }
 
 export const api = {
   health: () => request<{ ok: boolean; model: string; authRequired: boolean }>("GET", "/health"),

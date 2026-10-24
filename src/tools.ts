@@ -94,6 +94,8 @@ export interface ToolExtras {
   ref?: () => string;
   skills?: Skills | null;
   planTool?: boolean;                   // "once per request" approval mode: offer propose_plan
+  /** Offer offer_layouts: the person picks a section's layout from pictures. Off = the assistant decides alone. */
+  layoutPicker?: boolean;
   fetchImpl?: typeof fetch;             // tests: fake the internet for image downloads
   allowPrivateImageHosts?: boolean;     // tests/demo only
   generateImage?: typeof generateImage; // tests: fake the image model
@@ -639,7 +641,7 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     ask_person: tool({
       description:
         "Ask the person EVERYTHING you still need, in ONE go. The chat shows it as a small form they fill in and send back - so they answer once instead of being asked question after question.\n" +
-        "Only for facts you cannot find or decide: the real words, a phone number, which page, which of two things they meant. NEVER for design (colour, spacing, layout, which template) - decide that yourself from the site.\n" +
+        "Only for facts you cannot find or decide: the real words, a phone number, which page, which of two things they meant. NEVER for design (colour, spacing, wording, which template) - decide that yourself from the site. For which LAYOUT a section uses, do not ask in words either: offer_layouts shows them the choice as pictures.\n" +
         "Call it once, then STOP and wait for the answer. Do not call it again in the same step, and never ask the same thing in prose as well.",
       inputSchema: z.object({
         intro: z.string().max(200).optional().describe("One line of context, e.g. 'To build the home page I need a few facts.'"),
@@ -658,9 +660,34 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     }),
   };
 
+  /**
+   * Letting the PERSON pick a layout. Everything else about design the assistant decides from the site, but which
+   * layout a section uses changes what the page says about them, and they can judge that from a picture faster than
+   * from any description. The chat renders each layout of the template from their own site, with their own brand.
+   * Turned off per conversation, in which case the tool is not offered at all and the assistant simply chooses.
+   */
+  const layoutTools = extras.layoutPicker === false ? {} : {
+    offer_layouts: tool({
+      description:
+        "Show the person the layouts of ONE template as real pictures and let them pick. Use it ONCE, just before you place a section whose layout changes the character of the page - a hero above all, or a section they asked to make 'look better'.\n" +
+        "Do NOT use it for small edits, for a section whose layout they already chose, or more than once in a request. Never ask about colour, spacing or wording this way - those you still decide from the site.\n" +
+        "Call it, then STOP and wait: their choice comes back as an ordinary message naming the layout.",
+      inputSchema: z.object({
+        template: z.string().regex(/^[a-z][a-z0-9_-]{1,30}$/).describe('The template id, e.g. "hero"'),
+        intro: z.string().max(200).optional().describe("One line: what this section is for, e.g. 'Pick how the top of the home page should look.'"),
+        variants: z.array(z.string().regex(/^[a-z][a-z0-9_-]{0,20}$/)).min(2).max(8).optional()
+          .describe("Only these layouts, when some do not fit what they asked for. Leave it out to show them all."),
+      }),
+      execute: async ({ template, intro, variants }) => ({
+        ok: true, template, intro, variants: variants ?? null,
+        note: "The person is being shown each layout rendered from their own site. Stop now and wait for their answer; do not describe the layouts in your reply as well.",
+      }),
+    }),
+  };
+
   const componentTools = makeComponentTools({ bridge, safe, postIdOf, checked, changeView, parseValue, ref, pageUrl: () => extras.pageUrl?.(), skillsLoaded, design: extras.browser?.design ? (url?: string) => extras.browser!.design!({ url, device: "desktop" }) as Promise<any> : undefined });
 
-  return { ...reading, ...writing, ...media, ...browser, ...speedTools, ...pluginTools, ...fileTools, ...apiTools, ...skillTools, ...planTools, ...askTools, ...componentTools };
+  return { ...reading, ...writing, ...media, ...browser, ...speedTools, ...pluginTools, ...fileTools, ...apiTools, ...skillTools, ...planTools, ...askTools, ...layoutTools, ...componentTools };
 }
 
 /** Tools that must never run without a human saying yes (in "every" mode; one plan approval in "request" mode). */

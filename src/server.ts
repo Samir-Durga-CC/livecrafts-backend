@@ -51,7 +51,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     } catch (e) { return (e as Error).message; }
   };
   const publicJob = (j: Job) => ({ id: j.id, siteId: j.siteId, prompt: j.prompt, status: j.status, pending: j.pending, result: j.result, error: j.error, createdAt: j.createdAt, updatedAt: j.updatedAt, lastEventSeq: j.events.at(-1)?.seq ?? 0, changes: j.changes ?? [],
-    approvalMode: j.approvalMode ?? "every", model: j.model ?? null, requestSeq: j.requestSeq ?? 1, pageUrl: j.pageUrl ?? null, actor: j.actor ?? null, usage: j.usage ?? null });
+    approvalMode: j.approvalMode ?? "every", model: j.model ?? null, layoutPicker: j.layoutPicker !== false, requestSeq: j.requestSeq ?? 1, pageUrl: j.pageUrl ?? null, actor: j.actor ?? null, usage: j.usage ?? null });
   /** Fetch the site secret its widget tokens are signed with (needs an administrator's Application Password). */
   const connectWidget = async (site: Site): Promise<string | null> => {
     try { const c = await new Bridge(site).connect(); secrets.setSiteSecret(site.id, c.secret); log("info", "site connected", { site: site.id, url: site.url, plugin: c.version }); return null; }
@@ -60,6 +60,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
   const sameSite = (a: string, b: string) => a.replace(/^https?:\/\/(www\.)?/i, "").replace(/\/+$/, "").toLowerCase() === b.replace(/^https?:\/\/(www\.)?/i, "").replace(/\/+$/, "").toLowerCase();
   const requestOpts = (b: any, caller: Caller) => ({
     approvalMode: b.approvalMode, model: typeof b.model === "string" ? b.model.trim() : undefined, kind: ["new", "note", "edit"].includes(b.kind) ? b.kind : undefined,
+    layoutPicker: b.layoutPicker === false ? false : undefined,
     pageUrl: typeof b.pageUrl === "string" && /^https?:\/\//.test(b.pageUrl) ? b.pageUrl : undefined,
     voice: b.voice === true,
     actor: caller.via === "widget" ? { token: caller.token, name: caller.user.name, login: caller.user.login } : undefined,

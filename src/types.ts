@@ -53,6 +53,8 @@ export interface Job {
   /** Every successful write of this chat, with what is needed to revert it. */
   changes?: ChangeRecord[];
   approvalMode?: ApprovalMode;
+  /** false = the person turned the layout picker off for this conversation. Unset = it is offered. */
+  layoutPicker?: boolean;
   /** Number of the current person request (each new message is a new request). */
   requestSeq?: number;
   /** In "request" mode: the request whose plan the person approved (its writes no longer ask). */

@@ -144,6 +144,9 @@ console.log("\n5) tools: only drafts; no direct live writes; theme writes only w
   const sf: any = { list: async () => ({}), read: async () => ({}), edit: async () => ({}), create: async () => ({}), restore: async () => ({}) };
   assert.ok(!Object.keys(makeTools(new Bridge(site), files, { siteFiles: sf })).includes("edit_file")); ok("theme file writes (live at once) are not offered by default");
   assert.ok(Object.keys(makeTools(new Bridge(site), files, { siteFiles: sf, allowThemeWrites: true })).includes("edit_file")); ok("…only with LC_ALLOW_THEME_FILES=1");
+  // "Don't ask me again" has to mean the model cannot ask: the tool is withheld, not just discouraged in the prompt.
+  assert.ok(names.includes("offer_layouts")); ok("the layout picker is offered by default");
+  assert.ok(!Object.keys(makeTools(new Bridge(site), files, { layoutPicker: false })).includes("offer_layouts")); ok("…and is not given to the model once the person turns it off");
   const css: any = await (makeTools(new Bridge(site), files, {}) as any).make_change.execute({ kind: "css.rule", target: "", value: JSON.stringify({ selector: ".x", media: "", declarations: { color: "red !important" } }), reason: "x" }, {});
   assert.equal(css.ok, false); assert.match(css.error, /important/); ok("JSON values reach the plugin as objects; its refusal comes back as a readable result");
 }

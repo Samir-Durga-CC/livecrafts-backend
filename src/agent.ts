@@ -36,6 +36,8 @@ export interface JobContext {
   pageUrl?: string;
   /** Stored with each change: "<job id>#<request>". */
   ref?: string;
+  /** false = the person turned the layout picker off, so offer_layouts is not given to the model at all. */
+  layoutPicker?: boolean;
   /** What is going on on the site + the notes, read at the start of the run (see siteContext in jobs.ts). */
   siteContext?: string;
   /**
@@ -258,7 +260,7 @@ export function buildAgent(files: FileStore, opts: BuildOptions = {}): AgentFact
         persona: job?.persona, siteContext: job?.siteContext, pageUrl: job?.pageUrl,
       }),
       tools: makeTools(bridge, files, {
-        siteFiles, allowThemeWrites: config.allowThemeWrites, hostinger: hg, browser, verifier, skills, planTool: mode === "request",
+        siteFiles, allowThemeWrites: config.allowThemeWrites, hostinger: hg, browser, verifier, skills, planTool: mode === "request", layoutPicker: job?.layoutPicker !== false,
         pageUrl: () => job?.pageUrl, ref: () => job?.ref ?? "", fetchImpl: opts.fetchImpl, allowPrivateImageHosts: opts.allowPrivateImageHosts, generateImage: opts.generateImage,
         speed: opts.speed !== undefined ? opts.speed : defaultSpeedRuns(), siteId: site.id, siteUrl: site.url,
         cache: job?.cache ?? null,

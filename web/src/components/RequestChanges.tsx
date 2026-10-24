@@ -108,6 +108,14 @@ export function ApprovalModePicker({ mode, onChange }: { mode: ApprovalMode; onC
   const [open, setOpen] = useState(false);
   const btn = useRef<HTMLButtonElement>(null);
   const cur = MODES.find((m) => m.id === mode) ?? MODES[0];
+  // The layout picker lives here too: this is the menu about how the assistant behaves, and "Don't ask me again"
+  // in the picker card would otherwise be one-way - there would be no way back to it.
+  const [layouts, setLayouts] = useState(() => localStorage.getItem("lc_layout_picker") !== "off");
+  const toggleLayouts = () => {
+    const on = !layouts;
+    localStorage.setItem("lc_layout_picker", on ? "on" : "off");
+    setLayouts(on);
+  };
   return (
     <div className="mode-pick">
       <button ref={btn} className={`model-pill mode-${mode}`} onClick={() => setOpen(!open)} title="How changes get approved" aria-expanded={open}>
@@ -121,6 +129,11 @@ export function ApprovalModePicker({ mode, onChange }: { mode: ApprovalMode; onC
             <span className="grow"><b>{m.label}</b><small>{m.hint}</small></span>{m.id === mode && <Icon.Check size={15} />}
           </button>
         ))}
+        <div className="menu-label">Layouts</div>
+        <button className="menu-item mode-item" onClick={toggleLayouts}>
+          <span className="grow"><b>Let me pick the layout</b><small>{layouts ? "It shows you the layouts of a section before placing it" : "It chooses the layout itself"}</small></span>
+          {layouts && <Icon.Check size={15} />}
+        </button>
       </FloatingMenu>
     </div>
   );

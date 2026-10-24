@@ -22,6 +22,8 @@ export interface RequestOptions {
   pageUrl?: string;
   /** The request came from voice (the realtime tool or the voice chat): faster model, context read once per session. */
   voice?: boolean;
+  /** false = do not offer the layout picker in this conversation; the assistant chooses the layout itself. */
+  layoutPicker?: boolean;
 }
 const cleanMode = (m: unknown): ApprovalMode | undefined => (APPROVAL_MODES.includes(m as ApprovalMode) ? (m as ApprovalMode) : undefined);
 
@@ -69,6 +71,7 @@ export class JobRunner {
     const text = context ? `${context}\n\n${prompt}` : prompt;
     const job: Job = { id: newId("job"), siteId, prompt, status: "queued", messages: [userMessage(text, fileIds)], pending: [], events: [], changes: [], createdAt: now, updatedAt: now,
       approvalMode: cleanMode(opts.approvalMode) ?? "request", requestSeq: 1, model: opts.model || undefined, pageUrl: opts.pageUrl || undefined, voice: opts.voice || undefined,
+      layoutPicker: opts.layoutPicker === false ? false : undefined,
       actorToken: opts.actor?.token, actor: opts.actor ? { name: opts.actor.name, login: opts.actor.login } : undefined };
     this.jobs.put(job);
     this.emit(job, "user", { text: prompt, fileIds, requestId: 1, approvalMode: job.approvalMode });
@@ -99,6 +102,7 @@ export class JobRunner {
     if (kind === "new") job.requestSeq = (job.requestSeq ?? 1) + 1;
     if (cleanMode(opts.approvalMode)) job.approvalMode = cleanMode(opts.approvalMode);
     if (opts.model !== undefined) job.model = opts.model || undefined;
+    if (opts.layoutPicker !== undefined) job.layoutPicker = opts.layoutPicker === false ? false : undefined;
     if (opts.pageUrl) job.pageUrl = opts.pageUrl;
     if (opts.voice !== undefined) job.voice = opts.voice || undefined;
     if (opts.actor) { job.actorToken = opts.actor.token; job.actor = { name: opts.actor.name, login: opts.actor.login }; }
