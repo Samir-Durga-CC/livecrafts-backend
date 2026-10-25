@@ -321,16 +321,26 @@ export function Transcript({ items, model, busy, working, welcome, spoken, onAns
   const lastUser = [...items].reverse().find((i) => i.kind === "user");
   const toolRunning = items.some((i) => i.kind === "tool" && i.state === "running");
   // The assistant asked for facts and is waiting: show the form until the person sends something.
-  // The assistant offered a choice of layouts and is waiting. Read the same way as the question form: the newest
-  // offer still unanswered, i.e. with no message of the person's after it.
+  /**
+   * The offer STAYS once it is answered, folded up, with the chosen layout named and reopenable. It used to vanish
+   * the moment anything else was said, so the pictures could be seen exactly once and there was no way back to them.
+   */
   const picking = (() => {
-    if (working || !onAsk || !siteId) return null;
+    if (!onAsk || !siteId) return null;
+    let chosen: string | null = null;
+    let answered = false;
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
-      if (it.kind === "user") return null;                             // already chosen
+      if (it.kind === "user") {
+        if (!answered) { answered = true; chosen = it.text.match(/"([a-z][a-z0-9_-]{0,20})"\s+layout/i)?.[1] ?? null; }
+        continue;
+      }
       if (it.kind === "tool" && it.tool === "offer_layouts" && it.state !== "failed") {
         const template = it.input?.template as string | undefined;
-        return template ? { template, intro: it.input?.intro as string | undefined, only: (it.input?.variants ?? null) as string[] | null } : null;
+        if (!template) return null;
+        // While it is still working on that answer there is nothing to pick: the question comes back when it stops.
+        if (working && !answered) return null;
+        return { template, intro: it.input?.intro as string | undefined, only: (it.input?.variants ?? null) as string[] | null, answered, chosen };
       }
     }
     return null;
@@ -421,6 +431,7 @@ export function Transcript({ items, model, busy, working, welcome, spoken, onAns
         {asking && onAsk && <AskForm intro={asking.intro} questions={asking.questions} busy={busy} onSend={onAsk} onTouch={onAskTouch} />}
         {picking && onAsk && siteId && (
           <LayoutPicker siteId={siteId} template={picking.template} intro={picking.intro} only={picking.only} busy={busy}
+            answered={picking.answered} chosen={picking.chosen}
             onSend={onAsk}
             onDismiss={() => onAsk("You choose the layout - pick whichever fits the page best.")}
             onNeverAsk={() => { onNeverAskLayout?.(); onAsk("You choose the layout, and do not ask me about layouts again."); }} />
