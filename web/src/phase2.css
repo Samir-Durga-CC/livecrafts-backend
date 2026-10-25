@@ -740,7 +740,7 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
 
 /* The frame renders at desktop width and is scaled down, so a tile shows the real layout, not a phone-width one. */
 .lay-shot { position: relative; display: block; height: 132px; overflow: hidden; background: #fff; border-bottom: 1px solid var(--line); }
-.lay-shot iframe { position: absolute; top: 0; left: 0; width: 1280px; height: 880px; border: 0; transform: scale(.167); transform-origin: top left; pointer-events: none; }
+.lay-shot iframe { position: absolute; top: 0; left: 0; width: 1280px; height: 880px; border: 0; transform: scale(var(--lay-scale, .167)); transform-origin: top left; pointer-events: none; }
 .lay-failed, .lay-loading { display: flex; align-items: center; justify-content: center; gap: 8px; height: 100%; color: var(--muted); font-size: 12px; text-align: center; padding: 0 10px; }
 .lay-grid > .lay-loading { grid-column: 1 / -1; height: 60px; }
 .lay-name { padding: 8px 10px 0; font-size: 12.5px; font-weight: 600; color: var(--text-2); line-height: 1.3; }

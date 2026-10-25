@@ -66,7 +66,12 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     actor: caller.via === "widget" ? { token: caller.token, name: caller.user.name, login: caller.user.login } : undefined,
   });
   // What the chat inside the WordPress widget may call (with its signed per-person token).
-  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/sites|POST \/voice\/(transcribe|speak|realtime\/session)|GET \/voice\/stream|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms|pagespeed)|(POST \/sites\/[\w-]+\/pagespeed|GET \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+|PUT \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+\/fix|GET \/sites\/[\w-]+\/plugins(\/(history|versions|jobs\/plj_[a-f0-9]+))?|POST \/sites\/[\w-]+\/plugins\/(update|rollback))|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
+  /**
+   * What the widget's own token may call. Both template routes are read-only and were added for the layout
+   * picker: the person in the widget is a signed-in editor of this site, the list only names templates and the
+   * pages they are already on, and the render route returns a template filled with SAMPLE content, never theirs.
+   */
+  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/sites|POST \/voice\/(transcribe|speak|realtime\/session)|GET \/voice\/stream|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms|pagespeed|templates|templates\/render)|(POST \/sites\/[\w-]+\/pagespeed|GET \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+|PUT \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+\/fix|GET \/sites\/[\w-]+\/plugins(\/(history|versions|jobs\/plj_[a-f0-9]+))?|POST \/sites\/[\w-]+\/plugins\/(update|rollback))|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
 
   async function readBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
     const chunks: Buffer[] = []; let size = 0;

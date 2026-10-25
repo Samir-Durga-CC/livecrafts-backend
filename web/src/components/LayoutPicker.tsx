@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { Icon } from "../icons";
 
@@ -32,11 +32,14 @@ const NICE: Record<string, string> = {
 };
 const label = (v: string) => NICE[v] ?? v.replace(/[-_]/g, " ").replace(/^./, (c) => c.toUpperCase());
 
+/** The width each frame renders at before it is scaled down to the tile. */
+const FRAME_W = 1280;
+
 interface Shot { html: string; css: string[]; custom?: string; error?: string }
 
 /** A whole little document for the frame: the site's stylesheets, then the section, and nothing else. */
 const docFor = (r: Shot) => `<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=1280, initial-scale=1">
+<meta name="viewport" content="width=${FRAME_W}, initial-scale=1">
 ${r.css.map((href) => `<link rel="stylesheet" href="${href.replace(/"/g, "&quot;")}">`).join("")}
 <style>${r.custom ?? ""}
 html,body{margin:0;padding:0;background:#fff;}
@@ -94,6 +97,25 @@ export function LayoutPicker({ siteId, template, intro, only, busy, onSend, onDi
 
   const nice = useMemo(() => template.replace(/[-_]/g, " "), [template]);
 
+  /**
+   * The frames render at desktop width and are scaled down. The factor has to follow the tile, or the preview is
+   * cropped in the narrow on-site widget and leaves a gap in the wide app - so it is measured, not guessed.
+   */
+  const grid = useRef<HTMLDivElement>(null);
+  const fit = useCallback(() => {
+    const el = grid.current;
+    const shot = el?.querySelector<HTMLElement>(".lay-shot");
+    if (el && shot?.clientWidth) el.style.setProperty("--lay-scale", String(shot.clientWidth / FRAME_W));
+  }, []);
+  useEffect(() => {
+    fit();
+    const el = grid.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [fit, variants, shots]);
+
   return (
     <div className="lay-card">
       <div className="lay-head">
@@ -102,7 +124,7 @@ export function LayoutPicker({ siteId, template, intro, only, busy, onSend, onDi
       {intro && <p className="lay-intro">{intro}</p>}
       {error && <div className="lay-error">{error}</div>}
 
-      <div className="lay-grid">
+      <div className="lay-grid" ref={grid}>
         {(variants ?? []).map((v) => {
           const shot = shots[v];
           return (

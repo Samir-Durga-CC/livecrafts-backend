@@ -575,13 +575,18 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   }, [site.id, cfg.pageUrl, eyesOk, post]);
 
   /** `spoken`: the request was said out loud. The backend then runs it as a voice job (faster model, low effort). */
+  /** Read at send time, not from state: "Don't ask me again" sends its message in the same tick it is written. */
+  const layoutPickerOn = () => localStorage.getItem("lc_layout_picker") !== "off";
+  const neverAskLayout = () => localStorage.setItem("lc_layout_picker", "off");
+
   async function send(prompt: string, fileIds: string[], extraContext?: string, spoken = false): Promise<string> {
     setProblem("");
     try {
       // They have answered (typed, spoken, or filled the form): stop reading out whatever was still queued, or the
       // assistant carries on describing a question that is already answered.
       if (voiceOn) { voice.stopSpeaking(); setSaying(""); setReadAloud(null); readSeq.current = -1; partial.current = { seq: -1, chars: 0 }; }
-      const args = { prompt, fileIds, pageUrl: cfg.pageUrl, approvalMode: mode, extraContext, ...(spoken ? { voice: true } : {}), ...(pick ? { model: pick } : {}) };
+      const args = { prompt, fileIds, pageUrl: cfg.pageUrl, approvalMode: mode, extraContext, ...(spoken ? { voice: true } : {}),
+        ...(layoutPickerOn() ? {} : { layoutPicker: false }), ...(pick ? { model: pick } : {}) };
       let id = jobId;
       if (jobId && paused) await api.message(jobId, { ...args, kind: pauseKind });
       else if (jobId && (status === "completed" || status === "failed")) await api.message(jobId, args);
@@ -898,6 +903,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
         {tab === "chat" && (
           <div className="w-chat">
             <Transcript items={timeline} model={name} busy={answering} working={working} welcome={welcome} spoken={readAloud}
+              siteId={site.id} onNeverAskLayout={neverAskLayout}
               onAsk={(t) => void send(t, [])}
               onAskTouch={() => { if (voiceOn) { voice.stopSpeaking(); setSaying(""); } }}
               onAnswer={(a, ok, r) => void answer(a, ok, r)} onCopy={(t) => { navigator.clipboard?.writeText(t); say("Copied"); }}
