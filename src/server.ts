@@ -280,7 +280,10 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       }
       // ---- Section Gallery: ready-made sections added with one click (no AI). See src/sections.
       if (route === "GET /sections/usage") { // the Section Gallery's counter (admin only: not a widget route)
-        return send(res, 200, { ok: true, ...sectionUsageReport(readSectionUses(), sites.list().map((x) => ({ id: x.id, name: x.name, url: x.url }))) });
+        const only = url.searchParams.get("site") ?? ""; // one website, or all
+        const uses = readSectionUses().filter((u) => !only || u.site === only);
+        return send(res, 200, { ok: true, site: only || null, brand: only ? sectionLayouts.get(only)?.layout.brand ?? null : null,
+          ...sectionUsageReport(uses, sites.list().map((x) => ({ id: x.id, name: x.name, url: x.url }))) });
       }
       m = url.pathname.match(/^\/sites\/([\w-]+)\/sections(\/preview|\/add|\/site)?$/);
       if (m) {

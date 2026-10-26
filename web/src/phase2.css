@@ -883,3 +883,13 @@ a.nav-item:visited { color: var(--muted); } a.nav-item:hover { color: var(--text
   .app.panel-open.panel-wide { grid-template-columns: 1fr clamp(380px, 32vw, 540px); }
   .app.nav-open.panel-open.panel-wide { grid-template-columns: 260px 1fr clamp(380px, 32vw, 540px); }
 }
+
+/* /section-usage: website picker and section pictures */
+.su-page { max-width: 1080px; }
+.su-sec { display: flex; align-items: center; gap: 14px; }
+.su-thumb { flex: none; width: 160px; height: 90px; border-radius: 8px; border: 1px solid var(--line); background: #fff; overflow: hidden; position: relative; }
+.su-thumb iframe { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; border: 0; transform: scale(.125); transform-origin: 0 0; pointer-events: none; }
+.su-thumb-ph { display: grid; place-items: center; height: 100%; color: var(--faint); font-size: 11px; background: var(--card); }
+.su-used { display: inline-flex; align-items: center; white-space: nowrap; }
+.su-table td { vertical-align: middle; }
+@media (max-width: 640px) { .su-thumb { width: 112px; height: 63px; } .su-thumb iframe { transform: scale(.0875); } }
