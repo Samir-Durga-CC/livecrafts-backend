@@ -38,6 +38,8 @@ import { createSession as createRealtimeSession, realtimeAvailable, realtimeMode
 import { defaultSpeedRuns, needsLocalRun, runSummary, runView, sameHost, type SpeedDevice, type SpeedRuns } from "./pagespeed.js";
 
 export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: FileStore, opts: { speed?: SpeedRuns } = {}) {
+  /** What the Section Gallery measured on each site (content box, theme container class, brand). */
+  const sectionLayouts = new JsonStore<{ id: string; layout: SiteLayout; at: string }>(path.join(config.dataDir, "section-layouts"));
   const speed = opts.speed ?? defaultSpeedRuns();
   const publicSite = (s: Site) => ({ id: s.id, name: s.name, url: s.url, username: s.username, createdAt: s.createdAt, hosting: s.hosting ?? null }); // never expose the password
   let lastHealth: HostingerHealth | null = null;
@@ -694,8 +696,6 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
 // Start only when run directly (the tests import createApp).
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"))) {
   const sites = new JsonStore<Site>(path.join(config.dataDir, "sites"));
-  /** What the Section Gallery measured on each site (content box, theme container class, brand). */
-  const sectionLayouts = new JsonStore<{ id: string; layout: SiteLayout; at: string }>(path.join(config.dataDir, "section-layouts"));
   const jobs = new JsonStore<Job>(path.join(config.dataDir, "jobs"));
   const files = new FileStore();
   const runner = new JobRunner(jobs, sites, buildAgent(files));
