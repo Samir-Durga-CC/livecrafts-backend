@@ -96,6 +96,30 @@ assert.ok(String(classic.writes[2].value).startsWith("<p>Old classic page</p>"),
 assert.match(String(classic.writes[2].value), /lcs-cta-split/);
 ok("Classic: added to the page content, existing content kept");
 
+// A page the theme builds from its own template parts: the content never shows, so the section goes between parts.
+const themed = fakeBridge({ map: { builders: {}, sections: { themeParts: ["header", "template-parts/hero", "template-parts/why", "footer"], showsContent: false, current: [] } },
+  content: "<!-- wp:paragraph -->\n<p>Never shown</p>\n<!-- /wp:paragraph -->" });
+const ti = await pageInfo(themed.bridge, 5);
+assert.equal(ti.builder, "theme");
+assert.deepEqual(ti.places.map((p) => p.value), ["before:template-parts/hero", "before:template-parts/why", "end"], "header and footer are not places");
+await addSection(themed.bridge, { id: "hero-band", postId: 5, place: "before:template-parts/why" });
+assert.equal(themed.writes[2].kind, "theme.section");
+assert.equal(themed.writes[2].target, "append:before:template-parts/why", "0.24.2 appends below what is already there");
+assert.match(themed.writes[2].value, /^<div class="lcs-host">/);
+ok("Theme-built page: theme.section between the theme's parts, appended");
+
+const oldTheme = fakeBridge({ map: { builders: {}, sections: { themeParts: ["template-parts/hero"], current: [{ anchor: "end", content: "x" }] } }, content: "" });
+const oi = await pageInfo(oldTheme.bridge, 5);
+assert.equal(oi.builder, "theme", "older plugin: parts and no content part means theme-built");
+await addSection(oldTheme.bridge, { id: "cta-band", postId: 5, place: "before:template-parts/hero" });
+assert.equal(oldTheme.writes[2].target, "before:template-parts/hero", "older plugin: a free place, no append");
+await assert.rejects(addSection(oldTheme.bridge, { id: "cta-band", postId: 5, place: "end" }), /0\.24\.2/);
+ok("Theme-built page on an older plugin: free places only");
+
+const normal = fakeBridge({ map: { builders: {}, sections: { themeParts: ["template-parts/content-page"], showsContent: true, current: [] } }, content: "<!-- wp:paragraph -->\n<p>Hi</p>\n<!-- /wp:paragraph -->" });
+assert.equal((await pageInfo(normal.bridge, 6)).builder, "blocks", "a theme that prints the content stays a blocks page");
+ok("A theme that prints the content: blocks as before");
+
 await assert.rejects(addSection(classic.bridge, { id: "nope", postId: 4 }), /Unknown section/);
 await assert.rejects(addSection(classic.bridge, { id: "cta-split", postId: 0 }), /Open the page/);
 ok("Unknown section or no page: refused");

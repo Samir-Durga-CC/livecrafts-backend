@@ -7,6 +7,8 @@
  *   blocks     block.insert  a full-width Group block holding a Custom HTML block
  *   divi       divi.insert   a Divi section > row > column > Code module (plugin 0.24+)
  *   html       post.field    classic content: the section is added to the page content at the start or the end
+ *   theme      theme.section a page the THEME builds from its own template parts (it never prints the page content):
+ *                            the plugin renders the section at a seam between two parts (plugin 0.24.2 appends)
  * The look is two Additional CSS blocks (css.block): the shared design system and the section's own rules, both
  * written once per site and replaced (not duplicated) when they are written again.
  */
@@ -14,9 +16,9 @@ import { Bridge } from "../bridge.js";
 import { lintCss, lintHtml, merge } from "../library/lint.js";
 import { CATEGORIES, CORE_CSS, CORE_ID, SECTIONS, getSection, type SectionDef } from "./library.js";
 
-export type SectionBuilder = "elementor" | "blocks" | "divi" | "html";
+export type SectionBuilder = "elementor" | "blocks" | "divi" | "html" | "theme";
 export interface Place { value: string; label: string }
-export interface PageInfo { builder: SectionBuilder | null; why: string; places: Place[]; containers?: boolean; unsupported?: string }
+export interface PageInfo { builder: SectionBuilder | null; why: string; places: Place[]; containers?: boolean; unsupported?: string; canAppend?: boolean; taken?: string[] }
 
 /** Elementor kit settings the gallery adds to the design system, so a container around a section adds no padding. */
 const HOST_CSS = `
@@ -86,6 +88,8 @@ export async function pageInfo(bridge: Bridge, postId: number): Promise<PageInfo
     if (places.length > 1) places[places.length - 1].label += ", end of the page";
     return { builder: "divi", why: "Divi page", places };
   }
+  const theme = themeBuilt(map?.sections);
+  if (theme) return theme;
   if (!content.trim() || /<!--\s+wp:/.test(content)) {
     const blocks = topBlocks(content);
     const places: Place[] = [{ value: ":0", label: "Top of the page" }];
@@ -94,6 +98,29 @@ export async function pageInfo(bridge: Bridge, postId: number): Promise<PageInfo
     return { builder: "blocks", why: "block editor page", places };
   }
   return { builder: "html", why: "classic editor page", places: [{ value: "start", label: "Top of the page" }, { value: "end", label: "End of the page" }] };
+}
+
+/** Template parts that are the site's frame, not the page: a section never goes next to these. */
+const FRAME = /(^|\/)(header|footer|nav|navigation|menu|head|foot)([-_/]|$)/i;
+const partName = (slug: string) => slug.replace(/^template-parts\//, "").replace(/^(sections?|parts?|blocks?)\//, "").replace(/[-_/]+/g, " ").trim().replace(/^./, (c) => c.toUpperCase());
+
+/**
+ * A page the theme builds itself (front-page.php calling get_template_part for hero, why, products...): whatever is
+ * saved in the page content never shows. The plugin records whether the page printed its content (0.24.2: showsContent)
+ * and which template parts it loaded (themeParts). Older plugins only have the parts: then a page counts as theme-built
+ * when it loads parts and none of them is a content part.
+ */
+export function themeBuilt(sec: any): PageInfo | null {
+  if (!sec || typeof sec !== "object") return null;
+  const parts: string[] = (Array.isArray(sec.themeParts) ? sec.themeParts : []).map(String);
+  const knows = "showsContent" in sec && sec.showsContent !== null && sec.showsContent !== undefined;
+  const built = knows ? sec.showsContent === false : parts.length > 0 && !parts.some((p) => /content|loop|single|page/i.test(p));
+  if (!built) return null;
+  const body = parts.filter((p) => !FRAME.test(p));
+  const places: Place[] = body.map((p, i) => ({ value: `before:${p}`, label: i === 0 ? `Top of the page (above ${partName(p)})` : `Above: ${partName(p)}` }));
+  places.push({ value: "end", label: body.length ? `End of the page (below ${partName(body[body.length - 1])})` : "End of the page" });
+  const taken = (Array.isArray(sec.current) ? sec.current : []).map((c: any) => String(c?.anchor ?? "")).filter(Boolean);
+  return { builder: "theme", why: "page built by the theme's own template", places, canAppend: "showsContent" in sec, taken };
 }
 
 function isInside(outline: any[], node: any, ancestorId: string): boolean {
@@ -130,6 +157,12 @@ function wrap(s: SectionDef, info: PageInfo, currentContent: string, place: stri
       };
     case "divi":
       return { kind: "divi.insert", target: place, value: s.html };
+    case "theme": {
+      // 0.24.2 appends below what is already in that place; an older plugin replaces it, so it only gets free places.
+      if (info.canAppend) return { kind: "theme.section", target: `append:${place}`, value: `<div class="lcs-host">${s.html}</div>` };
+      if (info.taken?.includes(place)) throw new SectionError("There is already a section in that place. Update the Livecrafts plugin to 0.24.2 to add more than one, or pick another place.", 409);
+      return { kind: "theme.section", target: place, value: `<div class="lcs-host">${s.html}</div>` };
+    }
     case "html": {
       const piece = `<div class="lcs-host">${s.html}</div>`;
       return { kind: "post.field", target: "content", value: place === "start" ? `${piece}\n\n${currentContent}` : `${currentContent.replace(/\s+$/, "")}\n\n${piece}\n` };
@@ -149,6 +182,7 @@ export async function addSection(bridge: Bridge, a: { id: string; postId: number
   if (!info.builder) throw new SectionError(info.unsupported ?? "Sections cannot be added to this page.");
   const place = a.place && info.places.some((p) => p.value === a.place) ? a.place : info.places[info.places.length - 1].value;
   const current = info.builder === "html" ? String((await bridge.post(a.postId, "draft"))?.content ?? "") : "";
+  const w = wrap(s, info, current, place); // before anything is written, so a refusal leaves no stray CSS behind
 
   // 1) the look first (the plugin replaces a block with the same name, so writing it again is harmless)
   const cssChanges: any[] = [];
@@ -158,7 +192,6 @@ export async function addSection(bridge: Bridge, a: { id: string; postId: number
     if (r?.change && !r?.unchanged) cssChanges.push(r.change);
   }
   // 2) the section itself
-  const w = wrap(s, info, current, place);
   const r: any = await bridge.makeChange({ kind: w.kind, post: a.postId, target: w.target, value: w.value, label: `Section: ${s.name}`, ref: a.ref, source: "widget" });
   if (r?.ok === false) throw new SectionError(r.error ?? r.message ?? "The site refused the section.", 502);
   return { ok: true, section: s.id, name: s.name, builder: info.builder, place, change: r.change ?? null, cssChanges };
