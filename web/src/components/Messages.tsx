@@ -57,9 +57,12 @@ function Shot({ id, caption }: { id: string; caption: string }) {
 }
 
 const DEVICE_NAME: Record<string, string> = { desktop: "Desktop", tablet: "Tablet", mobile: "Mobile" };
-function shotCaption(ui: Record<string, any>) {
+function shotCaption(ui: Record<string, any>, tool?: string) {
+  const device = DEVICE_NAME[ui.device] ?? ui.device ?? "Desktop";
+  // What place_component looked at before it said the section was done.
+  if (tool === "place_component") return `What the assistant saw after placing the ${ui.target ?? "section"} · ${device}`;
   const where = ui.target && ui.target !== "page" ? ui.target : "the page";
-  return `Live screenshot of ${where} · ${DEVICE_NAME[ui.device] ?? ui.device ?? "Desktop"}`;
+  return `Live screenshot of ${where} · ${device}`;
 }
 
 /** A new blog post: what was made, that it is a draft, and the three next steps (look, edit, publish). */
@@ -93,7 +96,8 @@ function Activity({ items, onOpen, onDeploy }: { items: ToolItem[]; onOpen?: (ur
   const running = items.find((i) => i.state === "running");
   const failed = items.filter((i) => i.state === "failed").length;
   const labels = [...new Set(items.filter((i) => i.state !== "running").map((i) => DONE[i.tool] ?? i.tool))];
-  const shots = items.filter((i) => i.tool === "screenshot_page" && i.ui?.screenshotId);
+  // Any tool that looked at the page, not just screenshot_page: whatever the assistant saw, the person sees too.
+  const shots = items.filter((i) => i.ui?.screenshotId);
   const files = items.filter((i) => (i.tool === "edit_file" || i.tool === "restore_file" || i.tool === "create_file") && i.state === "ok" && i.ui?.path);
   const pages = items.filter((i) => (i.tool === "create_page" || i.tool === "create_post" || i.tool === "edit_post_content" || i.tool === "set_post_status") && i.state === "ok" && i.ui?.link);
   const posts = items.filter((i) => i.tool === "create_blog_post" && i.state === "ok" && i.ui?.preview);
@@ -144,7 +148,7 @@ function Activity({ items, onOpen, onDeploy }: { items: ToolItem[]; onOpen?: (ur
           <span className="fd-badge ok">Image added to the Media Library</span>
         </div>
       ))}
-      {shots.map((s) => <Shot key={s.seq} id={String(s.ui!.screenshotId)} caption={shotCaption(s.ui!)} />)}
+      {shots.map((s) => <Shot key={s.seq} id={String(s.ui!.screenshotId)} caption={shotCaption(s.ui!, s.tool)} />)}
     </div>
   );
 }

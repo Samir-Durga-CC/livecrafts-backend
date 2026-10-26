@@ -471,7 +471,9 @@ export function makeComponentTools(h: ComponentHelpers) {
         return {
           ...out, change: h.changeView(out.change), changeId: out.change?.id, extraChanges: extra, component: a.id, builder, placeholders, warnings,
           ...(shot?.screenshotId
-            ? { imageForModel: shot.screenshotId, imageCaption: `The ${a.id} section as it was just placed, on the draft page (desktop)` }
+            // screenshotId as well as imageForModel: the model reads the image, and the chat shows the person the
+            // same picture, so what the assistant judged the section on is never something only it saw.
+            ? { imageForModel: shot.screenshotId, screenshotId: shot.screenshotId, device: "desktop", imageCaption: `The ${a.id} section as it was just placed, on the draft page (desktop)` }
             : h.screenshot ? { lookedAt: "No screenshot came back: take one with screenshot_page before you answer." } : {}),
           usedTemplate: templateUsed ? { ...templateUsed, proof: out.verification?.checks?.some((c: any) => /component/.test(c.name) && c.ok === false && /not on the draft page/.test(c.detail ?? "")) ? "NOT FOUND on the draft page: the template did not render. Fix or revert." : `The marker <div class="ai-t" data-lc-template="${a.id}"> is on the page; open seeIt to see it outlined.` } : undefined,
           nextSteps: [
