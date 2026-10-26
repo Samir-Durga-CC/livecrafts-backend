@@ -866,3 +866,19 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
 .su-more { color: var(--accent); }
 .su-sites td { background: var(--card); padding-left: 28px; }
 .su-h2 { font-size: 16px; margin: 28px 0 10px; }
+
+/* ---------------------------------------------------------------- roomier console (sidebar groups, compact safe mode, panel sizes) */
+.nav-label { color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; padding: 12px 10px 4px; }
+a.nav-item { text-decoration: none; }
+a.nav-item:visited { color: var(--muted); } a.nav-item:hover { color: var(--text); }
+.safe-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 11px; background: var(--surface); border: 1px solid var(--line); font-size: 12.5px; }
+.safe-row strong { font-weight: 600; }
+.safe-row .safe-ico { width: 24px; height: 24px; border-radius: 7px; }
+.safe-row .safe-link { margin-top: 0; }
+@media (min-width: 1101px) {
+  .app.nav-open { grid-template-columns: 260px 1fr; }
+  .app.panel-open { grid-template-columns: 1fr clamp(300px, 24vw, 360px); }
+  .app.nav-open.panel-open { grid-template-columns: 260px 1fr clamp(300px, 24vw, 360px); }
+  .app.panel-open.panel-wide { grid-template-columns: 1fr clamp(380px, 32vw, 540px); }
+  .app.nav-open.panel-open.panel-wide { grid-template-columns: 260px 1fr clamp(380px, 32vw, 540px); }
+}

@@ -45,7 +45,8 @@ export default function App() {
   const [navigate, setNavigate] = useState<{ url: string; n: number } | undefined>();
   const [tokenReason, setTokenReason] = useState<string | undefined>();
   const [navOpen, setNavOpen] = useState(wide());
-  const [panelOpen, setPanelOpen] = useState(window.innerWidth > 1280);
+  // Open by default only where the chat still has room beside it (laptops start with it closed: one click opens it).
+  const [panelOpen, setPanelOpen] = useState(window.innerWidth >= 1600);
   const [answering, setAnswering] = useState(false);
   const [problem, setProblem] = useState("");
   const [toast, setToast] = useState("");

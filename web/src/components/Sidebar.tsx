@@ -44,9 +44,10 @@ export function Sidebar(p: SidebarProps) {
       <nav className="nav">
         <button className="nav-item on"><Icon.Chat size={17} /> Chat</button>
         <button className="nav-item" onClick={p.onManageSites}><Icon.Globe size={17} /> Sites <span className="count">{p.sites.length}</span></button>
+        <button className="nav-item" onClick={p.onIntegrations}><Icon.Plug size={17} /> Integrations <span className={`conn-dot ${p.hostingerOk ? "ok" : ""}`} title={p.hostingerOk ? "Hostinger connected" : "Hostinger not connected"} /></button>
+        <div className="nav-label">Library</div>
         <a className="nav-item" href={`/templates${p.site ? `?site=${p.site.id}` : ""}`}><Icon.List size={17} /> Templates</a>
         <a className="nav-item" href="/section-usage"><Icon.Layout size={17} /> Section usage</a>
-        <button className="nav-item" onClick={p.onIntegrations}><Icon.Plug size={17} /> Integrations <span className={`conn-dot ${p.hostingerOk ? "ok" : ""}`} title={p.hostingerOk ? "Hostinger connected" : "Hostinger not connected"} /></button>
       </nav>
       <div className="divider" />
 
@@ -74,12 +75,11 @@ export function Sidebar(p: SidebarProps) {
         })}
       </div>
 
-      <div className="safe-card">
-        <div className="safe-ico"><Icon.Shield size={18} /></div>
-        <div>
-          <strong>Safe mode is on</strong><p>Every change waits for your approval and is checked on the live page afterwards.</p>
-          {p.site && <button className="safe-link" onClick={p.onIntegrations}>{p.site.hosting ? <><Icon.Check size={12} /> Theme files: linked</> : <><Icon.Plug size={12} /> Theme files: connect Hostinger</>}</button>}
-        </div>
+      <div className="safe-row" title="Safe mode: every change waits for your approval and is checked on the live page afterwards.">
+        <span className="safe-ico"><Icon.Shield size={14} /></span>
+        <strong>Safe mode on</strong>
+        <span className="grow" />
+        {p.site && <button className="safe-link" onClick={p.onIntegrations} title={p.site.hosting ? "Theme files are linked (Hostinger)" : "Connect Hostinger so the assistant can edit theme files"}>{p.site.hosting ? <><Icon.Check size={12} /> Theme files</> : <><Icon.Plug size={12} /> Connect files</>}</button>}
       </div>
 
       <div className="user-wrap" ref={menuRef}>
