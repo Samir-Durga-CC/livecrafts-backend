@@ -12,7 +12,7 @@ const GROUPS: { id: ResolvedAction["group"]; label: string; icon: ReactElement }
   { id: "motion", label: "Animation", icon: <Icon.Sparkle size={15} /> },
 ];
 const SOURCE: Record<string, string> = {
-  elementor: "Elementor", block: "Block editor", acf: "ACF field", menu: "Menu", theme: "Theme / plugin", ambiguous: "Not sure",
+  elementor: "Elementor", block: "Block editor", acf: "ACF field", menu: "Menu", section: "Livecrafts section", theme: "Theme / plugin", ambiguous: "Not sure",
 };
 
 /** Put what the person entered into a change: in its "{value}" placeholders, or as its value. */
