@@ -32,19 +32,27 @@ const HOST_CSS = `
 export const coreCss = () => CORE_CSS + HOST_CSS;
 
 export const SITE_ID = "lcs-site";
-export interface SiteLayout { container: number; gutter: number }
+export interface SiteLayout { container: number; gutter: number; className?: string }
 
 /** The site's content box as measured on its page by the plugin (lc:measure), or null when it is not believable. */
 export function cleanLayout(l: any): SiteLayout | null {
   const container = Math.round(Number(l?.container)), gutter = Math.round(Number(l?.gutter));
   if (!Number.isFinite(container) || container < 480 || container > 2600) return null;
   if (!Number.isFinite(gutter) || gutter < 0 || gutter > 160) return null;
-  return { container, gutter };
+  const cls = String(l?.className ?? "");
+  return /^[A-Za-z_][\w-]{0,40}$/.test(cls) && !/^lc/.test(cls) ? { container, gutter, className: cls } : { container, gutter };
 }
 
-/** Per-site CSS: gallery sections use the theme's own container, so they line up with the header and the rest. */
+/** The section's content box also wears the theme's container class, so the theme sizes it at every breakpoint. */
+export const withSiteContainer = (html: string, l: SiteLayout | null) =>
+  l?.className ? html.replace(/class="lcs-in(?=[\s"])/g, `class="lcs-in ${l.className}`) : html;
+
+/**
+ * Per-site CSS: the measured content box, for sections that cannot wear the theme's class (or were added before it was
+ * known). Only measured at one screen width, so the side padding narrows on small screens instead of staying fixed.
+ */
 export const siteLayoutCss = (l: SiteLayout) =>
-  `/* Livecrafts sections: this site's content box (measured on the site) */\n.lcs { --lc-container: ${l.container}px; --lc-gutter: ${l.gutter}px; }\n`;
+  `/* Livecrafts sections: this site's content box (measured on the site) */\n.lcs { --lc-container: ${l.container}px; --lc-gutter: ${l.gutter > 16 ? `clamp(16px, 4cqi, ${l.gutter}px)` : `${l.gutter}px`}; }\n`;
 
 /** The catalogue as the gallery shows it (no markup: the preview fetches that per section). */
 export function catalogue() {
@@ -197,11 +205,11 @@ export async function addSection(bridge: Bridge, a: { id: string; postId: number
   if (!info.builder) throw new SectionError(info.unsupported ?? "Sections cannot be added to this page.");
   const place = a.place && info.places.some((p) => p.value === a.place) ? a.place : info.places[info.places.length - 1].value;
   const current = info.builder === "html" ? String((await bridge.post(a.postId, "draft"))?.content ?? "") : "";
-  const w = wrap(s, info, current, place); // before anything is written, so a refusal leaves no stray CSS behind
+  const layout = cleanLayout(a.layout);
+  const w = wrap({ ...s, html: withSiteContainer(s.html, layout) }, info, current, place); // before anything is written, so a refusal leaves no stray CSS behind
 
   // 1) the look first (the plugin replaces a block with the same name, so writing it again is harmless)
   const cssChanges: any[] = [];
-  const layout = cleanLayout(a.layout);
   const blocks = [{ id: CORE_ID, label: "Livecrafts sections: design system", css: coreCss() }];
   if (layout) blocks.push({ id: SITE_ID, label: "Livecrafts sections: this site's content width", css: siteLayoutCss(layout) });
   blocks.push({ id: `lcs-${s.id}`, label: `Livecrafts section: ${s.name}`, css: s.css });
