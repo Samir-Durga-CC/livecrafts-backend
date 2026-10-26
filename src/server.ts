@@ -7,6 +7,7 @@ import { JsonStore, newId } from "./store.js";
 import { FileStore } from "./files.js";
 import { Bridge, BridgeError } from "./bridge.js";
 import { pluginJobs } from "./pluginJobs.js";
+import { SectionError, addSection, catalogue, pageInfo, previewDocument, siteLook } from "./sections/place.js";
 import { buildAgent } from "./agent.js";
 import { JobRunner } from "./jobs.js";
 import type { Job, Site } from "./types.js";
@@ -21,6 +22,8 @@ import { PROVIDERS, providerStatus, testModel } from "./models.js";
 const SETTABLE = PROVIDERS.filter((p) => !p.needsNoKey).map((p) => p.id).join("|");
 const PROVIDER_RE = new RegExp(`^/integrations/models/(${SETTABLE})$`);
 const PROVIDER_MODELS_RE = new RegExp(`^/integrations/models/(${PROVIDERS.map((p) => p.id).join("|")})/models$`);
+/** The site look (brand colour, fonts) the section previews use, remembered for a few minutes per site. */
+const sectionLooks = new Map<string, { at: number; value: Awaited<ReturnType<typeof siteLook>> }>();
 import { claudeCliStatus } from "./claudeCli.js";
 import { diffOf } from "./changes.js";
 import { canUseSite, verifyWidgetToken, type Caller } from "./auth.js";
@@ -71,7 +74,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
    * picker: the person in the widget is a signed-in editor of this site, the list only names templates and the
    * pages they are already on, and the render route returns a template filled with SAMPLE content, never theirs.
    */
-  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/sites|POST \/voice\/(transcribe|speak|realtime\/session)|GET \/voice\/stream|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms|pagespeed|templates|templates\/render)|(POST \/sites\/[\w-]+\/pagespeed|GET \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+|PUT \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+\/fix|GET \/sites\/[\w-]+\/plugins(\/(history|versions|jobs\/plj_[a-f0-9]+))?|POST \/sites\/[\w-]+\/plugins\/(update|rollback))|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
+  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/sites|POST \/voice\/(transcribe|speak|realtime\/session)|GET \/voice\/stream|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms|pagespeed|templates|templates\/render|sections|sections\/preview)|POST \/sites\/[\w-]+\/sections\/add|(POST \/sites\/[\w-]+\/pagespeed|GET \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+|PUT \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+\/fix|GET \/sites\/[\w-]+\/plugins(\/(history|versions|jobs\/plj_[a-f0-9]+))?|POST \/sites\/[\w-]+\/plugins\/(update|rollback))|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
 
   async function readBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
     const chunks: Buffer[] = []; let size = 0;
@@ -271,6 +274,39 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         try { info = await new Bridge(next).ping(); } catch (e) { return send(res, 400, { error: `Could not connect with these details: ${(e as Error).message}` }); }
         sites.put(next); forgetAssistantSettings(next.id);
         return send(res, 200, { ...publicSite(next), plugin: info, widgetNote: await connectWidget(next) });
+      }
+      // ---- Section Gallery: ready-made sections added with one click (no AI). See src/sections.
+      m = url.pathname.match(/^\/sites\/([\w-]+)\/sections(\/preview|\/add)?$/);
+      if (m) {
+        const s = sites.get(m[1]);
+        if (!s) return send(res, 404, { error: "Unknown site" });
+        const b = new Bridge(s);
+        try {
+          if (!m[2] && req.method === "GET") { // the catalogue + how the open page is built and where a section can go
+            const post = Number(url.searchParams.get("post") ?? 0) || 0;
+            let page: any = null;
+            if (post) page = await pageInfo(b, post).catch((e) => ({ builder: null, places: [], unsupported: (e as Error).message }));
+            return send(res, 200, { ok: true, ...catalogue(), page });
+          }
+          if (m[2] === "/preview" && req.method === "GET") { // one section as a standalone page in this site's colours and fonts
+            const id = String(url.searchParams.get("id") ?? "");
+            if (!/^[a-z0-9-]{2,40}$/.test(id)) return send(res, 400, { error: "id must be a section id, e.g. hero-split" });
+            const key = `look|${s.id}`;
+            let look = sectionLooks.get(key);
+            if (!look || Date.now() - look.at > 5 * 60_000) { look = { at: Date.now(), value: await siteLook(b) }; sectionLooks.set(key, look); }
+            return send(res, 200, { ok: true, html: previewDocument(id, look.value), look: look.value });
+          }
+          if (m[2] === "/add" && req.method === "POST") { // put it on the page as a draft
+            const body = await readJson(req);
+            const out = await addSection(b, { id: String(body.id ?? ""), postId: Number(body.post ?? 0) || 0, place: body.place ? String(body.place) : undefined });
+            log("info", `section added: ${out.section}`, { site: s.id, post: body.post, place: out.place, builder: out.builder });
+            return send(res, 200, out);
+          }
+        } catch (e) {
+          if (e instanceof SectionError) return send(res, e.status, { error: e.message });
+          if (e instanceof BridgeError) return send(res, e.status >= 400 && e.status < 600 ? e.status : 502, { error: e.message });
+          throw e;
+        }
       }
       m = url.pathname.match(/^\/sites\/([\w-]+)\/templates\/render$/);
       if (m && req.method === "GET") { // one template rendered with sample content (the component gallery)

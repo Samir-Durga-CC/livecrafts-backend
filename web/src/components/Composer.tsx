@@ -8,7 +8,7 @@ interface Attachment { key: string; name: string; preview: string; state: "uploa
 
 export interface Context { pageUrl?: string; selectedTarget?: string }
 
-export function Composer({ disabled, placeholder, model, context, draft, onClearContext, onSend, extra, chips, compact, onStop, stopping, notice, voice, wave, tools, attachNote }: {
+export function Composer({ disabled, placeholder, model, context, draft, onClearContext, onSend, extra, chips, compact, onStop, stopping, notice, voice, wave, tools, attachNote, onAddSection }: {
   disabled: boolean; placeholder: string; model: string; context: Context; draft?: { text: string; n: number };
   extra?: ReactNode; chips?: ReactNode; compact?: boolean;
   /** While the assistant works: the send button becomes Stop. */
@@ -23,6 +23,8 @@ export function Composer({ disabled, placeholder, model, context, draft, onClear
   tools?: ReactNode;
   /** Shown under attached images (e.g. "also save them to the Media Library"). */
   attachNote?: ReactNode;
+  /** "+" menu → Section: opens the Section Gallery (the widget passes it). */
+  onAddSection?: () => void;
   onClearContext: (k: keyof Context) => void; onSend: (text: string, fileIds: string[], files: UploadedFile[]) => Promise<void>;
 }) {
   const [text, setText] = useState("");
@@ -108,6 +110,12 @@ export function Composer({ disabled, placeholder, model, context, draft, onClear
             <Icon.Image size={16} />
             <span className="grow"><b>Image</b><small>png, jpg, gif, webp, avif or svg — or drag one in, or paste</small></span>
           </button>
+          {onAddSection && (
+            <button className="menu-item" onClick={() => { setAddOpen(false); onAddSection(); }}>
+              <Icon.Layout size={16} />
+              <span className="grow"><b>Section</b><small>a ready-made hero, features or call to action, added as a draft</small></span>
+            </button>
+          )}
           {/* Honest rather than broken: the backend accepts images only (files.ts), and the assistant has no way
               to read a document yet, so a working-looking entry here would just fail on upload. */}
           <button className="menu-item" disabled>

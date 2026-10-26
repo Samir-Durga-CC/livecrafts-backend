@@ -82,6 +82,10 @@ export const api = {
   speedHistory: (siteId: string, url?: string) => request<{ runs: SpeedRunSummary[]; google: { keySource: "env" | "saved" | "none" }; local: boolean }>("GET", `/sites/${siteId}/pagespeed${url ? `?url=${encodeURIComponent(url)}` : ""}`),
   startSpeed: (siteId: string, url: string, device: "mobile" | "desktop" | "both") => request<SpeedRunSummary>("POST", `/sites/${siteId}/pagespeed`, { url, device }),
   speedRun: (siteId: string, runId: string) => request<SpeedRun>("GET", `/sites/${siteId}/pagespeed/${runId}`),
+  /** Section Gallery: the catalogue (+ how the open page is built and where a section can go). */
+  sections: (siteId: string, post?: number) => request<SectionCatalogue>("GET", `/sites/${siteId}/sections${post ? `?post=${post}` : ""}`),
+  sectionPreview: (siteId: string, id: string) => request<{ ok: boolean; html: string }>("GET", `/sites/${siteId}/sections/preview?id=${encodeURIComponent(id)}`),
+  addSection: (siteId: string, body: { id: string; post: number; place?: string }) => request<{ ok: boolean; name: string; place: string; builder: string; change: any }>("POST", `/sites/${siteId}/sections/add`, body),
   plugins: (siteId: string, refresh = false) => request<PluginList>("GET", `/sites/${siteId}/plugins${refresh ? "?refresh=1" : ""}`),
   pluginHistory: (siteId: string) => request<{ history: PluginHistoryEntry[] }>("GET", `/sites/${siteId}/plugins/history`),
   pluginVersions: (siteId: string, plugin: string) => request<{ versions: string[]; note?: string }>("GET", `/sites/${siteId}/plugins/versions?plugin=${encodeURIComponent(plugin)}`),
@@ -272,4 +276,12 @@ export function ledgerFrom(initial: ChangeRecord[], events: JobEvent[]): Map<str
 export function lastStatus(events: JobEvent[]): string {
   for (let i = events.length - 1; i >= 0; i--) if (events[i].type === "status") return String(events[i].data.status);
   return "queued";
+}
+
+export interface SectionSummary { id: string; category: string; name: string; summary: string }
+export interface SectionCatalogue {
+  ok: boolean;
+  categories: Array<{ id: string; name: string; count: number }>;
+  sections: SectionSummary[];
+  page: null | { builder: "elementor" | "blocks" | "divi" | "html" | null; why: string; places: Array<{ value: string; label: string }>; unsupported?: string };
 }

@@ -15,6 +15,7 @@ import { SiteChanges } from "./SiteChanges";
 import { BlogPanel, MoreMenu } from "./MorePanel";
 import { SpeedPanel } from "./SpeedPanel";
 import { PluginsPanel } from "./PluginsPanel";
+import { SectionGallery } from "./SectionGallery";
 import { connectParent, uploadToMedia } from "./parent";
 import { VoiceAgent, type VoiceState } from "./voice";
 import { VoiceBar } from "./VoiceBar";
@@ -204,6 +205,15 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
 
   const post = useCallback((msg: Record<string, unknown>) => window.parent.postMessage(msg, cfg.parentOrigin), [cfg.parentOrigin]);
   const say = (t: string) => { setToast(t); setTimeout(() => setToast(""), 1800); };
+  // The Section Gallery (a large popup over the page): ready-made sections added with one click, as drafts.
+  const [gallery, setGallery] = useState(false);
+  const closeGallery = useCallback(() => setGallery(false), []);
+  const sectionAdded = (name: string) => {
+    setGallery(false);
+    say(`${name} added as a draft`);
+    post({ type: "lc:drafts-changed" });
+    setTimeout(() => post({ type: "lc:soft-refresh" }), 400);
+  };
   const setTab = (t: Tab) => { setTabState(t); post({ type: "lc:tab", tab: t }); };
   const refreshJobs = useCallback(() => api.jobs().then((j) => setJobs(j.filter((x) => x.siteId === site.id))).catch(() => {}), [site.id]);
 
@@ -847,6 +857,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
         <button onClick={() => { setTab("actions"); setPicking(true); post({ type: "lc:pick" }); }}><Icon.Cursor size={14} /> Pick an element to change</button>
         <button onClick={() => void send("What can I edit on this page? Give me a short overview.", [])}><Icon.List size={14} /> What can I edit here?</button>
         <button onClick={() => void send("Check this page on mobile and tell me what looks wrong.", [])}><Icon.Phone size={14} /> Check this page on mobile</button>
+        <button onClick={() => setGallery(true)}><Icon.Layout size={14} /> Add a ready-made section</button>
       </div>
     </div>
   );
@@ -931,7 +942,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
                 onDiagnostics={() => { voiceLog.download(); say("Voice log saved to your downloads"); }}
                 onEnd={endVoice} />
             )}
-            <Composer compact disabled={working || waiting} model={name} context={{}}
+            <Composer compact disabled={working || waiting} model={name} context={{}} onAddSection={() => setGallery(true)}
               onStop={working && jobId ? stop : undefined} stopping={stopping}
               notice={paused ? <PausedBar kind={pauseKind} onKind={setPauseKind} onContinue={() => void cont()} /> : status === "interrupted" || status === "failed" ? <InterruptedBar failed={status === "failed"} error={String([...events].reverse().find((e) => e.type === "status")?.data.error ?? "")} onContinue={() => void cont()} /> : undefined}
               placeholder={voiceOn && !waiting && !working ? "Voice mode is on - just talk, or type here…" : waiting ? "Answer the approval above…" : working ? (stopping ? "Stopping…" : "Working… (Stop to pause)") : paused ? (pauseKind === "edit" ? "Type your corrected request…" : "Type a note…") : "Ask for any change on this page…"}
@@ -982,6 +993,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
           </div>
         )}
       </div>
+      {gallery && <SectionGallery siteId={site.id} postId={Number(cfg.postId) || 0} post={post} onClose={closeGallery} onAdded={sectionAdded} />}
       {toast && <div className="toast">{toast}</div>}
       {blogOpen && <BlogDialog siteId={site.id} initialTitle={blogOpen.title} onClose={() => setBlogOpen(false)} onSubmit={startBlog} />}
     </div>

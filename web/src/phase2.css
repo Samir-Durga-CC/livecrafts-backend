@@ -797,3 +797,64 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
   .lay-modal-box { height: 100%; border-radius: 0; }
   .lay-modal-title { font-size: 12.5px; }
 }
+
+/* ---------------- Section Gallery (SectionGallery.tsx): a large popup over the page ---------------- */
+.sg { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; background: var(--surface); container-type: inline-size; }
+.sg-head { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.sg-title { font-size: 16px; white-space: nowrap; }
+.sg-search { flex: 1; max-width: 420px; margin-left: auto; display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 10px; color: var(--muted); }
+.sg-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; font: inherit; font-size: 13.5px; color: var(--text); }
+.sg-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.sg-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+.sg-cats { display: flex; gap: 6px; overflow-x: auto; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.sg-cats button { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface); white-space: nowrap; font-size: 13px; color: var(--text-2); }
+.sg-cats button small { color: var(--faint); font-size: 11.5px; }
+.sg-cats button.on { background: var(--accent-soft); border-color: var(--accent-line); color: var(--text); font-weight: 600; }
+.sg-grid { min-height: 0; overflow-y: auto; padding: 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-content: start; }
+.sg-tile { display: flex; flex-direction: column; gap: 10px; padding: 8px 8px 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); text-align: left; cursor: pointer; transition: border-color .15s, box-shadow .15s, transform .15s; }
+.sg-tile:hover { border-color: var(--accent-line); box-shadow: 0 8px 24px -14px rgba(16, 24, 40, .35); transform: translateY(-1px); }
+.sg-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sg-thumb { display: block; border-radius: 9px; overflow: hidden; background: #fff; border: 1px solid var(--line); }
+.sg-tile-text { display: flex; flex-direction: column; gap: 2px; padding: 0 4px; }
+.sg-tile-text b { font-size: 13.5px; }
+.sg-tile-text small { font-size: 12.5px; color: var(--muted); line-height: 1.35; }
+.sg-frame { position: relative; overflow: hidden; background: #fff; }
+.sg-frame iframe { display: block; border: 0; transform-origin: top left; pointer-events: none; background: #fff; }
+.sg-ph { display: grid; place-items: center; min-height: 160px; color: var(--muted); font-size: 12.5px; text-align: center; padding: 12px; }
+.sg-ph.big { min-height: 320px; flex: 1; }
+.sg-empty { padding: 24px 4px; }
+@container (min-width: 760px) {
+  .sg-body { grid-template-columns: 200px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  .sg-cats { flex-direction: column; overflow: visible; border-bottom: 0; border-right: 1px solid var(--line); padding: 14px 10px; }
+  .sg-cats button { justify-content: space-between; border-color: transparent; }
+  .sg-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 20px; }
+}
+@container (min-width: 1100px) { .sg-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+
+/* One section's own view, over the gallery */
+.sg-detail { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; background: var(--surface); }
+.sg-dhead { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+.sg-back svg { transform: rotate(180deg); }
+.sg-dtitle { font-size: 15px; }
+.sg-devices { margin-left: auto; display: inline-flex; gap: 4px; padding: 3px; border-radius: 10px; background: var(--card); }
+.sg-devices button { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: 12.5px; }
+.sg-devices button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(16, 24, 40, .12); font-weight: 600; }
+.sg-dbody { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; overflow-y: auto; }
+.sg-stage { min-width: 0; padding: 16px; background: var(--card); display: flex; flex-direction: column; gap: 10px; }
+.sg-stage .sg-frame { border-radius: 10px; border: 1px solid var(--line); box-shadow: 0 10px 30px -18px rgba(16, 24, 40, .35); }
+.sg-side { display: flex; flex-direction: column; gap: 10px; padding: 18px; border-top: 1px solid var(--line); }
+.sg-side > p { margin: 0; }
+.sg-label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-top: 6px; }
+.sg-sibs { display: flex; flex-wrap: wrap; gap: 6px; }
+.sg-sibs button { height: 30px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--surface); font-size: 12.5px; color: var(--text-2); }
+.sg-sibs button.on { border-color: var(--accent); background: var(--accent-soft); color: var(--text); font-weight: 600; }
+.sg-select { height: 36px; border: 1px solid var(--line-strong); border-radius: 10px; padding: 0 10px; background: var(--surface); color: var(--text); font: inherit; font-size: 13.5px; }
+.sg-add { height: 42px; margin-top: 6px; }
+.sg-note { font-size: 12px; color: var(--muted); line-height: 1.4; margin: 0; }
+.sg-err { margin: 0; }
+@container (min-width: 900px) {
+  .sg-dbody { grid-template-columns: minmax(0, 1fr) 300px; align-content: stretch; overflow: hidden; }
+  .sg-stage { overflow-y: auto; padding: 24px; }
+  .sg-side { border-top: 0; border-left: 1px solid var(--line); overflow-y: auto; }
+}
+@media (prefers-reduced-motion: reduce) { .sg-tile { transition: none; } .sg-tile:hover { transform: none; } }
