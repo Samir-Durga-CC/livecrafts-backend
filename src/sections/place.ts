@@ -31,6 +31,21 @@ const HOST_CSS = `
 
 export const coreCss = () => CORE_CSS + HOST_CSS;
 
+export const SITE_ID = "lcs-site";
+export interface SiteLayout { container: number; gutter: number }
+
+/** The site's content box as measured on its page by the plugin (lc:measure), or null when it is not believable. */
+export function cleanLayout(l: any): SiteLayout | null {
+  const container = Math.round(Number(l?.container)), gutter = Math.round(Number(l?.gutter));
+  if (!Number.isFinite(container) || container < 480 || container > 2600) return null;
+  if (!Number.isFinite(gutter) || gutter < 0 || gutter > 160) return null;
+  return { container, gutter };
+}
+
+/** Per-site CSS: gallery sections use the theme's own container, so they line up with the header and the rest. */
+export const siteLayoutCss = (l: SiteLayout) =>
+  `/* Livecrafts sections: this site's content box (measured on the site) */\n.lcs { --lc-container: ${l.container}px; --lc-gutter: ${l.gutter}px; }\n`;
+
 /** The catalogue as the gallery shows it (no markup: the preview fetches that per section). */
 export function catalogue() {
   return {
@@ -173,7 +188,7 @@ function wrap(s: SectionDef, info: PageInfo, currentContent: string, place: stri
 }
 
 /** Add a section as a draft. Returns the section change and the CSS changes (empty when the CSS was already there). */
-export async function addSection(bridge: Bridge, a: { id: string; postId: number; place?: string; ref?: string }) {
+export async function addSection(bridge: Bridge, a: { id: string; postId: number; place?: string; ref?: string; layout?: unknown }) {
   const s = getSection(a.id);
   if (!s) throw new SectionError(`Unknown section "${a.id}".`, 404);
   if (!a.postId) throw new SectionError("Open the page you want to add the section to first.");
@@ -186,7 +201,11 @@ export async function addSection(bridge: Bridge, a: { id: string; postId: number
 
   // 1) the look first (the plugin replaces a block with the same name, so writing it again is harmless)
   const cssChanges: any[] = [];
-  for (const b of [{ id: CORE_ID, label: "Livecrafts sections: design system", css: coreCss() }, { id: `lcs-${s.id}`, label: `Livecrafts section: ${s.name}`, css: s.css }]) {
+  const layout = cleanLayout(a.layout);
+  const blocks = [{ id: CORE_ID, label: "Livecrafts sections: design system", css: coreCss() }];
+  if (layout) blocks.push({ id: SITE_ID, label: "Livecrafts sections: this site's content width", css: siteLayoutCss(layout) });
+  blocks.push({ id: `lcs-${s.id}`, label: `Livecrafts section: ${s.name}`, css: s.css });
+  for (const b of blocks) {
     const r: any = await bridge.makeChange({ kind: "css.block", target: b.id, value: b.css, label: b.label, ref: a.ref, source: "widget" });
     if (r?.ok === false) throw new SectionError(`Could not save the section's CSS: ${r.error ?? r.message ?? "refused"}. Nothing was added.`, 502);
     if (r?.change && !r?.unchanged) cssChanges.push(r.change);
@@ -194,7 +213,7 @@ export async function addSection(bridge: Bridge, a: { id: string; postId: number
   // 2) the section itself
   const r: any = await bridge.makeChange({ kind: w.kind, post: a.postId, target: w.target, value: w.value, label: `Section: ${s.name}`, ref: a.ref, source: "widget" });
   if (r?.ok === false) throw new SectionError(r.error ?? r.message ?? "The site refused the section.", 502);
-  return { ok: true, section: s.id, name: s.name, builder: info.builder, place, change: r.change ?? null, cssChanges };
+  return { ok: true, section: s.id, name: s.name, builder: info.builder, place, layout, change: r.change ?? null, cssChanges };
 }
 
 /** A standalone page that shows one section the way it will look on this site (brand colour and fonts). */

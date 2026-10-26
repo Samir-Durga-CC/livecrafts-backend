@@ -120,6 +120,18 @@ const normal = fakeBridge({ map: { builders: {}, sections: { themeParts: ["templ
 assert.equal((await pageInfo(normal.bridge, 6)).builder, "blocks", "a theme that prints the content stays a blocks page");
 ok("A theme that prints the content: blocks as before");
 
+// The site's content box measured on the page: written once as site CSS, so sections line up with the theme.
+const sized = fakeBridge({ map: { builders: {} }, content: "<p>x</p>" });
+await addSection(sized.bridge, { id: "cta-band", postId: 4, place: "end", layout: { container: 1760, gutter: 32 } });
+assert.deepEqual(sized.writes.map((w) => w.target), ["lcs-core", "lcs-site", "lcs-cta-band", "content"]);
+assert.match(sized.writes[1].value, /--lc-container: 1760px; --lc-gutter: 32px;/);
+assert.deepEqual(lintCss(sized.writes[1].value).errors, []);
+assert.match(coreCss(), /max-width: var\(--lc-container, 1160px\)/);
+const odd = fakeBridge({ map: { builders: {} }, content: "<p>x</p>" });
+await addSection(odd.bridge, { id: "cta-band", postId: 4, place: "end", layout: { container: 99999, gutter: 32 } });
+assert.ok(!odd.writes.some((w) => w.target === "lcs-site"), "an unbelievable measurement is ignored");
+ok("The site's container width and padding are used when the page reports them");
+
 await assert.rejects(addSection(classic.bridge, { id: "nope", postId: 4 }), /Unknown section/);
 await assert.rejects(addSection(classic.bridge, { id: "cta-split", postId: 0 }), /Open the page/);
 ok("Unknown section or no page: refused");

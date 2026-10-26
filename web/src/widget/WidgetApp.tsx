@@ -993,7 +993,7 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
           </div>
         )}
       </div>
-      {gallery && <SectionGallery siteId={site.id} postId={Number(cfg.postId) || 0} post={post} onClose={closeGallery} onAdded={sectionAdded} />}
+      {gallery && <SectionGallery siteId={site.id} postId={Number(cfg.postId) || 0} post={post} parentOrigin={cfg.parentOrigin} onClose={closeGallery} onAdded={sectionAdded} />}
       {toast && <div className="toast">{toast}</div>}
       {blogOpen && <BlogDialog siteId={site.id} initialTitle={blogOpen.title} onClose={() => setBlogOpen(false)} onSubmit={startBlog} />}
     </div>

@@ -63,7 +63,8 @@ export const CORE_CSS = `/* Livecrafts sections: design system */
 .lcs p:empty { display: none; }
 .lcs ul { list-style: none; }
 .lcs img { display: block; max-width: 100%; height: auto; }
-.lcs .lcs-in { max-width: 1160px; margin-inline: auto; padding-inline: clamp(20px, 4cqi, 40px); }
+/* The content box: the site's own container when it was measured (--lc-container / --lc-gutter, written per site) */
+.lcs .lcs-in { max-width: var(--lc-container, 1160px); margin-inline: auto; padding-inline: var(--lc-gutter, clamp(20px, 4cqi, 40px)); }
 .lcs .lcs-eyebrow { display: inline-block; font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--lcs-brand); }
 .lcs .lcs-h { font-size: clamp(34px, 5.2cqi, 60px); line-height: 1.06; letter-spacing: -0.02em; font-weight: 700; text-wrap: balance; color: inherit; }
 .lcs .lcs-h2 { font-size: clamp(28px, 3.6cqi, 42px); line-height: 1.12; letter-spacing: -0.015em; font-weight: 700; text-wrap: balance; color: inherit; }

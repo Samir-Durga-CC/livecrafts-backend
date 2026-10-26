@@ -298,8 +298,8 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
           }
           if (m[2] === "/add" && req.method === "POST") { // put it on the page as a draft
             const body = await readJson(req);
-            const out = await addSection(b, { id: String(body.id ?? ""), postId: Number(body.post ?? 0) || 0, place: body.place ? String(body.place) : undefined });
-            log("info", `section added: ${out.section}`, { site: s.id, post: body.post, place: out.place, builder: out.builder });
+            const out = await addSection(b, { id: String(body.id ?? ""), postId: Number(body.post ?? 0) || 0, place: body.place ? String(body.place) : undefined, layout: body.layout });
+            log("info", `section added: ${out.section}`, { site: s.id, post: body.post, place: out.place, builder: out.builder, layout: out.layout });
             return send(res, 200, out);
           }
         } catch (e) {

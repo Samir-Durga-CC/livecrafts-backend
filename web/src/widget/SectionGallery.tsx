@@ -73,8 +73,8 @@ function Tile({ siteId, s, onOpen }: { siteId: string; s: SectionCatalogue["sect
   );
 }
 
-function Detail({ siteId, data, id, postId, onBack, onPick, onAdded }: {
-  siteId: string; data: SectionCatalogue; id: string; postId: number;
+function Detail({ siteId, data, id, postId, layout, onBack, onPick, onAdded }: {
+  siteId: string; data: SectionCatalogue; id: string; postId: number; layout: Layout | null;
   onBack: () => void; onPick: (id: string) => void; onAdded: (name: string) => void;
 }) {
   const s = data.sections.find((x) => x.id === id)!;
@@ -102,7 +102,7 @@ function Detail({ siteId, data, id, postId, onBack, onPick, onAdded }: {
 
   async function add() {
     setBusy(true); setErr("");
-    try { const r = await api.addSection(siteId, { id, post: postId, place }); onAdded(r.name); }
+    try { const r = await api.addSection(siteId, { id, post: postId, place, layout }); onAdded(r.name); }
     catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -153,8 +153,12 @@ function Detail({ siteId, data, id, postId, onBack, onPick, onAdded }: {
   );
 }
 
-export function SectionGallery({ siteId, postId, onClose, onAdded, post }: {
+type Layout = { container: number; gutter: number };
+
+export function SectionGallery({ siteId, postId, onClose, onAdded, post, parentOrigin }: {
   siteId: string; postId: number; onClose: () => void; onAdded: (name: string) => void;
+  /** The page around the widget: it measures the site's content width (lc:measure, plugin 0.24.3+). */
+  parentOrigin: string;
   /** Talk to the plugin around the widget (lc:wide). */
   post: (msg: Record<string, unknown>) => void;
 }) {
@@ -163,6 +167,20 @@ export function SectionGallery({ siteId, postId, onClose, onAdded, post }: {
   const [cat, setCat] = useState("all");
   const [q, setQ] = useState("");
   const [open, setOpen] = useState<string | null>(null);
+  const [layout, setLayout] = useState<Layout | null>(null);
+
+  // Ask the page how wide the theme's content box is, so added sections line up with it (older plugins never answer).
+  useEffect(() => {
+    const id = Math.random().toString(36).slice(2);
+    const on = (e: MessageEvent) => {
+      if (e.origin !== parentOrigin || e.data?.type !== "lc:measure-result" || e.data.id !== id) return;
+      const l = e.data.layout;
+      if (l && Number.isFinite(l.container) && Number.isFinite(l.gutter)) setLayout({ container: Number(l.container), gutter: Number(l.gutter) });
+    };
+    window.addEventListener("message", on);
+    post({ type: "lc:measure", id });
+    return () => window.removeEventListener("message", on);
+  }, [post, parentOrigin]);
 
   useEffect(() => {
     post({ type: "lc:wide", on: true });
@@ -214,7 +232,7 @@ export function SectionGallery({ siteId, postId, onClose, onAdded, post }: {
           </div>
         </div>
       )}
-      {data && open && <Detail siteId={siteId} data={data} id={open} postId={postId} onBack={() => setOpen(null)} onPick={setOpen} onAdded={onAdded} />}
+      {data && open && <Detail siteId={siteId} data={data} id={open} postId={postId} layout={layout} onBack={() => setOpen(null)} onPick={setOpen} onAdded={onAdded} />}
     </div>
   );
 }
