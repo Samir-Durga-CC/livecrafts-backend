@@ -3,7 +3,7 @@
  * Run:  node --import tsx test/templates.ts
  */
 import assert from "node:assert/strict";
-import { TemplateError, buildShortcode, cleanFit, fitFromDesign, placeShortcode, type TemplateEntry } from "../src/library/templates.js";
+import { TemplateError, buildShortcode, cleanFit, fitFromDesign, placeShortcode, templateRules, type TemplateEntry } from "../src/library/templates.js";
 
 let passed = 0;
 const ok = (n: string) => { passed++; console.log("  ✓ " + n); };
@@ -65,6 +65,34 @@ console.log("\n4) placement per builder");
   assert.equal(bl.value, "<!-- wp:shortcode -->\n[ai_hero]\n<!-- /wp:shortcode -->");
   assert.equal(placeShortcode("[ai_hero]", "html", "hero").kind, "block.insert");
   ok("Elementor: container + shortcode widget; blocks / classic: shortcode block");
+}
+
+console.log("\n6) the content rules a template expects");
+{
+  // Both of these went out on a real footer: "© © 2026 AEROMATIC LABS", and one column with three empty gaps.
+  const footer: TemplateEntry = {
+    id: "footer", shortcode: "ai_footer", title: "footer", params: "", example: "",
+    attributes: ["logo_text", "copyright"], defaults: {}, list: true, item_fields: "label, url, group",
+  };
+  const doubled = buildShortcode(footer, { attrs: { copyright: "© 2026 Aeromatic Labs" } });
+  assert.match(doubled.code, /copyright="2026 Aeromatic Labs"/);
+  assert.match(doubled.warnings.join(" "), /prints © itself/);
+  assert.match(buildShortcode(footer, { attrs: { copyright: "&copy; 2026 Acme" } }).code, /copyright="2026 Acme"/);
+  assert.doesNotMatch(buildShortcode(footer, { attrs: { copyright: "2026 Acme" } }).warnings.join(" "), /prints ©/);
+  ok("a © passed into the copyright is taken off, because the template prints one itself");
+
+  const oneGroup = buildShortcode(footer, { items: [1, 2, 3, 4].map((n) => ({ label: `L${n}`, url: "/", group: "Company" })) });
+  assert.match(oneGroup.warnings.join(" "), /one column per group/);
+  const spread = buildShortcode(footer, { items: [{ label: "A", url: "/", group: "Company" }, { label: "B", url: "/", group: "Product" }, { label: "C", url: "/", group: "Legal" }] });
+  assert.equal(spread.warnings.length, 0);
+  assert.equal(buildShortcode(footer, { items: [{ label: "A", url: "/", group: "Company" }, { label: "B", url: "/", group: "Company" }] }).warnings.length, 0);
+  ok("every row in one group is flagged: the template lays out one column per group");
+
+  const rules = templateRules(footer).join(" ");
+  assert.match(rules, /prints © itself/);
+  assert.match(rules, /ONE COLUMN PER GROUP/);
+  assert.equal(templateRules(hero).length, 0);
+  ok("get_component states those rules for the templates they apply to, and nothing for the others");
 }
 
 console.log(`\n${passed} template checks passed`);
