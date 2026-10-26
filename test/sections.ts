@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { SECTIONS, CATEGORIES } from "../src/sections/library.js";
-import { addSection, catalogue, cleanLayout, coreCss, pageInfo, previewDocument, siteLook } from "../src/sections/place.js";
+import { addSection, catalogue, cleanLayout, coreCss, mergeLayout, pageInfo, previewDocument, siteLook } from "../src/sections/place.js";
 import { lintCss, lintHtml } from "../src/library/lint.js";
 
 let passed = 0;
@@ -26,14 +26,15 @@ ok(`${SECTIONS.length} sections pass the library checks`);
 
 // 2) a fake site: records every change it is asked to make
 function fakeBridge(page: { map: any; content: string; containers?: boolean }) {
-  const writes: any[] = [];
+  const writes: any[] = [], synced: string[] = [];
   return {
-    writes,
+    writes, synced,
     bridge: {
       map: async () => page.map,
       post: async () => ({ content: page.content }),
       siteProfile: async () => ({ builders: { elementor: { active: true, containers: page.containers !== false, colors: [{ id: "primary", title: "Primary", value: "#123456" }, { id: "accent", title: "Accent", value: "#e4572e" }], fonts: [{ id: "primary", title: "Primary", family: "Poppins" }, { id: "text", title: "Text", family: "Inter" }] } }, brand: { colors: [], fonts: [] } }),
       makeChange: async (c: any) => { writes.push(c); return { ok: true, change: { id: writes.length, kind: c.kind } }; },
+      setSectionSite: async (containerClass: string) => { synced.push(containerClass); return { ok: true, containerClass }; },
     } as any,
   };
 }
@@ -151,7 +152,17 @@ const brandOnly = cleanLayout({ brand: { color: "#f5c518", on: "" } });
 assert.deepEqual(brandOnly, { brand: { color: "#f5c518", on: "#111111" } }, "brand without a content box; dark text on a light brand");
 assert.equal(cleanLayout({ brand: { color: "red;}body{x" } }), null, "only #rrggbb colours");
 assert.match(previewDocument("hero-split", {}, { brand: { color: "#293b86", on: "#ffffff" } }), /\.lcs\{--lc-brand: #293b86;--lc-on-brand: #ffffff\}/);
-ok("The theme's container class (all breakpoints), its measured width and padding, and its brand colours are used");
+assert.deepEqual(themed2.synced, ["wrap"], "the plugin is told the class, so sections added earlier wear it too");
+// A later measurement that found only the brand keeps the content box from before (and the reverse).
+const saved = cleanLayout({ container: 1760, gutter: 80, className: "wrap" });
+assert.deepEqual(mergeLayout(saved, cleanLayout({ brand: { color: "#293b86", on: "#ffffff", radius: 5 } })),
+  { container: 1760, gutter: 80, className: "wrap", brand: { color: "#293b86", on: "#ffffff", radius: 5 } });
+assert.deepEqual(mergeLayout({ brand: { color: "#293b86", on: "#ffffff" } }, cleanLayout({ container: 1200, gutter: 20 })), { container: 1200, gutter: 20, brand: { color: "#293b86", on: "#ffffff" } });
+const later = fakeBridge({ map: { builders: {} }, content: "<p>x</p>" });
+await addSection(later.bridge, { id: "cta-band", postId: 4, place: "end", layout: { brand: { color: "#293b86", on: "#ffffff" } }, saved });
+assert.match(String(later.writes[1].value), /--lc-container: 1760px/, "the saved content box is not wiped");
+assert.match(String(later.writes[3].value), /class="lcs-in wrap"/);
+ok("The theme's container class (all breakpoints), its measured width and padding, and its brand colours are used, and kept");
 
 await assert.rejects(addSection(classic.bridge, { id: "nope", postId: 4 }), /Unknown section/);
 await assert.rejects(addSection(classic.bridge, { id: "cta-split", postId: 0 }), /Open the page/);

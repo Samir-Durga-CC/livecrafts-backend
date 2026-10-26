@@ -7,7 +7,7 @@ import { JsonStore, newId } from "./store.js";
 import { FileStore } from "./files.js";
 import { Bridge, BridgeError } from "./bridge.js";
 import { pluginJobs } from "./pluginJobs.js";
-import { SectionError, addSection, catalogue, cleanLayout, pageInfo, previewDocument, siteLook } from "./sections/place.js";
+import { SectionError, addSection, catalogue, cleanLayout, mergeLayout, pageInfo, previewDocument, siteLook, syncSiteContainer, type SiteLayout } from "./sections/place.js";
 import { buildAgent } from "./agent.js";
 import { JobRunner } from "./jobs.js";
 import type { Job, Site } from "./types.js";
@@ -74,7 +74,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
    * picker: the person in the widget is a signed-in editor of this site, the list only names templates and the
    * pages they are already on, and the render route returns a template filled with SAMPLE content, never theirs.
    */
-  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/sites|POST \/voice\/(transcribe|speak|realtime\/session)|GET \/voice\/stream|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms|pagespeed|templates|templates\/render|sections|sections\/preview)|POST \/sites\/[\w-]+\/sections\/add|(POST \/sites\/[\w-]+\/pagespeed|GET \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+|PUT \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+\/fix|GET \/sites\/[\w-]+\/plugins(\/(history|versions|jobs\/plj_[a-f0-9]+))?|POST \/sites\/[\w-]+\/plugins\/(update|rollback))|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
+  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/sites|POST \/voice\/(transcribe|speak|realtime\/session)|GET \/voice\/stream|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms|pagespeed|templates|templates\/render|sections|sections\/preview)|POST \/sites\/[\w-]+\/sections\/(add|site)|(POST \/sites\/[\w-]+\/pagespeed|GET \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+|PUT \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+\/fix|GET \/sites\/[\w-]+\/plugins(\/(history|versions|jobs\/plj_[a-f0-9]+))?|POST \/sites\/[\w-]+\/plugins\/(update|rollback))|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
 
   async function readBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
     const chunks: Buffer[] = []; let size = 0;
@@ -276,7 +276,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         return send(res, 200, { ...publicSite(next), plugin: info, widgetNote: await connectWidget(next) });
       }
       // ---- Section Gallery: ready-made sections added with one click (no AI). See src/sections.
-      m = url.pathname.match(/^\/sites\/([\w-]+)\/sections(\/preview|\/add)?$/);
+      m = url.pathname.match(/^\/sites\/([\w-]+)\/sections(\/preview|\/add|\/site)?$/);
       if (m) {
         const s = sites.get(m[1]);
         if (!s) return send(res, 404, { error: "Unknown site" });
@@ -297,9 +297,16 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
             const measured = cleanLayout({ brand: { color: url.searchParams.get("brand"), on: url.searchParams.get("on"), radius: url.searchParams.get("radius") ?? undefined } });
             return send(res, 200, { ok: true, html: previewDocument(id, look.value, measured), look: look.value });
           }
+          if (m[2] === "/site" && req.method === "POST") { // the gallery opened: what it measured on the page (nothing is drafted)
+            const body = await readJson(req);
+            const layout = mergeLayout(sectionLayouts.get(s.id)?.layout, cleanLayout(body.layout));
+            if (layout) sectionLayouts.put({ id: s.id, layout, at: new Date().toISOString() });
+            return send(res, 200, { ok: true, layout, containerSynced: await syncSiteContainer(b, layout) });
+          }
           if (m[2] === "/add" && req.method === "POST") { // put it on the page as a draft
             const body = await readJson(req);
-            const out = await addSection(b, { id: String(body.id ?? ""), postId: Number(body.post ?? 0) || 0, place: body.place ? String(body.place) : undefined, layout: body.layout });
+            const out = await addSection(b, { id: String(body.id ?? ""), postId: Number(body.post ?? 0) || 0, place: body.place ? String(body.place) : undefined, layout: body.layout, saved: sectionLayouts.get(s.id)?.layout });
+            if (out.layout) sectionLayouts.put({ id: s.id, layout: out.layout, at: new Date().toISOString() });
             log("info", `section added: ${out.section}`, { site: s.id, post: body.post, place: out.place, builder: out.builder, layout: out.layout });
             return send(res, 200, out);
           }
@@ -687,6 +694,8 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
 // Start only when run directly (the tests import createApp).
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"))) {
   const sites = new JsonStore<Site>(path.join(config.dataDir, "sites"));
+  /** What the Section Gallery measured on each site (content box, theme container class, brand). */
+  const sectionLayouts = new JsonStore<{ id: string; layout: SiteLayout; at: string }>(path.join(config.dataDir, "section-layouts"));
   const jobs = new JsonStore<Job>(path.join(config.dataDir, "jobs"));
   const files = new FileStore();
   const runner = new JobRunner(jobs, sites, buildAgent(files));

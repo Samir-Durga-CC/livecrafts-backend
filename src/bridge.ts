@@ -159,6 +159,8 @@ export class Bridge {
   connect(rotate = false) { return this.request<{ ok: boolean; secret: string; site: string; version: string }>("POST", "livecrafts/v1/connect", { json: { rotate } }); }
   /** Theme, builders, Elementor widgets / colours, ACF layouts, forms (Livecrafts plugin 0.12+). */
   siteProfile() { return this.request<any>("GET", "livecrafts/v1/site-profile"); }
+  /** The theme's container class every gallery section wears when shown (plugin 0.24.6+). */
+  setSectionSite(containerClass: string) { return this.request<{ ok: boolean; containerClass: string }>("POST", "livecrafts/v1/sections/site", { json: { containerClass } }); }
   /** What the site already has that matches the terms (Elementor templates / sections / widgets, patterns, ACF layouts). */
   components(terms: string[]) { return this.request<any>("GET", "livecrafts/v1/components", { query: { terms: terms.join(",") } }); }
   /** The template library: every template with its attributes, and where each one is used (Livecrafts plugin 0.14+). */

@@ -177,14 +177,17 @@ export function SectionGallery({ siteId, postId, onClose, onAdded, post, parentO
     const on = (e: MessageEvent) => {
       if (e.origin !== parentOrigin || e.data?.type !== "lc:measure-result" || e.data.id !== id) return;
       const l = e.data.layout;
-      if (l && typeof l === "object") setLayout(l as Layout); // the backend checks every value before it uses one
+      if (l && typeof l === "object") {
+        setLayout(l as Layout); // the backend checks every value before it uses one
+        void api.sectionSite(siteId, l).catch(() => {}); // remembered for the site; sections already on it wear the theme's container class
+      }
       setMeasured(true);
     };
     window.addEventListener("message", on);
     post({ type: "lc:measure", id });
     const t = setTimeout(() => setMeasured(true), 900);
     return () => { window.removeEventListener("message", on); clearTimeout(t); };
-  }, [post, parentOrigin]);
+  }, [post, parentOrigin, siteId]);
 
   useEffect(() => {
     post({ type: "lc:wide", on: true });

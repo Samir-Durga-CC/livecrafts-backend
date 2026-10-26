@@ -63,6 +63,27 @@ export function cleanLayout(l: any): SiteLayout | null {
   return Object.keys(out).length ? out : null;
 }
 
+/**
+ * What is known about the site, newest first: a measurement fills in what it found and never wipes what it did not
+ * (a page where the brand was found but no content box keeps the content box from before).
+ */
+export function mergeLayout(saved: SiteLayout | null | undefined, fresh: SiteLayout | null): SiteLayout | null {
+  if (!saved) return fresh;
+  if (!fresh) return saved;
+  const box = fresh.container !== undefined ? fresh : saved;
+  const out: SiteLayout = {};
+  if (box.container !== undefined) { out.container = box.container; out.gutter = box.gutter; if (box.className) out.className = box.className; }
+  const brand = fresh.brand ?? saved.brand;
+  if (brand) out.brand = brand;
+  return Object.keys(out).length ? out : null;
+}
+
+/** Tell the plugin the theme's container class, so every gallery section on the site wears it (older plugins: no-op). */
+export async function syncSiteContainer(bridge: Bridge, l: SiteLayout | null) {
+  if (!l?.className) return false;
+  return bridge.setSectionSite(l.className).then((r) => r?.ok !== false).catch(() => false);
+}
+
 /** The custom properties the sections read, from what was measured (also used by the previews). */
 export function siteVars(l: SiteLayout): string[] {
   const v: string[] = [];
@@ -225,7 +246,8 @@ function wrap(s: SectionDef, info: PageInfo, currentContent: string, place: stri
 }
 
 /** Add a section as a draft. Returns the section change and the CSS changes (empty when the CSS was already there). */
-export async function addSection(bridge: Bridge, a: { id: string; postId: number; place?: string; ref?: string; layout?: unknown }) {
+/** `saved`: what was measured on this site before (merged with this measurement, see mergeLayout). */
+export async function addSection(bridge: Bridge, a: { id: string; postId: number; place?: string; ref?: string; layout?: unknown; saved?: SiteLayout | null }) {
   const s = getSection(a.id);
   if (!s) throw new SectionError(`Unknown section "${a.id}".`, 404);
   if (!a.postId) throw new SectionError("Open the page you want to add the section to first.");
@@ -234,7 +256,7 @@ export async function addSection(bridge: Bridge, a: { id: string; postId: number
   if (!info.builder) throw new SectionError(info.unsupported ?? "Sections cannot be added to this page.");
   const place = a.place && info.places.some((p) => p.value === a.place) ? a.place : info.places[info.places.length - 1].value;
   const current = info.builder === "html" ? String((await bridge.post(a.postId, "draft"))?.content ?? "") : "";
-  const layout = cleanLayout(a.layout);
+  const layout = mergeLayout(a.saved, cleanLayout(a.layout));
   const w = wrap({ ...s, html: withSiteContainer(s.html, layout) }, info, current, place); // before anything is written, so a refusal leaves no stray CSS behind
 
   // 1) the look first (the plugin replaces a block with the same name, so writing it again is harmless)
@@ -247,6 +269,7 @@ export async function addSection(bridge: Bridge, a: { id: string; postId: number
     if (r?.ok === false) throw new SectionError(`Could not save the section's CSS: ${r.error ?? r.message ?? "refused"}. Nothing was added.`, 502);
     if (r?.change && !r?.unchanged) cssChanges.push(r.change);
   }
+  await syncSiteContainer(bridge, layout);
   // 2) the section itself
   const r: any = await bridge.makeChange({ kind: w.kind, post: a.postId, target: w.target, value: w.value, label: `Section: ${s.name}`, ref: a.ref, source: "widget" });
   if (r?.ok === false) throw new SectionError(r.error ?? r.message ?? "The site refused the section.", 502);
