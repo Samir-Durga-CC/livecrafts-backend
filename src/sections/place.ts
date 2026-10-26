@@ -71,7 +71,7 @@ export async function pageInfo(bridge: Bridge, postId: number): Promise<PageInfo
       places.push({ value: `root:${i + 1}`, label: `After: ${plain(child?.text || n.text, 40) || `section ${i + 1}`}` });
     });
     if (places.length > 1) places[places.length - 1].label += " (end of the page)";
-    return { builder: "elementor", why: "Elementor page", places, containers: profile?.containers !== false };
+    return { builder: "elementor", why: "Elementor page", places, containers: (profile?.builders?.elementor?.containers ?? profile?.containers) !== false };
   }
   if (/<!--\s+wp:divi\//.test(content)) {
     return { builder: null, why: "Divi 5 page", places: [], unsupported: "This page is built with Divi 5. Adding gallery sections to Divi 5 pages is coming next; Divi 4 pages work today." };
@@ -178,19 +178,31 @@ export function previewDocument(id: string, look: { brand?: string; heading?: st
   }</style><style>${coreCss()}</style><style>${s.css}</style></head><body>${s.html}</body></html>`;
 }
 
-/** The site's look for previews, from its Elementor kit (brand colour, fonts); empty on sites without one. */
+/** The site's look for previews: the Elementor kit's colours and fonts, else the theme palette (theme.json); empty when neither. */
 export async function siteLook(bridge: Bridge): Promise<{ brand?: string; heading?: string; body?: string; fontsHref?: string }> {
   const p: any = await bridge.siteProfile().catch(() => null);
   if (!p) return {};
-  const colors: any[] = Array.isArray(p.colors) ? p.colors : [];
-  const pick = (...ids: string[]) => colors.find((c) => ids.includes(String(c.id ?? c._id ?? "")))?.color ?? colors.find((c) => ids.some((i) => String(c.title ?? "").toLowerCase() === i))?.color;
-  const fonts: any[] = Array.isArray(p.fonts) ? p.fonts : [];
-  const fam = (...ids: string[]) => fonts.find((f) => ids.includes(String(f.id ?? "")))?.family;
-  const heading = fam("primary"), body = fam("text") ?? fam("secondary");
-  const families = [...new Set([heading, body].filter(Boolean))] as string[];
+  const el = p.builders?.elementor ?? {};
+  const kitColors: any[] = Array.isArray(el.colors) ? el.colors : [];
+  const themeColors: any[] = Array.isArray(p.brand?.colors) ? p.brand.colors : [];
+  const hexOf = (c: any) => { const v = String(c?.value ?? c?.color ?? "").trim(); return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v) ? v : undefined; };
+  // First id that matches wins, in the order asked (accent before primary), not the order the site lists them.
+  const byId = (rows: any[], ...ids: string[]) => {
+    for (const id of ids) {
+      const hit = rows.find((c) => String(c.id ?? c.slug ?? "").toLowerCase() === id || String(c.title ?? c.name ?? "").toLowerCase() === id);
+      if (hexOf(hit)) return hexOf(hit);
+    }
+    return undefined;
+  };
+  const brand = byId(kitColors, "accent", "primary") ?? byId(themeColors, "primary", "accent", "brand", "vivid-cyan-blue") ?? hexOf(kitColors[0]);
+  const kitFonts: any[] = Array.isArray(el.fonts) ? el.fonts : [];
+  const famOf = (f: any) => String(f?.family ?? "").split(",")[0].replace(/["']/g, "").trim() || undefined;
+  const heading = famOf(kitFonts.find((f) => f.id === "primary")) ?? famOf(p.brand?.fonts?.[0]);
+  const body = famOf(kitFonts.find((f) => f.id === "text")) ?? famOf(kitFonts.find((f) => f.id === "secondary")) ?? famOf(p.brand?.fonts?.[1]) ?? heading;
+  // Google Fonts only for real family names (a theme.json "var(--...)" or a system stack is left to the fallback).
+  const families = [...new Set([heading, body].filter((f): f is string => !!f && /^[A-Za-z][A-Za-z0-9 ]{1,40}$/.test(f) && !/^(system-ui|sans-serif|serif|inherit|arial|helvetica)$/i.test(f)))];
   return {
-    brand: pick("accent", "primary"),
-    heading, body,
+    brand, heading, body,
     fontsHref: families.length ? `https://fonts.googleapis.com/css2?${families.map((f) => `family=${encodeURIComponent(f).replace(/%20/g, "+")}:wght@400;600;700`).join("&")}&display=swap` : undefined,
   };
 }

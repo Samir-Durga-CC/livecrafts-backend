@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { SECTIONS, CATEGORIES } from "../src/sections/library.js";
-import { addSection, catalogue, coreCss, pageInfo, previewDocument } from "../src/sections/place.js";
+import { addSection, catalogue, coreCss, pageInfo, previewDocument, siteLook } from "../src/sections/place.js";
 import { lintCss, lintHtml } from "../src/library/lint.js";
 
 let passed = 0;
@@ -32,7 +32,7 @@ function fakeBridge(page: { map: any; content: string; containers?: boolean }) {
     bridge: {
       map: async () => page.map,
       post: async () => ({ content: page.content }),
-      siteProfile: async () => ({ containers: page.containers !== false, colors: [], fonts: [] }),
+      siteProfile: async () => ({ builders: { elementor: { active: true, containers: page.containers !== false, colors: [{ id: "primary", title: "Primary", value: "#123456" }, { id: "accent", title: "Accent", value: "#e4572e" }], fonts: [{ id: "primary", title: "Primary", family: "Poppins" }, { id: "text", title: "Text", family: "Inter" }] } }, brand: { colors: [], fonts: [] } }),
       makeChange: async (c: any) => { writes.push(c); return { ok: true, change: { id: writes.length, kind: c.kind } }; },
     } as any,
   };
@@ -99,5 +99,13 @@ ok("Classic: added to the page content, existing content kept");
 await assert.rejects(addSection(classic.bridge, { id: "nope", postId: 4 }), /Unknown section/);
 await assert.rejects(addSection(classic.bridge, { id: "cta-split", postId: 0 }), /Open the page/);
 ok("Unknown section or no page: refused");
+
+const look = await siteLook(el.bridge);
+assert.equal(look.brand, "#e4572e", "the Elementor kit accent is the brand colour");
+assert.equal(look.heading, "Poppins"); assert.equal(look.body, "Inter");
+assert.match(look.fontsHref ?? "", /family=Poppins.*family=Inter/);
+const themeOnly = { siteProfile: async () => ({ builders: { elementor: { active: false } }, brand: { colors: [{ slug: "primary", name: "Primary", value: "#1d4ed8" }], fonts: [] } }) } as any;
+assert.equal((await siteLook(themeOnly)).brand, "#1d4ed8", "a block theme's primary colour is used without Elementor");
+ok("Previews take the site's brand colour and fonts (Elementor kit, or the theme palette)");
 
 console.log(`sections: ${passed} checks passed`);
