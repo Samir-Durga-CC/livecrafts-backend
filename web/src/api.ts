@@ -84,8 +84,8 @@ export const api = {
   speedRun: (siteId: string, runId: string) => request<SpeedRun>("GET", `/sites/${siteId}/pagespeed/${runId}`),
   /** Section Gallery: the catalogue (+ how the open page is built and where a section can go). */
   sections: (siteId: string, post?: number) => request<SectionCatalogue>("GET", `/sites/${siteId}/sections${post ? `?post=${post}` : ""}`),
-  sectionPreview: (siteId: string, id: string) => request<{ ok: boolean; html: string }>("GET", `/sites/${siteId}/sections/preview?id=${encodeURIComponent(id)}`),
-  addSection: (siteId: string, body: { id: string; post: number; place?: string; layout?: { container: number; gutter: number } | null }) => request<{ ok: boolean; name: string; place: string; builder: string; change: any }>("POST", `/sites/${siteId}/sections/add`, body),
+  sectionPreview: (siteId: string, id: string, brand?: { color: string; on: string; radius?: number } | null) => request<{ ok: boolean; html: string }>("GET", `/sites/${siteId}/sections/preview?id=${encodeURIComponent(id)}${brand ? `&brand=${encodeURIComponent(brand.color)}&on=${encodeURIComponent(brand.on)}${brand.radius !== undefined ? `&radius=${brand.radius}` : ""}` : ""}`),
+  addSection: (siteId: string, body: { id: string; post: number; place?: string; layout?: Record<string, unknown> | null }) => request<{ ok: boolean; name: string; place: string; builder: string; change: any }>("POST", `/sites/${siteId}/sections/add`, body),
   plugins: (siteId: string, refresh = false) => request<PluginList>("GET", `/sites/${siteId}/plugins${refresh ? "?refresh=1" : ""}`),
   pluginHistory: (siteId: string) => request<{ history: PluginHistoryEntry[] }>("GET", `/sites/${siteId}/plugins/history`),
   pluginVersions: (siteId: string, plugin: string) => request<{ versions: string[]; note?: string }>("GET", `/sites/${siteId}/plugins/versions?plugin=${encodeURIComponent(plugin)}`),

@@ -7,7 +7,7 @@ import { JsonStore, newId } from "./store.js";
 import { FileStore } from "./files.js";
 import { Bridge, BridgeError } from "./bridge.js";
 import { pluginJobs } from "./pluginJobs.js";
-import { SectionError, addSection, catalogue, pageInfo, previewDocument, siteLook } from "./sections/place.js";
+import { SectionError, addSection, catalogue, cleanLayout, pageInfo, previewDocument, siteLook } from "./sections/place.js";
 import { buildAgent } from "./agent.js";
 import { JobRunner } from "./jobs.js";
 import type { Job, Site } from "./types.js";
@@ -294,7 +294,8 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
             const key = `look|${s.id}`;
             let look = sectionLooks.get(key);
             if (!look || Date.now() - look.at > 5 * 60_000) { look = { at: Date.now(), value: await siteLook(b) }; sectionLooks.set(key, look); }
-            return send(res, 200, { ok: true, html: previewDocument(id, look.value), look: look.value });
+            const measured = cleanLayout({ brand: { color: url.searchParams.get("brand"), on: url.searchParams.get("on"), radius: url.searchParams.get("radius") ?? undefined } });
+            return send(res, 200, { ok: true, html: previewDocument(id, look.value, measured), look: look.value });
           }
           if (m[2] === "/add" && req.method === "POST") { // put it on the page as a draft
             const body = await readJson(req);

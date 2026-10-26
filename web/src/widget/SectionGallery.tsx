@@ -18,17 +18,18 @@ type Device = keyof typeof DEVICE;
 
 /** One request per section per site, shared by the tile and the detail view. */
 const htmlCache = new Map<string, Promise<string>>();
-function usePreview(siteId: string, id: string) {
+type Brand = { color: string; on: string; radius?: number };
+function usePreview(siteId: string, id: string, brand: Brand | null) {
   const [html, setHtml] = useState<string | null>(null);
   const [err, setErr] = useState("");
   useEffect(() => {
     let alive = true;
-    const key = `${siteId}|${id}`;
+    const key = `${siteId}|${id}|${brand ? `${brand.color}${brand.on}${brand.radius ?? ""}` : ""}`;
     setHtml(null); setErr("");
-    if (!htmlCache.has(key)) htmlCache.set(key, api.sectionPreview(siteId, id).then((r) => r.html));
+    if (!htmlCache.has(key)) htmlCache.set(key, api.sectionPreview(siteId, id, brand).then((r) => r.html));
     htmlCache.get(key)!.then((h) => { if (alive) setHtml(h); }).catch((e) => { htmlCache.delete(key); if (alive) setErr((e as Error).message); });
     return () => { alive = false; };
-  }, [siteId, id]);
+  }, [siteId, id, brand]);
   return { html, err };
 }
 
@@ -61,8 +62,8 @@ function Frame({ html, width, cap }: { html: string; width: number; cap?: number
   );
 }
 
-function Tile({ siteId, s, onOpen }: { siteId: string; s: SectionCatalogue["sections"][number]; onOpen: () => void }) {
-  const { html, err } = usePreview(siteId, s.id);
+function Tile({ siteId, s, brand, onOpen }: { siteId: string; s: SectionCatalogue["sections"][number]; brand: Brand | null; onOpen: () => void }) {
+  const { html, err } = usePreview(siteId, s.id, brand);
   return (
     <button type="button" className="sg-tile" onClick={onOpen}>
       <span className="sg-thumb">
@@ -84,7 +85,7 @@ function Detail({ siteId, data, id, postId, layout, onBack, onPick, onAdded }: {
   const [place, setPlace] = useState(places.length ? places[places.length - 1].value : "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const { html, err: previewErr } = usePreview(siteId, id);
+  const { html, err: previewErr } = usePreview(siteId, id, layout?.brand ?? null);
 
   // Arrow keys step through the layouts of the same kind.
   useEffect(() => {
@@ -153,7 +154,7 @@ function Detail({ siteId, data, id, postId, layout, onBack, onPick, onAdded }: {
   );
 }
 
-type Layout = { container: number; gutter: number };
+type Layout = { container?: number; gutter?: number; className?: string; brand?: Brand };
 
 export function SectionGallery({ siteId, postId, onClose, onAdded, post, parentOrigin }: {
   siteId: string; postId: number; onClose: () => void; onAdded: (name: string) => void;
@@ -168,6 +169,7 @@ export function SectionGallery({ siteId, postId, onClose, onAdded, post, parentO
   const [q, setQ] = useState("");
   const [open, setOpen] = useState<string | null>(null);
   const [layout, setLayout] = useState<Layout | null>(null);
+  const [measured, setMeasured] = useState(false); // previews wait for the page's brand (briefly: older plugins never answer)
 
   // Ask the page how wide the theme's content box is, so added sections line up with it (older plugins never answer).
   useEffect(() => {
@@ -175,11 +177,13 @@ export function SectionGallery({ siteId, postId, onClose, onAdded, post, parentO
     const on = (e: MessageEvent) => {
       if (e.origin !== parentOrigin || e.data?.type !== "lc:measure-result" || e.data.id !== id) return;
       const l = e.data.layout;
-      if (l && Number.isFinite(l.container) && Number.isFinite(l.gutter)) setLayout({ container: Number(l.container), gutter: Number(l.gutter) });
+      if (l && typeof l === "object") setLayout(l as Layout); // the backend checks every value before it uses one
+      setMeasured(true);
     };
     window.addEventListener("message", on);
     post({ type: "lc:measure", id });
-    return () => window.removeEventListener("message", on);
+    const t = setTimeout(() => setMeasured(true), 900);
+    return () => { window.removeEventListener("message", on); clearTimeout(t); };
   }, [post, parentOrigin]);
 
   useEffect(() => {
@@ -227,8 +231,9 @@ export function SectionGallery({ siteId, postId, onClose, onAdded, post, parentO
             ))}
           </nav>
           <div className="sg-grid">
-            {list.map((s) => <Tile key={s.id} siteId={siteId} s={s} onOpen={() => setOpen(s.id)} />)}
-            {!list.length && <p className="muted sg-empty">No section matches "{q}". Try another word, or pick a kind on the left.</p>}
+            {!measured && <div className="sg-ph big"><span className="spin" /></div>}
+            {measured && list.map((s) => <Tile key={s.id} siteId={siteId} s={s} brand={layout?.brand ?? null} onOpen={() => setOpen(s.id)} />)}
+            {measured && !list.length && <p className="muted sg-empty">No section matches "{q}". Try another word, or pick a kind on the left.</p>}
           </div>
         </div>
       )}

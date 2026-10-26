@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { SECTIONS, CATEGORIES } from "../src/sections/library.js";
-import { addSection, catalogue, coreCss, pageInfo, previewDocument, siteLook } from "../src/sections/place.js";
+import { addSection, catalogue, cleanLayout, coreCss, pageInfo, previewDocument, siteLook } from "../src/sections/place.js";
 import { lintCss, lintHtml } from "../src/library/lint.js";
 
 let passed = 0;
@@ -141,7 +141,17 @@ assert.ok(!/onclick/.test(String(bad.writes[3].value)), "a class name that is no
 const odd = fakeBridge({ map: { builders: {} }, content: "<p>x</p>" });
 await addSection(odd.bridge, { id: "cta-band", postId: 4, place: "end", layout: { container: 99999, gutter: 32 } });
 assert.ok(!odd.writes.some((w) => w.target === "lcs-site"), "an unbelievable measurement is ignored");
-ok("The theme's container class (all breakpoints) or its measured width and padding are used");
+// The brand from the site's own buttons: colour, the text on it, their corner radius.
+const branded = fakeBridge({ map: { builders: {} }, content: "<p>x</p>" });
+await addSection(branded.bridge, { id: "cta-band", postId: 4, place: "end", layout: { container: 1760, gutter: 32, className: "wrap", brand: { color: "#293B86", on: "#ffffff", radius: 5 } } });
+const siteCss = String(branded.writes[1].value);
+assert.match(siteCss, /--lc-brand: #293b86; --lc-on-brand: #ffffff; --lc-radius: 7px/);
+assert.deepEqual(lintCss(siteCss).errors, []);
+const brandOnly = cleanLayout({ brand: { color: "#f5c518", on: "" } });
+assert.deepEqual(brandOnly, { brand: { color: "#f5c518", on: "#111111" } }, "brand without a content box; dark text on a light brand");
+assert.equal(cleanLayout({ brand: { color: "red;}body{x" } }), null, "only #rrggbb colours");
+assert.match(previewDocument("hero-split", {}, { brand: { color: "#293b86", on: "#ffffff" } }), /\.lcs\{--lc-brand: #293b86;--lc-on-brand: #ffffff\}/);
+ok("The theme's container class (all breakpoints), its measured width and padding, and its brand colours are used");
 
 await assert.rejects(addSection(classic.bridge, { id: "nope", postId: 4 }), /Unknown section/);
 await assert.rejects(addSection(classic.bridge, { id: "cta-split", postId: 0 }), /Open the page/);

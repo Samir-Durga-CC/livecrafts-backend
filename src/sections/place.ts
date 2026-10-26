@@ -32,27 +32,56 @@ const HOST_CSS = `
 export const coreCss = () => CORE_CSS + HOST_CSS;
 
 export const SITE_ID = "lcs-site";
-export interface SiteLayout { container: number; gutter: number; className?: string }
+export interface SiteBrand { color: string; on: string; radius?: number }
+export interface SiteLayout { container?: number; gutter?: number; className?: string; brand?: SiteBrand }
 
-/** The site's content box as measured on its page by the plugin (lc:measure), or null when it is not believable. */
+const HEX = /^#[0-9a-f]{6}$/i;
+/** Black or white, whichever reads better on that colour (for a brand measured without its text colour). */
+export function readableOn(hex: string) {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.4 ? "#111111" : "#ffffff";
+}
+
+/**
+ * What the plugin measured on the site's page (lc:measure): its content box, the theme's class for it, and the brand
+ * from its own buttons. Anything not believable is dropped; null when nothing is left.
+ */
 export function cleanLayout(l: any): SiteLayout | null {
+  const out: SiteLayout = {};
   const container = Math.round(Number(l?.container)), gutter = Math.round(Number(l?.gutter));
-  if (!Number.isFinite(container) || container < 480 || container > 2600) return null;
-  if (!Number.isFinite(gutter) || gutter < 0 || gutter > 160) return null;
-  const cls = String(l?.className ?? "");
-  return /^[A-Za-z_][\w-]{0,40}$/.test(cls) && !/^lc/.test(cls) ? { container, gutter, className: cls } : { container, gutter };
+  if (Number.isFinite(container) && container >= 480 && container <= 2600 && Number.isFinite(gutter) && gutter >= 0 && gutter <= 160) {
+    out.container = container; out.gutter = gutter;
+    const cls = String(l?.className ?? "");
+    if (/^[A-Za-z_][\w-]{0,40}$/.test(cls) && !/^lc/.test(cls)) out.className = cls;
+  }
+  const color = String(l?.brand?.color ?? "").toLowerCase();
+  if (HEX.test(color)) {
+    const on = String(l?.brand?.on ?? "").toLowerCase();
+    const radius = Math.round(Number(l?.brand?.radius));
+    out.brand = { color, on: HEX.test(on) && on !== color ? on : readableOn(color), ...(Number.isFinite(radius) && radius >= 0 && radius <= 60 ? { radius } : {}) };
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/** The custom properties the sections read, from what was measured (also used by the previews). */
+export function siteVars(l: SiteLayout): string[] {
+  const v: string[] = [];
+  if (l.container !== undefined && l.gutter !== undefined) v.push(`--lc-container: ${l.container}px`, `--lc-gutter: ${l.gutter > 16 ? `clamp(16px, 4cqi, ${l.gutter}px)` : `${l.gutter}px`}`);
+  if (l.brand) {
+    v.push(`--lc-brand: ${l.brand.color}`, `--lc-on-brand: ${l.brand.on}`);
+    // section buttons are rounded at 0.7 x the radius: match the site's own buttons, cards follow in proportion
+    if (l.brand.radius !== undefined) v.push(`--lc-radius: ${Math.min(40, Math.round(l.brand.radius / 0.7))}px`);
+  }
+  return v;
 }
 
 /** The section's content box also wears the theme's container class, so the theme sizes it at every breakpoint. */
 export const withSiteContainer = (html: string, l: SiteLayout | null) =>
   l?.className ? html.replace(/class="lcs-in(?=[\s"])/g, `class="lcs-in ${l.className}`) : html;
 
-/**
- * Per-site CSS: the measured content box, for sections that cannot wear the theme's class (or were added before it was
- * known). Only measured at one screen width, so the side padding narrows on small screens instead of staying fixed.
- */
+/** Per-site CSS: the site's content box and brand as measured on its page, read by every gallery section. */
 export const siteLayoutCss = (l: SiteLayout) =>
-  `/* Livecrafts sections: this site's content box (measured on the site) */\n.lcs { --lc-container: ${l.container}px; --lc-gutter: ${l.gutter > 16 ? `clamp(16px, 4cqi, ${l.gutter}px)` : `${l.gutter}px`}; }\n`;
+  `/* Livecrafts sections: this site's content box and brand (measured on the site) */\n.lcs { ${siteVars(l).join("; ")}; }\n`;
 
 /** The catalogue as the gallery shows it (no markup: the preview fetches that per section). */
 export function catalogue() {
@@ -211,7 +240,7 @@ export async function addSection(bridge: Bridge, a: { id: string; postId: number
   // 1) the look first (the plugin replaces a block with the same name, so writing it again is harmless)
   const cssChanges: any[] = [];
   const blocks = [{ id: CORE_ID, label: "Livecrafts sections: design system", css: coreCss() }];
-  if (layout) blocks.push({ id: SITE_ID, label: "Livecrafts sections: this site's content width", css: siteLayoutCss(layout) });
+  if (layout) blocks.push({ id: SITE_ID, label: "Livecrafts sections: this site's width and brand", css: siteLayoutCss(layout) });
   blocks.push({ id: `lcs-${s.id}`, label: `Livecrafts section: ${s.name}`, css: s.css });
   for (const b of blocks) {
     const r: any = await bridge.makeChange({ kind: "css.block", target: b.id, value: b.css, label: b.label, ref: a.ref, source: "widget" });
@@ -225,7 +254,8 @@ export async function addSection(bridge: Bridge, a: { id: string; postId: number
 }
 
 /** A standalone page that shows one section the way it will look on this site (brand colour and fonts). */
-export function previewDocument(id: string, look: { brand?: string; heading?: string; body?: string; fontsHref?: string }) {
+/** `site`: what the plugin measured on the page (its brand wins over the profile's colour). */
+export function previewDocument(id: string, look: { brand?: string; heading?: string; body?: string; fontsHref?: string }, site?: SiteLayout | null) {
   const s = getSection(id);
   if (!s) throw new SectionError(`Unknown section "${id}".`, 404);
   const safeFont = (f?: string) => (f && /^[\w\s,'"-]{1,80}$/.test(f) ? f : "");
@@ -235,7 +265,7 @@ export function previewDocument(id: string, look: { brand?: string; heading?: st
     look.fontsHref ? `<link rel="stylesheet" href="${look.fontsHref.replace(/"/g, "")}">` : ""
   }<style>html,body{margin:0;background:#fff;color:#14171f}body{font-family:${body ? `${body}, ` : ""}system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:16px}h2,h3{font-family:${heading ? `${heading}, ` : ""}inherit}a{color:inherit}${
     brand ? `:root{--lc-brand:${brand}}` : ""
-  }</style><style>${coreCss()}</style><style>${s.css}</style></head><body>${s.html}</body></html>`;
+  }${site?.brand ? `.lcs{${siteVars({ brand: site.brand }).join(";")}}` : ""}</style><style>${coreCss()}</style><style>${s.css}</style></head><body>${s.html}</body></html>`;
 }
 
 /** The site's look for previews: the Elementor kit's colours and fonts, else the theme palette (theme.json); empty when neither. */
