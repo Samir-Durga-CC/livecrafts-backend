@@ -872,7 +872,8 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
 a.nav-item { text-decoration: none; }
 a.nav-item:visited { color: var(--muted); } a.nav-item:hover { color: var(--text); }
 .safe-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 11px; background: var(--surface); border: 1px solid var(--line); font-size: 12.5px; }
-.safe-row strong { font-weight: 600; }
+.safe-row strong { font-weight: 600; white-space: nowrap; }
+.safe-row .safe-link { white-space: nowrap; flex: none; }
 .safe-row .safe-ico { width: 24px; height: 24px; border-radius: 7px; }
 .safe-row .safe-link { margin-top: 0; }
 @media (min-width: 1101px) {

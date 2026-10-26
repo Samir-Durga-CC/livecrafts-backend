@@ -138,7 +138,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     const url = new URL(req.url ?? "/", "http://x");
     const route = `${req.method} ${url.pathname}`;
     try {
-      const isApi = /^\/(health|sites|jobs|files|integrations|screens|models|voice)(\/|$)/.test(url.pathname);
+      const isApi = /^\/(health|sites|sections|jobs|files|integrations|screens|models|voice)(\/|$)/.test(url.pathname);
       if (!isApi && req.method === "GET" && serveStatic(url.pathname, res)) return; // UI files are public; the API below is protected
       // Who is calling: the chat in the WordPress widget (signed per-person token, only its own site) or the app / admin.
       let caller: Caller = { via: "admin" };
