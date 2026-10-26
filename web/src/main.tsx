@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import TemplatesPage from "./TemplatesPage";
 import ComponentsPage from "./ComponentsPage";
+import SectionUsagePage from "./SectionUsagePage";
 import "./styles.css";
 import "./phase2.css";
 
@@ -16,6 +17,7 @@ createRoot(document.getElementById("root")!).render(
     {embed ? <Suspense fallback={null}><WidgetApp /></Suspense>
       : /^\/components\/?$/.test(location.pathname) ? <ComponentsPage />
       : /^\/templates\/?$/.test(location.pathname) ? <TemplatesPage />
+      : /^\/section-usage\/?$/.test(location.pathname) ? <SectionUsagePage />
       : <App />}
   </StrictMode>,
 );

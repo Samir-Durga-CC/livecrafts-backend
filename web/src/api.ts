@@ -85,6 +85,7 @@ export const api = {
   /** Section Gallery: the catalogue (+ how the open page is built and where a section can go). */
   sections: (siteId: string, post?: number) => request<SectionCatalogue>("GET", `/sites/${siteId}/sections${post ? `?post=${post}` : ""}`),
   sectionPreview: (siteId: string, id: string, brand?: { color: string; on: string; radius?: number } | null) => request<{ ok: boolean; html: string }>("GET", `/sites/${siteId}/sections/preview?id=${encodeURIComponent(id)}${brand ? `&brand=${encodeURIComponent(brand.color)}&on=${encodeURIComponent(brand.on)}${brand.radius !== undefined ? `&radius=${brand.radius}` : ""}` : ""}`),
+  sectionUsage: () => request<SectionUsage>("GET", "/sections/usage"),
   sectionSite: (siteId: string, layout: Record<string, unknown>) => request<{ ok: boolean; layout: any; containerSynced: boolean }>("POST", `/sites/${siteId}/sections/site`, { layout }),
   addSection: (siteId: string, body: { id: string; post: number; place?: string; layout?: Record<string, unknown> | null }) => request<{ ok: boolean; name: string; place: string; builder: string; change: any }>("POST", `/sites/${siteId}/sections/add`, body),
   plugins: (siteId: string, refresh = false) => request<PluginList>("GET", `/sites/${siteId}/plugins${refresh ? "?refresh=1" : ""}`),
@@ -285,4 +286,11 @@ export interface SectionCatalogue {
   categories: Array<{ id: string; name: string; count: number }>;
   sections: SectionSummary[];
   page: null | { builder: "elementor" | "blocks" | "divi" | "html" | null; why: string; places: Array<{ value: string; label: string }>; unsupported?: string };
+}
+
+/** The Section Gallery's counter (GET /sections/usage). */
+export interface SectionUsage {
+  totals: { adds: number; websites: number; sectionsUsed: number; sections: number; since: string | null };
+  sections: Array<{ id: string; name: string; category: string; count: number; siteCount: number; last: string | null; sites: Array<{ id: string; name: string; url: string; count: number; last: string }> }>;
+  websites: Array<{ id: string; name: string; url: string; count: number; sections: number; last: string }>;
 }

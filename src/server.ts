@@ -7,6 +7,7 @@ import { JsonStore, newId } from "./store.js";
 import { FileStore } from "./files.js";
 import { Bridge, BridgeError } from "./bridge.js";
 import { pluginJobs } from "./pluginJobs.js";
+import { readSectionUses, recordSectionUse, sectionUsageReport } from "./sections/usage.js";
 import { SectionError, addSection, catalogue, cleanLayout, mergeLayout, pageInfo, previewDocument, siteLook, syncSiteContainer, type SiteLayout } from "./sections/place.js";
 import { buildAgent } from "./agent.js";
 import { JobRunner } from "./jobs.js";
@@ -278,6 +279,9 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         return send(res, 200, { ...publicSite(next), plugin: info, widgetNote: await connectWidget(next) });
       }
       // ---- Section Gallery: ready-made sections added with one click (no AI). See src/sections.
+      if (route === "GET /sections/usage") { // the Section Gallery's counter (admin only: not a widget route)
+        return send(res, 200, { ok: true, ...sectionUsageReport(readSectionUses(), sites.list().map((x) => ({ id: x.id, name: x.name, url: x.url }))) });
+      }
       m = url.pathname.match(/^\/sites\/([\w-]+)\/sections(\/preview|\/add|\/site)?$/);
       if (m) {
         const s = sites.get(m[1]);
@@ -309,6 +313,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
             const body = await readJson(req);
             const out = await addSection(b, { id: String(body.id ?? ""), postId: Number(body.post ?? 0) || 0, place: body.place ? String(body.place) : undefined, layout: body.layout, saved: sectionLayouts.get(s.id)?.layout });
             if (out.layout) sectionLayouts.put({ id: s.id, layout: out.layout, at: new Date().toISOString() });
+            recordSectionUse({ site: s.id, section: out.section, post: Number(body.post ?? 0) || 0, place: out.place, builder: String(out.builder ?? ""), user: caller.via === "widget" ? caller.user?.name || caller.user?.login : undefined });
             log("info", `section added: ${out.section}`, { site: s.id, post: body.post, place: out.place, builder: out.builder, layout: out.layout });
             return send(res, 200, out);
           }

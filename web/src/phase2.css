@@ -858,3 +858,11 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
   .sg-side { border-top: 0; border-left: 1px solid var(--line); overflow-y: auto; }
 }
 @media (prefers-reduced-motion: reduce) { .sg-tile { transition: none; } .sg-tile:hover { transform: none; } }
+
+/* /section-usage */
+.su-bar { display: inline-block; width: 64px; height: 6px; border-radius: 99px; background: var(--line); margin-right: 8px; vertical-align: middle; overflow: hidden; }
+.su-bar i { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
+.su-row:hover td { background: var(--card); }
+.su-more { color: var(--accent); }
+.su-sites td { background: var(--card); padding-left: 28px; }
+.su-h2 { font-size: 16px; margin: 28px 0 10px; }
