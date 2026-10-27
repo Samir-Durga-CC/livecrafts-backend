@@ -23,6 +23,21 @@ function fill(change: Record<string, any>, value: unknown): Record<string, any> 
   return value === undefined ? { ...change } : { ...change, value };
 }
 
+/**
+ * Colour and font set on a ready-made section - or on the Elementor widget that holds one - have to reach its words.
+ * The section gives its headings the theme's heading font and their own colour rule, so a rule on the section alone
+ * stopped at the paragraphs: "saved", refreshed, and the heading never changed. These two properties are written for
+ * the section's headings as well, in one rule; :is() keeps it inside the selector length the plugin accepts.
+ */
+const SECTION_TEXT = ["color", "font-family"];
+function forSection(change: Record<string, any>, sectionish: boolean): Record<string, any> {
+  const v = change.value;
+  if (!sectionish || change.kind !== "css.rule" || typeof v?.selector !== "string" || v.selector.includes(",") || !v.declarations) return change;
+  if (!Object.keys(v.declarations).some((p) => SECTION_TEXT.includes(p))) return change;
+  const wide = `${v.selector}, ${v.selector} :is(.lcs, .lcs-h, .lcs-h2, .lcs-h3)`;
+  return wide.length > 300 ? change : { ...change, value: { ...v, selector: wide } };
+}
+
 /** The input's starting text from the value the plugin reported. */
 function initial(a: ResolvedAction): string {
   const v = a.value;
@@ -68,11 +83,14 @@ export function ElementPanel({ selected, resolved, resolving, error, picking, di
   }), []);
   const discard = () => { setStaged({}); setResetKey((k) => k + 1); setProblem(""); };
 
+  // A ready-made section, or the widget it lives in: its colour and font must be written for its headings too.
+  const sectionish = () => !!selected && (/(^|\s)lcs(\s|$)/.test(selected.classes ?? "") || (view?.actions ?? []).some((a) => a.input === "html" && isGallerySection(a.value)));
   async function apply(a: ResolvedAction, value?: unknown) {
     setBusy(a.id); setProblem("");
     try {
       let change = fill(a.change, value);
       if (scope === "site" && view?.css_scopes && change.value?.selector === view.css_scopes.page) change = { ...change, value: { ...change.value, selector: view.css_scopes.site } };
+      change = forSection(change, sectionish());
       if (a.requires) await wp("POST", "changes", a.requires);
       const r = await wp<any>("POST", "changes", change);
       if (r.unchanged) setProblem("It already is that way - nothing changed.");
@@ -89,6 +107,7 @@ export function ElementPanel({ selected, resolved, resolving, error, picking, di
       for (const a of list) {
         let change = fill(a.change, staged[a.id]);
         if (scope === "site" && view?.css_scopes && change.value?.selector === view.css_scopes.page) change = { ...change, value: { ...change.value, selector: view.css_scopes.site } };
+        change = forSection(change, sectionish());
         if (a.requires) await wp("POST", "changes", a.requires);
         const r = await wp<any>("POST", "changes", change);
         if (!r.unchanged) done.push(r.change?.summary ?? a.label);
@@ -122,7 +141,9 @@ export function ElementPanel({ selected, resolved, resolving, error, picking, di
     );
   }
 
-  const actions = view?.actions ?? [];
+  // A picture has no words: a text colour or a font on it saves, refreshes, and changes nothing anyone can see.
+  const wordless = !selected.text?.trim() && /^(img|figure|picture|svg|video|iframe)$/i.test(selected.tag);
+  const actions = (view?.actions ?? []).filter((a) => !(wordless && /^css:(color|font-family|font-size|font-weight|text-align)$/.test(a.id)));
   return (
     <div className="ep">
       <div className="qa-sel">

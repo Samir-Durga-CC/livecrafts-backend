@@ -53,14 +53,18 @@ export const CORE_CSS = `/* Livecrafts sections: design system */
   /*
    * The page's own ink and paper. These used to be inherit and currentColor, so a heading, its lead paragraph
    * and a card border were all the one colour the page happened to be using - on a site whose body text is grey,
-   * every section came out flat and faded. Measured values win (--lc-*, chosen in siteLook by contrast against the
+   * every section came out flat and faded. The section itself now takes the ink (color below), and its headings
+   * and quieter text FOLLOW the section's colour - so the default is real ink, and a colour someone sets on the
+   * section still reaches every word in it. Measured values win (--lc-*, chosen in siteLook by contrast against the
    * paper, never by the name a kit gives a colour), then a block theme's own contrast colour, then a near-black.
    * Elementor's --e-global-color-text is deliberately NOT in this chain: on a default kit it is #7A7A7A, a body
    * grey, and using it for headings is the faded look this whole set exists to end.
    */
   --lcs-ink: var(--lc-ink, var(--wp--preset--color--contrast, #14171f));
   --lcs-surface: var(--lc-surface, var(--wp--preset--color--base, #ffffff));
-  --lcs-muted: var(--lc-muted, color-mix(in srgb, var(--lcs-ink) 66%, var(--lcs-surface)));
+  /* Quieter text follows the section's own colour (currentColor), so a colour set on the section reaches its intro
+     and card text too - at two-thirds strength, keeping the hierarchy. */
+  --lcs-muted: var(--lc-muted, color-mix(in srgb, currentColor 66%, var(--lcs-surface)));
   --lcs-tint: color-mix(in srgb, var(--lcs-brand) 9%, transparent);
   --lcs-tint-2: color-mix(in srgb, var(--lcs-brand) 18%, transparent);
   --lcs-line: var(--lc-line, color-mix(in srgb, var(--lcs-ink) 14%, var(--lcs-surface)));
@@ -89,9 +93,9 @@ export const CORE_CSS = `/* Livecrafts sections: design system */
    (--lc-container / --lc-gutter, written per site), else 1160px. */
 :where(.lcs .lcs-in) { max-width: var(--lc-container, 1160px); margin-inline: auto; padding-inline: var(--lc-gutter, clamp(20px, 4cqi, 40px)); }
 .lcs .lcs-eyebrow { display: inline-block; font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--lcs-brand); }
-.lcs .lcs-h { font-size: clamp(34px, 5.2cqi, 60px); line-height: 1.06; letter-spacing: -0.02em; font-weight: 700; text-wrap: balance; color: var(--lcs-ink); }
-.lcs .lcs-h2 { font-size: clamp(28px, 3.6cqi, 42px); line-height: 1.12; letter-spacing: -0.015em; font-weight: 700; text-wrap: balance; color: var(--lcs-ink); }
-.lcs .lcs-h3 { font-size: 19px; line-height: 1.3; font-weight: 650; color: var(--lcs-ink); }
+.lcs .lcs-h { font-size: clamp(34px, 5.2cqi, 60px); line-height: 1.06; letter-spacing: -0.02em; font-weight: 700; text-wrap: balance; color: inherit; }
+.lcs .lcs-h2 { font-size: clamp(28px, 3.6cqi, 42px); line-height: 1.12; letter-spacing: -0.015em; font-weight: 700; text-wrap: balance; color: inherit; }
+.lcs .lcs-h3 { font-size: 19px; line-height: 1.3; font-weight: 650; color: inherit; }
 .lcs .lcs-lead { font-size: clamp(17px, 1.7cqi, 20px); color: var(--lcs-muted); max-width: 40em; }
 .lcs .lcs-text { font-size: 16px; color: var(--lcs-muted); }
 .lcs .lcs-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
