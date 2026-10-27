@@ -33,7 +33,9 @@ export const coreCss = () => CORE_CSS + HOST_CSS;
 
 export const SITE_ID = "lcs-site";
 export interface SiteBrand { color: string; on: string; radius?: number }
-export interface SiteLayout { container?: number; gutter?: number; className?: string; brand?: SiteBrand }
+/** The page's own ink and paper, when the site publishes them (Elementor's kit, a block theme's palette). */
+export interface SiteInk { ink: string; surface?: string; muted?: string; line?: string }
+export interface SiteLayout { container?: number; gutter?: number; className?: string; brand?: SiteBrand; ink?: SiteInk }
 
 const HEX = /^#[0-9a-f]{6}$/i;
 /** Black or white, whichever reads better on that colour (for a brand measured without its text colour). */
@@ -60,6 +62,11 @@ export function cleanLayout(l: any): SiteLayout | null {
     const radius = Math.round(Number(l?.brand?.radius));
     out.brand = { color, on: HEX.test(on) && on !== color ? on : readableOn(color), ...(Number.isFinite(radius) && radius >= 0 && radius <= 60 ? { radius } : {}) };
   }
+  const ink = String(l?.ink?.ink ?? "").toLowerCase();
+  if (HEX.test(ink)) {
+    const pick = (v: unknown) => { const s = String(v ?? "").toLowerCase(); return HEX.test(s) ? s : undefined; };
+    out.ink = { ink, ...(pick(l?.ink?.surface) ? { surface: pick(l.ink.surface) } : {}), ...(pick(l?.ink?.muted) ? { muted: pick(l.ink.muted) } : {}), ...(pick(l?.ink?.line) ? { line: pick(l.ink.line) } : {}) };
+  }
   return Object.keys(out).length ? out : null;
 }
 
@@ -75,6 +82,8 @@ export function mergeLayout(saved: SiteLayout | null | undefined, fresh: SiteLay
   if (box.container !== undefined) { out.container = box.container; out.gutter = box.gutter; if (box.className) out.className = box.className; }
   const brand = fresh.brand ?? saved.brand;
   if (brand) out.brand = brand;
+  const ink = fresh.ink ?? saved.ink;
+  if (ink) out.ink = ink;
   return Object.keys(out).length ? out : null;
 }
 
@@ -92,6 +101,13 @@ export function siteVars(l: SiteLayout): string[] {
     v.push(`--lc-brand: ${l.brand.color}`, `--lc-on-brand: ${l.brand.on}`);
     // section buttons are rounded at 0.7 x the radius: match the site's own buttons, cards follow in proportion
     if (l.brand.radius !== undefined) v.push(`--lc-radius: ${Math.min(40, Math.round(l.brand.radius / 0.7))}px`);
+  }
+  if (l.ink) {
+    // Only what is known: the section's own fallbacks derive muted and line from the ink and the surface.
+    v.push(`--lc-ink: ${l.ink.ink}`);
+    if (l.ink.surface) v.push(`--lc-surface: ${l.ink.surface}`);
+    if (l.ink.muted) v.push(`--lc-muted: ${l.ink.muted}`);
+    if (l.ink.line) v.push(`--lc-line: ${l.ink.line}`);
   }
   return v;
 }
@@ -280,21 +296,24 @@ export async function addSection(bridge: Bridge, a: { id: string; postId: number
 
 /** A standalone page that shows one section the way it will look on this site (brand colour and fonts). */
 /** `site`: what the plugin measured on the page (its brand wins over the profile's colour). */
-export function previewDocument(id: string, look: { brand?: string; heading?: string; body?: string; fontsHref?: string }, site?: SiteLayout | null) {
+export function previewDocument(id: string, look: { brand?: string; ink?: string; surface?: string; heading?: string; body?: string; fontsHref?: string }, site?: SiteLayout | null) {
   const s = getSection(id);
   if (!s) throw new SectionError(`Unknown section "${id}".`, 404);
   const safeFont = (f?: string) => (f && /^[\w\s,'"-]{1,80}$/.test(f) ? f : "");
-  const brand = look.brand && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(look.brand) ? look.brand : "";
+  const hex = (v?: string) => (v && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v) ? v : "");
+  const brand = hex(look.brand), ink = hex(look.ink), surface = hex(look.surface);
   const body = safeFont(look.body), heading = safeFont(look.heading);
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${
     look.fontsHref ? `<link rel="stylesheet" href="${look.fontsHref.replace(/"/g, "")}">` : ""
   }<style>html,body{margin:0;background:#fff;color:#14171f}body{font-family:${body ? `${body}, ` : ""}system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:16px}h2,h3{font-family:${heading ? `${heading}, ` : ""}inherit}a{color:inherit}${
-    brand ? `:root{--lc-brand:${brand}}` : ""
-  }${site?.brand ? `.lcs{${siteVars({ brand: site.brand }).join(";")}}` : ""}</style><style>${coreCss()}</style><style>${s.css}</style></head><body>${s.html}</body></html>`;
+    [brand && `--lc-brand:${brand}`, ink && `--lc-ink:${ink}`, surface && `--lc-surface:${surface}`].filter(Boolean).length
+      ? `:root{${[brand && `--lc-brand:${brand}`, ink && `--lc-ink:${ink}`, surface && `--lc-surface:${surface}`].filter(Boolean).join(";")}}`
+      : ""
+  }${site?.brand || site?.ink ? `.lcs{${siteVars({ brand: site.brand, ink: site.ink }).join(";")}}` : ""}</style><style>${coreCss()}</style><style>${s.css}</style></head><body>${s.html}</body></html>`;
 }
 
 /** The site's look for previews: the Elementor kit's colours and fonts, else the theme palette (theme.json); empty when neither. */
-export async function siteLook(bridge: Bridge): Promise<{ brand?: string; heading?: string; body?: string; fontsHref?: string }> {
+export async function siteLook(bridge: Bridge): Promise<{ brand?: string; ink?: string; surface?: string; heading?: string; body?: string; fontsHref?: string }> {
   const p: any = await bridge.siteProfile().catch(() => null);
   if (!p) return {};
   const el = p.builders?.elementor ?? {};
@@ -316,8 +335,11 @@ export async function siteLook(bridge: Bridge): Promise<{ brand?: string; headin
   const body = famOf(kitFonts.find((f) => f.id === "text")) ?? famOf(kitFonts.find((f) => f.id === "secondary")) ?? famOf(p.brand?.fonts?.[1]) ?? heading;
   // Google Fonts only for real family names (a theme.json "var(--...)" or a system stack is left to the fallback).
   const families = [...new Set([heading, body].filter((f): f is string => !!f && /^[A-Za-z][A-Za-z0-9 ]{1,40}$/.test(f) && !/^(system-ui|sans-serif|serif|inherit|arial|helvetica)$/i.test(f)))];
+  // The page's ink and paper, so a preview is not darker or lighter than the section will be on the site.
+  const ink = byId(kitColors, "text", "secondary") ?? byId(themeColors, "contrast", "foreground");
+  const surface = byId(themeColors, "base", "background");
   return {
-    brand, heading, body,
+    brand, ink, surface, heading, body,
     fontsHref: families.length ? `https://fonts.googleapis.com/css2?${families.map((f) => `family=${encodeURIComponent(f).replace(/%20/g, "+")}:wght@400;600;700`).join("&")}&display=swap` : undefined,
   };
 }

@@ -47,16 +47,32 @@ export const CORE_CSS = `/* Livecrafts sections: design system */
   --lcs-brand: var(--lc-brand, var(--e-global-color-accent, var(--wp--preset--color--primary, #2f5bea)));
   --lcs-on-brand: var(--lc-on-brand, #ffffff);
   --lcs-radius: var(--lc-radius, 14px);
+  /*
+   * The page's own ink and paper. These used to be inherit and currentColor, so a heading, its lead paragraph
+   * and a card border were all the one colour the page happened to be using - on a site whose body text is grey,
+   * every section came out flat and faded. Measured values win (--lc-*), then what the site itself publishes
+   * (Elementor's kit, a block theme's palette), then a readable near-black on white.
+   */
+  --lcs-ink: var(--lc-ink, var(--e-global-color-text, var(--wp--preset--color--contrast, #14171f)));
+  --lcs-surface: var(--lc-surface, var(--wp--preset--color--base, #ffffff));
+  --lcs-muted: var(--lc-muted, color-mix(in srgb, var(--lcs-ink) 66%, var(--lcs-surface)));
   --lcs-tint: color-mix(in srgb, var(--lcs-brand) 9%, transparent);
   --lcs-tint-2: color-mix(in srgb, var(--lcs-brand) 18%, transparent);
-  --lcs-line: color-mix(in srgb, currentColor 14%, transparent);
-  --lcs-soft: color-mix(in srgb, currentColor 66%, transparent);
+  --lcs-line: var(--lc-line, color-mix(in srgb, var(--lcs-ink) 14%, var(--lcs-surface)));
   container-type: inline-size;
   display: block;
   box-sizing: border-box;
   width: 100%;
   padding-block: clamp(56px, 7cqi, 112px);
   line-height: 1.55;
+  color: var(--lcs-ink);
+}
+/* A band on the brand colour is its own colour context: flip the tokens once here and everything inside follows. */
+.lcs .lcs-band {
+  --lcs-ink: var(--lcs-on-brand);
+  --lcs-muted: color-mix(in srgb, var(--lcs-on-brand) 82%, transparent);
+  --lcs-line: color-mix(in srgb, var(--lcs-on-brand) 38%, transparent);
+  --lcs-surface: var(--lcs-brand);
 }
 .lcs *, .lcs *::before, .lcs *::after { box-sizing: border-box; }
 .lcs h2, .lcs h3, .lcs p, .lcs ul, .lcs li, .lcs figure { margin: 0; padding: 0; }
@@ -68,11 +84,11 @@ export const CORE_CSS = `/* Livecrafts sections: design system */
    (--lc-container / --lc-gutter, written per site), else 1160px. */
 :where(.lcs .lcs-in) { max-width: var(--lc-container, 1160px); margin-inline: auto; padding-inline: var(--lc-gutter, clamp(20px, 4cqi, 40px)); }
 .lcs .lcs-eyebrow { display: inline-block; font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--lcs-brand); }
-.lcs .lcs-h { font-size: clamp(34px, 5.2cqi, 60px); line-height: 1.06; letter-spacing: -0.02em; font-weight: 700; text-wrap: balance; color: inherit; }
-.lcs .lcs-h2 { font-size: clamp(28px, 3.6cqi, 42px); line-height: 1.12; letter-spacing: -0.015em; font-weight: 700; text-wrap: balance; color: inherit; }
-.lcs .lcs-h3 { font-size: 19px; line-height: 1.3; font-weight: 650; color: inherit; }
-.lcs .lcs-lead { font-size: clamp(17px, 1.7cqi, 20px); color: var(--lcs-soft); max-width: 40em; }
-.lcs .lcs-text { font-size: 16px; color: var(--lcs-soft); }
+.lcs .lcs-h { font-size: clamp(34px, 5.2cqi, 60px); line-height: 1.06; letter-spacing: -0.02em; font-weight: 700; text-wrap: balance; color: var(--lcs-ink); }
+.lcs .lcs-h2 { font-size: clamp(28px, 3.6cqi, 42px); line-height: 1.12; letter-spacing: -0.015em; font-weight: 700; text-wrap: balance; color: var(--lcs-ink); }
+.lcs .lcs-h3 { font-size: 19px; line-height: 1.3; font-weight: 650; color: var(--lcs-ink); }
+.lcs .lcs-lead { font-size: clamp(17px, 1.7cqi, 20px); color: var(--lcs-muted); max-width: 40em; }
+.lcs .lcs-text { font-size: 16px; color: var(--lcs-muted); }
 .lcs .lcs-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
 .lcs .lcs-actions p { display: contents; }
 .lcs a.lcs-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 48px; padding: 12px 22px; border-radius: calc(var(--lcs-radius) * .7); font-size: 16px; font-weight: 600; line-height: 1.2; text-decoration: none; background: var(--lcs-brand); color: var(--lcs-on-brand); border: 1px solid var(--lcs-brand); transition: transform .15s ease, box-shadow .15s ease; }
@@ -115,7 +131,7 @@ export const SECTIONS: SectionDef[] = [
     css: `/* Hero, split */
 .lcs-hero-split .lcs-grid { display: grid; gap: clamp(32px, 5cqi, 64px); align-items: center; }
 .lcs-hero-split .lcs-copy { display: grid; gap: 20px; justify-items: start; }
-.lcs-hero-split .lcs-proof { font-size: 14px; color: var(--lcs-soft); }
+.lcs-hero-split .lcs-proof { font-size: 14px; color: var(--lcs-muted); }
 .lcs-hero-split .lcs-media { aspect-ratio: 5 / 4; }
 @container (min-width: 820px) { .lcs-hero-split .lcs-grid { grid-template-columns: 1.05fr 1fr; } }
 `,
@@ -209,7 +225,7 @@ export const SECTIONS: SectionDef[] = [
 .lcs-features-grid .lcs-head { display: grid; gap: 14px; justify-items: center; text-align: center; margin-bottom: clamp(32px, 5cqi, 56px); }
 .lcs-features-grid .lcs-head .lcs-lead { margin-inline: auto; }
 .lcs-features-grid .lcs-cards { display: grid; gap: 16px; }
-.lcs-features-grid .lcs-cards li { display: grid; gap: 10px; align-content: start; padding: 24px; border: 1px solid var(--lcs-line); border-radius: var(--lcs-radius); }
+.lcs-features-grid .lcs-cards li { display: grid; gap: 10px; align-content: start; padding: 24px; background: var(--lcs-surface); border: 1px solid var(--lcs-line); border-radius: var(--lcs-radius); }
 .lcs-features-grid .lcs-ico { margin-bottom: 6px; }
 @container (min-width: 560px) { .lcs-features-grid .lcs-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @container (min-width: 900px) { .lcs-features-grid .lcs-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
