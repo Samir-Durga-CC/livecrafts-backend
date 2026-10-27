@@ -214,16 +214,34 @@ console.log("\n5) refusals");
 console.log("\n6) the image API call (fake OpenAI)");
 {
   process.env.OPENAI_API_KEY ||= "sk-test";
-  const { generateImage } = await import("../src/images.js");
-  let sent: any;
-  const fakeFetch = (async (url: string, init: any) => { sent = { url, body: JSON.parse(init.body), auth: init.headers.Authorization }; return new Response(JSON.stringify({ data: [{ b64_json: PNG.toString("base64") }] }), { status: 200 }); }) as any;
+  delete process.env.LC_IMAGE_MODEL;
+  const { generateImage, chooseImageModel } = await import("../src/images.js");
+  // The account's list the day image generation broke: gpt-image-1 past its shutdown date, gpt-image-2 served.
+  const LISTED = { data: [{ id: "gpt-image-1", shutdown_date: "2026-10-23" }, { id: "gpt-image-1.5", shutdown_date: "2026-12-01" }, { id: "gpt-image-2", shutdown_date: null }, { id: "gpt-5.5" }] };
+  let sent: any, listed = 0;
+  const fakeFetch = (async (url: string, init: any) => {
+    if (url.endsWith("/models")) { listed++; return new Response(JSON.stringify(LISTED), { status: 200 }); }
+    sent = { url, body: JSON.parse(init.body), auth: init.headers.Authorization };
+    return new Response(JSON.stringify({ data: [{ b64_json: PNG.toString("base64") }] }), { status: 200 });
+  }) as any;
   const r = await generateImage("a mountain at dawn", "landscape", fakeFetch);
   assert.equal(sent.url, "https://api.openai.com/v1/images/generations");
-  assert.deepEqual({ model: sent.body.model, size: sent.body.size, quality: sent.body.quality, n: sent.body.n }, { model: "gpt-image-1", size: "1536x1024", quality: "medium", n: 1 });
+  assert.deepEqual({ model: sent.body.model, size: sent.body.size, quality: sent.body.quality, n: sent.body.n }, { model: "gpt-image-2", size: "1536x1024", quality: "medium", n: 1 });
+  assert.equal(r.model, "gpt-image-2");
+  await generateImage("again", "square", fakeFetch);
+  assert.equal(listed, 1, "the model list is read once, not before every image");
+  ok("the image model comes from the account's own list, not a name that can be switched off (gpt-image-1, 2026-10-23)");
+
+  const pick = (list: any[], today = "2026-10-27") => chooseImageModel(list, today)?.id;
+  assert.equal(pick([{ id: "gpt-image-1", shutdown_date: "2026-10-23" }, { id: "gpt-image-1.5" }]), "gpt-image-1.5", "a model past its shutdown date is never chosen");
+  assert.equal(pick([{ id: "gpt-image-2", shutdown_date: "2026-10-01" }, { id: "gpt-image-1.5" }]), "gpt-image-1.5", "not even the first preferred one");
+  assert.equal(pick([{ id: "gpt-image-3" }, { id: "gpt-image-2.5-flare" }, { id: "gpt-image-1", shutdown_date: "2026-01-01" }]), "gpt-image-3", "none preferred: the newest plain gpt-image-N, not a named variant");
+  assert.equal(pick([{ id: "gpt-5.5" }]), undefined);
+  ok("a shut-down model is skipped; with no preferred one, the newest plain model, never a variant");
   assert.match(sent.auth, /^Bearer /);
   assert.ok(r.buf.equals(PNG));
   const bad = (async () => new Response(JSON.stringify({ error: { message: "Your request was rejected" } }), { status: 400 })) as any;
-  await assert.rejects(generateImage("x".repeat(20), "square", bad), /Image generation failed \(400\): Your request was rejected/);
+  await assert.rejects(generateImage("x".repeat(20), "square", bad), /Image generation failed \(400\) with gpt-image-2: Your request was rejected/);
   ok("one landscape image at medium quality; errors from the image API are explained");
 }
 
