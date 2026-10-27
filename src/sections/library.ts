@@ -50,10 +50,12 @@ export const CORE_CSS = `/* Livecrafts sections: design system */
   /*
    * The page's own ink and paper. These used to be inherit and currentColor, so a heading, its lead paragraph
    * and a card border were all the one colour the page happened to be using - on a site whose body text is grey,
-   * every section came out flat and faded. Measured values win (--lc-*), then what the site itself publishes
-   * (Elementor's kit, a block theme's palette), then a readable near-black on white.
+   * every section came out flat and faded. Measured values win (--lc-*, chosen in siteLook by contrast against the
+   * paper, never by the name a kit gives a colour), then a block theme's own contrast colour, then a near-black.
+   * Elementor's --e-global-color-text is deliberately NOT in this chain: on a default kit it is #7A7A7A, a body
+   * grey, and using it for headings is the faded look this whole set exists to end.
    */
-  --lcs-ink: var(--lc-ink, var(--e-global-color-text, var(--wp--preset--color--contrast, #14171f)));
+  --lcs-ink: var(--lc-ink, var(--wp--preset--color--contrast, #14171f));
   --lcs-surface: var(--lc-surface, var(--wp--preset--color--base, #ffffff));
   --lcs-muted: var(--lc-muted, color-mix(in srgb, var(--lcs-ink) 66%, var(--lcs-surface)));
   --lcs-tint: color-mix(in srgb, var(--lcs-brand) 9%, transparent);

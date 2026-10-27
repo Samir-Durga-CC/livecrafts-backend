@@ -23,8 +23,13 @@ import { PROVIDERS, providerStatus, testModel } from "./models.js";
 const SETTABLE = PROVIDERS.filter((p) => !p.needsNoKey).map((p) => p.id).join("|");
 const PROVIDER_RE = new RegExp(`^/integrations/models/(${SETTABLE})$`);
 const PROVIDER_MODELS_RE = new RegExp(`^/integrations/models/(${PROVIDERS.map((p) => p.id).join("|")})/models$`);
-/** The site look (brand colour, fonts) the section previews use, remembered for a few minutes per site. */
+/**
+ * The site look (brand, ink, fonts) the section previews use. Reading it costs a round trip to WordPress - about
+ * 700ms - while drawing a preview from it takes about 15ms, so it is remembered per site and primed the moment the
+ * gallery opens. A kit's colours and fonts change rarely; half an hour of memory is not a stale preview.
+ */
 const sectionLooks = new Map<string, { at: number; value: Awaited<ReturnType<typeof siteLook>> }>();
+const sectionLooksBusy = new Map<string, Promise<Awaited<ReturnType<typeof siteLook>>>>();
 import { claudeCliStatus } from "./claudeCli.js";
 import { diffOf } from "./changes.js";
 import { canUseSite, verifyWidgetToken, type Caller } from "./auth.js";
@@ -77,6 +82,19 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
    * picker: the person in the widget is a signed-in editor of this site, the list only names templates and the
    * pages they are already on, and the render route returns a template filled with SAMPLE content, never theirs.
    */
+  /** The site's look, from memory when it is there, and never fetched twice at once while the gallery opens. */
+  const lookFor = async (siteId: string, b: Bridge) => {
+    const hit = sectionLooks.get(siteId);
+    if (hit && Date.now() - hit.at < 30 * 60_000) return hit.value;
+    const inflight = sectionLooksBusy.get(siteId);
+    if (inflight) return inflight;
+    const p = siteLook(b)
+      .then((value) => { sectionLooks.set(siteId, { at: Date.now(), value }); return value; })
+      .finally(() => sectionLooksBusy.delete(siteId));
+    sectionLooksBusy.set(siteId, p);
+    return p;
+  };
+
   const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/sites|POST \/voice\/(transcribe|speak|realtime\/session)|GET \/voice\/stream|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms|pagespeed|templates|templates\/render|sections|sections\/preview)|POST \/sites\/[\w-]+\/sections\/(add|site)|(POST \/sites\/[\w-]+\/pagespeed|GET \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+|PUT \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+\/fix|GET \/sites\/[\w-]+\/plugins(\/(history|versions|jobs\/plj_[a-f0-9]+))?|POST \/sites\/[\w-]+\/plugins\/(update|rollback))|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
 
   async function readBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
@@ -304,14 +322,13 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
             const post = Number(url.searchParams.get("post") ?? 0) || 0;
             let page: any = null;
             if (post) page = await pageInfo(b, post).catch((e) => ({ builder: null, places: [], unsupported: (e as Error).message }));
+            void lookFor(s.id, b).catch(() => {}); // the gallery is open; the previews are moments away
             return send(res, 200, { ok: true, ...catalogue(), page });
           }
           if (m[2] === "/preview" && req.method === "GET") { // one section as a standalone page in this site's colours and fonts
             const id = String(url.searchParams.get("id") ?? "");
             if (!/^[a-z0-9-]{2,40}$/.test(id)) return send(res, 400, { error: "id must be a section id, e.g. hero-split" });
-            const key = `look|${s.id}`;
-            let look = sectionLooks.get(key);
-            if (!look || Date.now() - look.at > 5 * 60_000) { look = { at: Date.now(), value: await siteLook(b) }; sectionLooks.set(key, look); }
+            const look = { value: await lookFor(s.id, b) };
             const measured = cleanLayout({ brand: { color: url.searchParams.get("brand"), on: url.searchParams.get("on"), radius: url.searchParams.get("radius") ?? undefined } });
             return send(res, 200, { ok: true, html: previewDocument(id, look.value, measured), look: look.value });
           }

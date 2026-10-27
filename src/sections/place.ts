@@ -38,10 +38,21 @@ export interface SiteInk { ink: string; surface?: string; muted?: string; line?:
 export interface SiteLayout { container?: number; gutter?: number; className?: string; brand?: SiteBrand; ink?: SiteInk }
 
 const HEX = /^#[0-9a-f]{6}$/i;
+/** Relative luminance, the one number both of the helpers below are really asking about. */
+function luminance(hex: string) {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
 /** Black or white, whichever reads better on that colour (for a brand measured without its text colour). */
 export function readableOn(hex: string) {
-  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.4 ? "#111111" : "#ffffff";
+  return luminance(hex) > 0.4 ? "#111111" : "#ffffff";
+}
+
+/** WCAG contrast between two colours, 1 (identical) to 21 (black on white). */
+export function contrastRatio(a: string, b: string) {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
 }
 
 /**
@@ -296,24 +307,25 @@ export async function addSection(bridge: Bridge, a: { id: string; postId: number
 
 /** A standalone page that shows one section the way it will look on this site (brand colour and fonts). */
 /** `site`: what the plugin measured on the page (its brand wins over the profile's colour). */
-export function previewDocument(id: string, look: { brand?: string; ink?: string; surface?: string; heading?: string; body?: string; fontsHref?: string }, site?: SiteLayout | null) {
+export function previewDocument(id: string, look: { brand?: string; ink?: string; surface?: string; muted?: string; heading?: string; body?: string; fontsHref?: string }, site?: SiteLayout | null) {
   const s = getSection(id);
   if (!s) throw new SectionError(`Unknown section "${id}".`, 404);
   const safeFont = (f?: string) => (f && /^[\w\s,'"-]{1,80}$/.test(f) ? f : "");
   const hex = (v?: string) => (v && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v) ? v : "");
-  const brand = hex(look.brand), ink = hex(look.ink), surface = hex(look.surface);
+  const brand = hex(look.brand), ink = hex(look.ink), surface = hex(look.surface), muted = hex(look.muted);
   const body = safeFont(look.body), heading = safeFont(look.heading);
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${
     look.fontsHref ? `<link rel="stylesheet" href="${look.fontsHref.replace(/"/g, "")}">` : ""
-  }<style>html,body{margin:0;background:#fff;color:#14171f}body{font-family:${body ? `${body}, ` : ""}system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:16px}h2,h3{font-family:${heading ? `${heading}, ` : ""}inherit}a{color:inherit}${
-    [brand && `--lc-brand:${brand}`, ink && `--lc-ink:${ink}`, surface && `--lc-surface:${surface}`].filter(Boolean).length
-      ? `:root{${[brand && `--lc-brand:${brand}`, ink && `--lc-ink:${ink}`, surface && `--lc-surface:${surface}`].filter(Boolean).join(";")}}`
-      : ""
+  }${look.fontsHref ? '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>' : ""}<style>html,body{margin:0;background:#fff;color:#14171f}body{font-family:${body ? `${body}, ` : ""}system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:16px}h2,h3{font-family:${heading ? `${heading}, ` : ""}inherit}a{color:inherit}${
+    (() => {
+      const vars = [brand && `--lc-brand:${brand}`, ink && `--lc-ink:${ink}`, surface && `--lc-surface:${surface}`, muted && `--lc-muted:${muted}`].filter(Boolean);
+      return vars.length ? `:root{${vars.join(";")}}` : "";
+    })()
   }${site?.brand || site?.ink ? `.lcs{${siteVars({ brand: site.brand, ink: site.ink }).join(";")}}` : ""}</style><style>${coreCss()}</style><style>${s.css}</style></head><body>${s.html}</body></html>`;
 }
 
 /** The site's look for previews: the Elementor kit's colours and fonts, else the theme palette (theme.json); empty when neither. */
-export async function siteLook(bridge: Bridge): Promise<{ brand?: string; ink?: string; surface?: string; heading?: string; body?: string; fontsHref?: string }> {
+export async function siteLook(bridge: Bridge): Promise<{ brand?: string; ink?: string; surface?: string; muted?: string; heading?: string; body?: string; fontsHref?: string }> {
   const p: any = await bridge.siteProfile().catch(() => null);
   if (!p) return {};
   const el = p.builders?.elementor ?? {};
@@ -335,11 +347,23 @@ export async function siteLook(bridge: Bridge): Promise<{ brand?: string; ink?: 
   const body = famOf(kitFonts.find((f) => f.id === "text")) ?? famOf(kitFonts.find((f) => f.id === "secondary")) ?? famOf(p.brand?.fonts?.[1]) ?? heading;
   // Google Fonts only for real family names (a theme.json "var(--...)" or a system stack is left to the fallback).
   const families = [...new Set([heading, body].filter((f): f is string => !!f && /^[A-Za-z][A-Za-z0-9 ]{1,40}$/.test(f) && !/^(system-ui|sans-serif|serif|inherit|arial|helvetica)$/i.test(f)))];
-  // The page's ink and paper, so a preview is not darker or lighter than the section will be on the site.
-  const ink = byId(kitColors, "text", "secondary") ?? byId(themeColors, "contrast", "foreground");
+  /*
+   * The page's ink and paper. Picking a colour by name does not work: Elementor's kit calls its body grey "text"
+   * (#7A7A7A on a default kit), which is a reasonable colour for a paragraph and a washed-out one for a heading -
+   * taking it as ink is what made every section look faded. So the candidates are judged on contrast against the
+   * paper instead, and anything that could not carry a heading is dropped in favour of the near-black default.
+   */
   const surface = byId(themeColors, "base", "background");
+  const paper = surface ?? "#ffffff";
+  const ink = [byId(themeColors, "contrast", "foreground"), byId(kitColors, "secondary"), byId(kitColors, "primary"), byId(kitColors, "text")]
+    .filter((c): c is string => !!c)
+    .sort((a, b) => contrastRatio(b, paper) - contrastRatio(a, paper))
+    .find((c) => contrastRatio(c, paper) >= 7);
+  // The body colour is allowed to be softer, but it still has to be legible, not just present.
+  const bodyColor = byId(kitColors, "text") ?? byId(themeColors, "secondary");
+  const muted = bodyColor && contrastRatio(bodyColor, paper) >= 4.5 ? bodyColor : undefined;
   return {
-    brand, ink, surface, heading, body,
+    brand, ink, surface, muted, heading, body,
     fontsHref: families.length ? `https://fonts.googleapis.com/css2?${families.map((f) => `family=${encodeURIComponent(f).replace(/%20/g, "+")}:wght@400;600;700`).join("&")}&display=swap` : undefined,
   };
 }
