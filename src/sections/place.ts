@@ -221,7 +221,9 @@ function wrap(s: SectionDef, info: PageInfo, currentContent: string, place: stri
       const node = info.containers === false
         ? { elType: "section", settings: { layout: "full_width", gap: "no", css_classes: "lcs-host" }, elements: [{ elType: "column", settings: {}, elements: [widget] }] }
         : { elType: "container", settings: { content_width: "full", flex_direction: "column", css_classes: "lcs-host" }, elements: [widget] };
-      return { kind: "el.insert", target: place, value: JSON.stringify(node) };
+      // The node itself, not JSON text: el.insert reads value as Elementor JSON, and a string is no elements at all
+      // ("Add one element at a time..."). The other builders below really do take markup as a string.
+      return { kind: "el.insert", target: place, value: node };
     }
     case "blocks":
       return {
