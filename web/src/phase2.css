@@ -986,3 +986,8 @@ a.nav-item:visited { color: var(--muted); } a.nav-item:hover { color: var(--text
 /* ---- one Apply for everything changed: stays in view at the bottom of the panel ---- */
 .ep-commit { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; gap: 8px; margin: 14px 0 4px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 12px; background: var(--surface); box-shadow: 0 -6px 20px rgb(0 0 0 / .18); font-size: 13px; }
 .ep-dialog .ep > .ep-commit { grid-column: 1 / -1; }
+
+/* ---- one part of a ready-made section, edited on its own ---- */
+.sp-what { font-size: 13px; padding: 2px 0 2px; }
+.sp.sp-removed .sf-field, .sp.sp-removed .ep-img { opacity: .45; }
+.ep-btn.danger { color: var(--danger, #e5484d); }

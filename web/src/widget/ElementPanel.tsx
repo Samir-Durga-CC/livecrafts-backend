@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { Icon } from "../icons";
 import type { Resolved, ResolvedAction } from "../types";
 import type { PickedElement } from "./element";
 import { pickMedia, uploadToMedia, wp } from "./parent";
 import { SectionFields, isGallerySection } from "./SectionFields";
+import { SectionPart, findPart, partName } from "./SectionPart";
 
 const GROUPS: { id: ResolvedAction["group"]; label: string; icon: ReactElement }[] = [
   { id: "content", label: "Content", icon: <Icon.Text size={15} /> },
@@ -38,6 +39,37 @@ function forSection(change: Record<string, any>, sectionish: boolean): Record<st
   return wide.length > 300 ? change : { ...change, value: { ...v, selector: wide } };
 }
 
+/**
+ * Style, visibility and animation for ONE part of a ready-made section, written as style rules on that element.
+ * The resolver only knows the Elementor widget the whole section lives in, so its own options all acted on the
+ * whole section. The selector is the picker's (unique on the page) behind the page's own wrapper, so a rule for
+ * the second card's title on this page never reaches another page.
+ */
+const WEIGHTS = { "300": "Light", "400": "Regular", "500": "Medium", "600": "Semi-bold", "700": "Bold", "800": "Extra bold" };
+function partActions(selector: string, device: string, font: string): ResolvedAction[] {
+  const media = device === "desktop" ? "" : device;
+  const on = device === "desktop" ? " (all screens)" : ` (${device})`;
+  const rule = (prop: string) => ({ kind: "css.rule", label: "Part of a section", value: { selector, media, declarations: { [prop]: "{value}" } } });
+  const fonts: Record<string, string> = { inherit: "Same as the page" };
+  if (font) fonts[font] = `${font.split(",")[0].replace(/["']/g, "").trim()} (as now)`;
+  Object.assign(fonts, { 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif': "System sans-serif", 'Georgia, "Times New Roman", serif': "Serif", "ui-monospace, Consolas, monospace": "Monospace" });
+  const a = (id: string, group: ResolvedAction["group"], label: string, input: ResolvedAction["input"], change: Record<string, any>, extra: Partial<ResolvedAction> = {}): ResolvedAction =>
+    ({ id: `part:${id}`, group, label, input, value: null, change, ...extra });
+  return [
+    a("color", "style", `Text colour${on}`, "color", rule("color")),
+    a("background", "style", `Background${on}`, "color", rule("background-color")),
+    a("font-family", "style", `Font${on}`, "select", rule("font-family"), { options: fonts }),
+    a("font-size", "style", `Font size${on}`, "size", rule("font-size"), { units: ["px", "rem", "em", "%"] }),
+    a("font-weight", "style", `Font weight${on}`, "select", rule("font-weight"), { options: WEIGHTS }),
+    a("text-align", "style", `Alignment${on}`, "select", rule("text-align"), { options: { left: "Left", center: "Center", right: "Right" } }),
+    a("padding", "style", `Inner spacing${on}`, "spacing", rule("padding")),
+    a("margin", "style", `Outer spacing${on}`, "spacing", rule("margin")),
+    a("radius", "style", `Corner radius${on}`, "size", rule("border-radius"), { units: ["px", "%", "rem"] }),
+    a("hide", "visibility", `Hide on ${device}`, "confirm", { kind: "css.rule", label: "Part of a section", value: { selector, media: device, declarations: { display: "none" } } }),
+    a("animation", "motion", "Entrance animation", "select", rule("animation-name"), { options: { none: "None", "lc-fade-in": "Fade in", "lc-fade-up": "Fade up", "lc-zoom-in": "Zoom in", "lc-slide-in-left": "Slide in from left", "lc-slide-in-right": "Slide in from right" } }),
+  ];
+}
+
 /** The input's starting text from the value the plugin reported. */
 function initial(a: ResolvedAction): string {
   const v = a.value;
@@ -68,7 +100,9 @@ export function ElementPanel({ selected, resolved, resolving, error, picking, di
   const [problem, setProblem] = useState("");
   const [scope, setScope] = useState<"page" | "site">("page");
   const [question, setQuestion] = useState("");
-  useEffect(() => { setView(resolved); setProblem(""); setScope("page"); setStaged({}); }, [resolved]);
+  useEffect(() => { setView(resolved); setProblem(""); setScope("page"); setStaged({}); setTarget("part"); }, [resolved]);
+  // Inside a ready-made section: edit the part that was clicked (default) or the whole section.
+  const [target, setTarget] = useState<"part" | "section">("part");
 
   /*
    * Field edits are staged, not applied one by one. Each Apply used to save, then refresh the page - so the colour,
@@ -83,12 +117,26 @@ export function ElementPanel({ selected, resolved, resolving, error, picking, di
   }), []);
   const discard = () => { setStaged({}); setResetKey((k) => k + 1); setProblem(""); };
 
+  // The stored section this click landed in (Elementor / blocks keep a whole section as one HTML field), and the
+  // clicked element inside it. A click on the section itself, or one that cannot be found in it, edits the whole.
+  const htmlAction = (view?.actions ?? []).find((a) => a.input === "html" && isGallerySection(a.value));
+  const part = useMemo(() => {
+    if (!htmlAction || !selected) return null;
+    const f = findPart(String(htmlAction.value), selected);
+    return f.node && !f.isRoot ? { name: partName(f.node) } : null;
+  }, [htmlAction, selected]);
+  const pagePrefix = selected?.elementor ? `.elementor-${selected.elementor.post} `
+    : view?.css_scopes && view.css_scopes.page.endsWith(view.css_scopes.site) ? view.css_scopes.page.slice(0, -view.css_scopes.site.length) : "";
+  const editingPart = !!part && target === "part";
+
   // A ready-made section, or the widget it lives in: its colour and font must be written for its headings too.
   const sectionish = () => !!selected && (/(^|\s)lcs(\s|$)/.test(selected.classes ?? "") || (view?.actions ?? []).some((a) => a.input === "html" && isGallerySection(a.value)));
+  // "This part" content is the whole stored section with one part edited, so it goes out as the section's change.
+  const changeOf = (a: ResolvedAction) => (a.id === "part:content" && htmlAction ? htmlAction.change : a.change);
   async function apply(a: ResolvedAction, value?: unknown) {
     setBusy(a.id); setProblem("");
     try {
-      let change = fill(a.change, value);
+      let change = fill(changeOf(a), value);
       if (scope === "site" && view?.css_scopes && change.value?.selector === view.css_scopes.page) change = { ...change, value: { ...change.value, selector: view.css_scopes.site } };
       change = forSection(change, sectionish());
       if (a.requires) await wp("POST", "changes", a.requires);
@@ -99,13 +147,13 @@ export function ElementPanel({ selected, resolved, resolving, error, picking, di
     finally { setBusy(""); }
   }
   async function applyAll() {
-    const list = (view?.actions ?? []).filter((a) => a.id in staged);
+    const list = shownActions().filter((a) => a.id in staged);
     if (!list.length) return;
     setBusy("all"); setProblem("");
     const done: string[] = [];
     try {
       for (const a of list) {
-        let change = fill(a.change, staged[a.id]);
+        let change = fill(changeOf(a), staged[a.id]);
         if (scope === "site" && view?.css_scopes && change.value?.selector === view.css_scopes.page) change = { ...change, value: { ...change.value, selector: view.css_scopes.site } };
         change = forSection(change, sectionish());
         if (a.requires) await wp("POST", "changes", a.requires);
@@ -119,6 +167,16 @@ export function ElementPanel({ selected, resolved, resolving, error, picking, di
       setProblem(`${done.length ? `${done.length} saved, then this one failed: ` : ""}${(e as Error).message}`);
       if (done.length) onApplied(`${done.length} changes`);
     } finally { setBusy(""); }
+  }
+  /** What the panel offers now: the clicked part's own options, or the resolver's (the whole widget / section). */
+  function shownActions(): ResolvedAction[] {
+    if (!selected) return [];
+    // A picture has no words: a text colour or a font on it saves, refreshes, and changes nothing anyone can see.
+    const wordless = !selected.text?.trim() && /^(img|figure|picture|svg|video|iframe)$/i.test(selected.tag);
+    const base = editingPart && htmlAction
+      ? [{ ...htmlAction, id: "part:content", label: "This part" }, ...partActions(`${pagePrefix}${selected.selector}`.trim(), view?.device ?? "desktop", selected.styles?.["font-family"] ?? "")]
+      : (view?.actions ?? []);
+    return base.filter((a) => !(wordless && /^(css|part):(color|font-family|font-size|font-weight|text-align)$/.test(a.id)));
   }
   async function parent() {
     if (!view?.parent || !selected) return;
@@ -141,9 +199,7 @@ export function ElementPanel({ selected, resolved, resolving, error, picking, di
     );
   }
 
-  // A picture has no words: a text colour or a font on it saves, refreshes, and changes nothing anyone can see.
-  const wordless = !selected.text?.trim() && /^(img|figure|picture|svg|video|iframe)$/i.test(selected.tag);
-  const actions = (view?.actions ?? []).filter((a) => !(wordless && /^css:(color|font-family|font-size|font-weight|text-align)$/.test(a.id)));
+  const actions = shownActions();
   return (
     <div className="ep">
       <div className="qa-sel">
@@ -160,7 +216,15 @@ export function ElementPanel({ selected, resolved, resolving, error, picking, di
       {error && <div className="banner error">{error}</div>}
       {problem && <div className="banner error">{problem}</div>}
       {view?.notes.map((n) => <div key={n} className="qa-warn">{n}</div>)}
-      {view?.css_scopes && (
+      {part && (
+        <div className="qa-seg ep-scope" role="radiogroup" aria-label="What to edit">
+          <button role="radio" aria-checked={target === "part"} className={target === "part" ? "on" : ""} disabled={!!busy}
+            onClick={() => { if (target !== "part") { discard(); setTarget("part"); } }}>This {part.name.toLowerCase()}</button>
+          <button role="radio" aria-checked={target === "section"} className={target === "section" ? "on" : ""} disabled={!!busy}
+            onClick={() => { if (target !== "section") { discard(); setTarget("section"); } }}>Whole section</button>
+        </div>
+      )}
+      {view?.css_scopes && !editingPart && (
         <div className="qa-seg ep-scope" role="radiogroup" aria-label="Where style changes apply">
           <button role="radio" aria-checked={scope === "page"} className={scope === "page" ? "on" : ""} onClick={() => setScope("page")}>This page</button>
           <button role="radio" aria-checked={scope === "site"} className={scope === "site" ? "on" : ""} onClick={() => setScope("site")}>Whole site</button>
@@ -179,7 +243,10 @@ export function ElementPanel({ selected, resolved, resolving, error, picking, di
           {/* Hidden, not unmounted: a collapsed group keeps the edits typed into it. */}
           <div className="ep-actions" hidden={!open.has(g.id)}>
             {actions.filter((a) => a.group === g.id && a.input !== "ask").map((a) => (
-              a.input === "html" && isGallerySection(a.value)
+              a.id === "part:content" && selected
+                ? <SectionPart key={`${a.id}:${resetKey}`} html={String(a.value)} picked={selected} disabled={disabled || !!busy} canUpload={canUpload}
+                    onStage={(h) => stage(a.id, h)} onProblem={setProblem} />
+                : a.input === "html" && isGallerySection(a.value)
                 ? <SectionFields key={`${a.id}:${resetKey}`} html={a.value} focusText={selected.text} disabled={disabled || !!busy} onStage={(h) => stage(a.id, h)} />
                 : <ActionRow key={`${a.id}:${resetKey}`} a={a} busy={busy === a.id} disabled={disabled || (!!busy && busy !== a.id)} onApply={(v) => apply(a, v)}
                     onStage={(v) => stage(a.id, v)} canUpload={canUpload} onProblem={setProblem}
