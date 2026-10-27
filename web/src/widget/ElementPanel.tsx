@@ -84,12 +84,14 @@ function initial(a: ResolvedAction): string {
  * The click panel: what the clicked element is (its real source) and only the options that source supports.
  * Every option makes one draft change directly in WordPress - no AI. Drafts are seen by editors only until deployed.
  */
-export function ElementPanel({ selected, resolved, resolving, error, picking, disabled, canUpload, onPick, onCancelPick, onApplied, onAsk, onEditOnPage, onHighlight }: {
+export function ElementPanel({ selected, resolved, resolving, error, picking, disabled, canUpload, onPick, onCancelPick, onApplied, onAsk, onEditOnPage, onHighlight, onExpand }: {
   selected: PickedElement | null; resolved: Resolved | null; resolving: boolean; error: string; picking: boolean; disabled: boolean;
   /** The plugin can save images from this computer into the Media Library (0.11+, and the account may upload). */
   canUpload: boolean;
   onPick: () => void; onCancelPick: () => void; onApplied: (summary: string) => void; onAsk: (prompt: string) => void;
   onEditOnPage: (selector: string, apply: (text: string) => Promise<void>) => void; onHighlight: (selector: string) => void;
+  /** Open the editor in the large centred view (given only while it is in the side panel). */
+  onExpand?: () => void;
 }) {
   const [view, setView] = useState<Resolved | null>(resolved);
   // Several groups can be open at once: in the dialog they sit side by side, and changing a font while looking at
@@ -210,6 +212,7 @@ export function ElementPanel({ selected, resolved, resolving, error, picking, di
         </div>
         <button className="w-icon" title="Show it on the page" onClick={() => onHighlight(selected.selector)}><Icon.Eye size={15} /></button>
         <button className="w-icon" title="Pick another element" onClick={onPick} disabled={disabled}><Icon.Cursor size={15} /></button>
+        {onExpand && <button className="w-icon" title="Open larger, in the middle of the screen" aria-label="Expand" onClick={onExpand}><Icon.Expand size={15} /></button>}
       </div>
 
       {view?.parent && <button className="ep-parent" onClick={() => void parent()} disabled={!!busy}><Icon.ChevronUp size={14} /> Select the {view.parent.label.toLowerCase()} around it</button>}

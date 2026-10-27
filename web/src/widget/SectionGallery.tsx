@@ -5,8 +5,9 @@ import { Icon } from "../icons";
 /**
  * The Section Gallery: ready-made sections a person browses and adds to the page with one click.
  *
- * It opens as a large popup over the page: the widget asks the plugin to widen its panel (lc:wide, plugin 0.24+) and
- * fills it. With an older plugin the same gallery works inside the normal panel, one column wide.
+ * It opens inside the side panel, like the rest of the chat. The expand icon makes it a large popup over the page:
+ * the widget asks the plugin to widen its panel (lc:wide, plugin 0.24+) and fills it, and the collapse icon puts it
+ * back. With an older plugin the gallery simply stays in the panel.
  *
  * Each picture is the real section, rendered as a page of its own with this site's brand colour and fonts and scaled
  * down, never a stock screenshot. A section opens in its own detail view (desktop / tablet / phone, the other layouts
@@ -189,10 +190,12 @@ export function SectionGallery({ siteId, postId, onClose, onAdded, post, parentO
     return () => { window.removeEventListener("message", on); clearTimeout(t); };
   }, [post, parentOrigin, siteId]);
 
+  // In the side panel until the person asks for room; never left widened behind a closed gallery.
+  const [wide, setWide] = useState(false);
   useEffect(() => {
-    post({ type: "lc:wide", on: true });
-    return () => post({ type: "lc:wide", on: false });
-  }, [post]);
+    post({ type: "lc:wide", on: wide });
+    return () => { if (wide) post({ type: "lc:wide", on: false }); };
+  }, [post, wide]);
   useEffect(() => {
     let alive = true;
     api.sections(siteId, postId || undefined).then((d) => { if (alive) setData(d); }).catch((e) => { if (alive) setErr((e as Error).message); });
@@ -219,6 +222,10 @@ export function SectionGallery({ siteId, postId, onClose, onAdded, post, parentO
           <Icon.Search size={15} />
           <input id="sg-search" type="search" placeholder="Search: hero, features, call to action" value={q} onChange={(e) => setQ(e.target.value)} />
         </label>
+        <button type="button" className="w-icon" onClick={() => setWide((w) => !w)}
+          title={wide ? "Back to the side panel" : "Open larger, in the middle of the screen"} aria-label={wide ? "Collapse" : "Expand"}>
+          {wide ? <Icon.Collapse size={16} /> : <Icon.Expand size={16} />}
+        </button>
         <button type="button" className="btn ghost small" onClick={onClose}><Icon.Close size={15} /> Close</button>
       </header>
       {err && <div className="banner error w-banner">{err}</div>}

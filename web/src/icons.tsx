@@ -22,6 +22,9 @@ export const Icon = {
   External: (p: P) => svg(<path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />, p),
   More: (p: P) => svg(<><circle cx="12" cy="5" r="1.2" /><circle cx="12" cy="12" r="1.2" /><circle cx="12" cy="19" r="1.2" /></>, p),
   Close: (p: P) => svg(<path d="M18 6 6 18M6 6l12 12" />, p),
+  /** Open into the large centred view (arrows out to the corners) and back into the side panel (arrows in). */
+  Expand: (p: P) => svg(<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />, p),
+  Collapse: (p: P) => svg(<path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" />, p),
   Mic: (p: P) => svg(<><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></>, p),
   MicOff: (p: P) => svg(<><path d="M15 9.3V6a3 3 0 0 0-5.7-1.3M9 9v2a3 3 0 0 0 4.6 2.5M5 11a7 7 0 0 0 11.3 5.5M19 11a7 7 0 0 1-.6 2.8M12 18v3M3 3l18 18" /></>, p),
   /** Voice conversation: the sound bars every voice assistant uses, so nobody has to guess what the button does. */

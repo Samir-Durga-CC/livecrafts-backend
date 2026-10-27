@@ -991,3 +991,8 @@ a.nav-item:visited { color: var(--muted); } a.nav-item:hover { color: var(--text
 .sp-what { font-size: 13px; padding: 2px 0 2px; }
 .sp.sp-removed .sf-field, .sp.sp-removed .ep-img { opacity: .45; }
 .ep-btn.danger { color: var(--danger, #e5484d); }
+
+/* The gallery header in the side panel (it opens there now, not widened): the search box gives way so the expand and
+   Close buttons stay on screen. Without min-width:0 it kept its natural width and pushed Close past the edge. */
+.sg-search { min-width: 0; }
+.sg-head > .w-icon { flex: none; }

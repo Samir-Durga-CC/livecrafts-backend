@@ -209,6 +209,9 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
   const say = (t: string) => { setToast(t); setTimeout(() => setToast(""), 1800); };
   // The Section Gallery (a large popup over the page): ready-made sections added with one click, as drafts.
   const [gallery, setGallery] = useState(false);
+  // The element editor opens in the side panel; the expand icon puts it in the large centred view until it is
+  // collapsed or closed. Letting go of the element always brings the next one back to the side panel.
+  const [elementWide, setElementWide] = useState(false);
   const closeGallery = useCallback(() => setGallery(false), []);
   const sectionAdded = (name: string) => {
     setGallery(false);
@@ -975,13 +978,14 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
               onPick={() => { setPicking(true); post({ type: "lc:pick" }); }} onCancelPick={() => { setPicking(false); post({ type: "lc:cancel-pick" }); }}
               onApplied={applied} onHighlight={(selector) => post({ type: "lc:highlight", selector })}
               onAsk={(q) => void send(q, [], selectionContext() || undefined)}
-              onEditOnPage={(selector, apply) => { editApply.current = apply; post({ type: "lc:edit-text", selector }); }} />
+              onEditOnPage={(selector, apply) => { editApply.current = apply; post({ type: "lc:edit-text", selector }); }}
+              onExpand={selected && !picking && !elementWide ? () => setElementWide(true) : undefined} />
           );
-          // An element is chosen: edit it in the large dialog, like the Section Gallery. Picking (or nothing chosen
-          // yet) stays in the narrow panel, because the page has to be clickable for the pick.
-          return selected && !picking
+          // In the side panel by default; in the large centred view once expanded. Picking always drops back to the
+          // side panel for the moment of the click, because the page has to be clickable for it.
+          return selected && !picking && elementWide
             ? <ElementDialog title={selected.label} subtitle={resolved?.source ? `${resolved.source.label}${resolved.source.where ? ` · ${resolved.source.where}` : ""}` : undefined}
-                post={post} onClose={() => setSelected(null)}>{panel}</ElementDialog>
+                post={post} onCollapse={() => setElementWide(false)} onClose={() => { setElementWide(false); setSelected(null); }}>{panel}</ElementDialog>
             : <div className="w-scroll">{panel}</div>;
         })()}
         {tab === "more" && (
