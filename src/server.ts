@@ -36,7 +36,8 @@ import { canUseSite, verifyWidgetToken, type Caller } from "./auth.js";
 import { log, usageMonths, usageReport } from "./usage.js";
 import { eyes } from "./eyes.js";
 import { assistantSettings, forgetAssistantSettings } from "./persona.js";
-import { closeBrowser, screenshotPath } from "./browser.js";
+import { analyzeDesign, closeBrowser, screenshotPath } from "./browser.js";
+import { fitFromDesign } from "./library/templates.js";
 import { speak, siteWordsFromMap, transcribe, voiceInfo } from "./voice.js";
 import { Dictation, DICTATE_RATE, dictateModel } from "./dictation.js";
 import { voiceSession } from "./sessions.js";
@@ -83,6 +84,43 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
    * pages they are already on, and the render route returns a template filled with SAMPLE content, never theirs.
    */
   /** The site's look, from memory when it is there, and never fetched twice at once while the gallery opens. */
+  /**
+   * The site's brand as its own buttons show it, for the Section Gallery. The plugin measures it on the page
+   * (lc:measure, 0.24+); an older plugin never answers, and the gallery then had no brand at all - so every section
+   * fell back to Elementor's global Accent, which on a kit nobody customised is Elementor's own default green. On a
+   * navy-blue site that is a green section. So when nothing was measured, the backend looks at the home page in its
+   * own browser, once per site, and keeps what it found with the rest of the site's layout.
+   */
+  const brandBusy = new Map<string, Promise<SiteLayout | null>>();
+  // A host's bot protection can show the server's browser a "checking your browser" page instead of the site. That
+  // does not get better by asking again on every gallery open, and each try starts a browser - so a failure is
+  // remembered for half an hour. The plugin's own measurement (in the person's browser) still fills it in.
+  const brandFailed = new Map<string, number>();
+  const ensureBrand = async (site: Site): Promise<SiteLayout | null> => {
+    const saved = sectionLayouts.get(site.id)?.layout ?? null;
+    if (saved?.brand) return saved;
+    if (Date.now() - (brandFailed.get(site.id) ?? 0) < 30 * 60_000) return saved;
+    const inflight = brandBusy.get(site.id);
+    if (inflight) return inflight;
+    const p = (async () => {
+      const design = await analyzeDesign(site.url, { url: site.url + "/", device: "desktop" }).catch((e) => {
+        log("warn", "could not measure the site's brand in the server's browser", { site: site.id, error: String((e as Error).message).slice(0, 160) });
+        return null;
+      });
+      const { fit } = fitFromDesign(design as any);
+      if (!fit.brand) { brandFailed.set(site.id, Date.now()); return saved; }
+      const radius = parseFloat(String(fit.radius ?? ""));
+      const layout = mergeLayout(saved, cleanLayout({ brand: { color: fit.brand, radius: Number.isFinite(radius) ? radius : undefined } }));
+      if (layout) {
+        sectionLayouts.put({ id: site.id, layout, at: new Date().toISOString() });
+        log("info", "section brand measured from the site's buttons", { site: site.id, brand: layout.brand?.color });
+      }
+      return layout;
+    })().finally(() => brandBusy.delete(site.id));
+    brandBusy.set(site.id, p);
+    return p;
+  };
+
   const lookFor = async (siteId: string, b: Bridge) => {
     const hit = sectionLooks.get(siteId);
     if (hit && Date.now() - hit.at < 30 * 60_000) return hit.value;
@@ -325,6 +363,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
             let page: any = null;
             if (post) page = await pageInfo(b, post).catch((e) => ({ builder: null, places: [], unsupported: (e as Error).message }));
             void lookFor(s.id, b).catch(() => {}); // the gallery is open; the previews are moments away
+            void ensureBrand(s).catch(() => {}); // and the brand, if the plugin could not measure it
             return send(res, 200, { ok: true, ...catalogue(), page });
           }
           if (m[2] === "/preview" && req.method === "GET") { // one section as a standalone page in this site's colours and fonts
@@ -332,7 +371,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
             if (!/^[a-z0-9-]{2,40}$/.test(id)) return send(res, 400, { error: "id must be a section id, e.g. hero-split" });
             const look = { value: await lookFor(s.id, b) };
             const measured = cleanLayout({ brand: { color: url.searchParams.get("brand"), on: url.searchParams.get("on"), radius: url.searchParams.get("radius") ?? undefined } });
-            return send(res, 200, { ok: true, html: previewDocument(id, look.value, measured), look: look.value });
+            return send(res, 200, { ok: true, html: previewDocument(id, look.value, measured ?? sectionLayouts.get(s.id)?.layout ?? null), look: look.value });
           }
           if (m[2] === "/site" && req.method === "POST") { // the gallery opened: what it measured on the page (nothing is drafted)
             const body = await readJson(req);
@@ -342,7 +381,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
           }
           if (m[2] === "/add" && req.method === "POST") { // put it on the page as a draft
             const body = await readJson(req);
-            const out = await addSection(b, { id: String(body.id ?? ""), postId: Number(body.post ?? 0) || 0, place: body.place ? String(body.place) : undefined, layout: body.layout, saved: sectionLayouts.get(s.id)?.layout });
+            const out = await addSection(b, { id: String(body.id ?? ""), postId: Number(body.post ?? 0) || 0, place: body.place ? String(body.place) : undefined, layout: body.layout, saved: await ensureBrand(s) });
             if (out.layout) sectionLayouts.put({ id: s.id, layout: out.layout, at: new Date().toISOString() });
             recordSectionUse({ site: s.id, section: out.section, post: Number(body.post ?? 0) || 0, place: out.place, builder: String(out.builder ?? ""), user: caller.via === "widget" ? caller.user?.name || caller.user?.login : undefined });
             log("info", `section added: ${out.section}`, { site: s.id, post: body.post, place: out.place, builder: out.builder, layout: out.layout });

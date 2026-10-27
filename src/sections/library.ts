@@ -44,7 +44,10 @@ export const CORE_ID = "lcs-core";
 /** The design system every section shares. Scoped to .lcs, so it never touches the rest of the page. */
 export const CORE_CSS = `/* Livecrafts sections: design system */
 .lcs {
-  --lcs-brand: var(--lc-brand, var(--e-global-color-accent, var(--wp--preset--color--primary, #2f5bea)));
+  /* No Elementor --e-global-color-accent here: on a kit nobody customised it is Elementor's default green, and a
+     section that falls back to it wears a colour the site never uses. The brand comes from --lc-brand, which the
+     backend writes from the site's own buttons. */
+  --lcs-brand: var(--lc-brand, var(--wp--preset--color--primary, #2f5bea));
   --lcs-on-brand: var(--lc-on-brand, #ffffff);
   --lcs-radius: var(--lc-radius, 14px);
   /*

@@ -329,7 +329,12 @@ export async function siteLook(bridge: Bridge): Promise<{ brand?: string; ink?: 
   const p: any = await bridge.siteProfile().catch(() => null);
   if (!p) return {};
   const el = p.builders?.elementor ?? {};
-  const kitColors: any[] = Array.isArray(el.colors) ? el.colors : [];
+  // Elementor's factory kit is still there on any site whose owner never opened Site Settings, and none of it is
+  // that site's colour: its accent alone put Elementor's own green on every section of a navy-blue site. Only a
+  // kit colour somebody chose says anything about the site.
+  const ELEMENTOR_FACTORY = new Set(["#6ec1e4", "#54595f", "#7a7a7a", "#61ce70"]);
+  const kitColors: any[] = (Array.isArray(el.colors) ? el.colors : [])
+    .filter((c: any) => !ELEMENTOR_FACTORY.has(String(c?.value ?? c?.color ?? "").trim().toLowerCase()));
   const themeColors: any[] = Array.isArray(p.brand?.colors) ? p.brand.colors : [];
   const hexOf = (c: any) => { const v = String(c?.value ?? c?.color ?? "").trim(); return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v) ? v : undefined; };
   // First id that matches wins, in the order asked (accent before primary), not the order the site lists them.
