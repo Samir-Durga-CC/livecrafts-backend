@@ -52,6 +52,89 @@ export function readUsage(month: string, filter: (r: UsageRow) => boolean = () =
   } catch { return []; }
 }
 
+/** The months there is usage for, newest first. */
+export function usageMonths(): string[] {
+  try {
+    return fs.readdirSync(dir("usage")).filter((f) => /^\d{4}-\d{2}\.jsonl$/.test(f)).map((f) => f.slice(0, 7)).sort().reverse();
+  } catch { return []; }
+}
+
+/**
+ * Which company's meter is running. The model name is all we store, so it is all we can go on: a name we do not
+ * recognise is reported as itself rather than guessed at, so a new provider shows up as unknown instead of wrong.
+ */
+export function providerOf(model: string): string {
+  const m = model.toLowerCase();
+  if (/^(claudecli:)?(opus|sonnet|haiku)|^claude[-.]/.test(m)) return "Anthropic";
+  if (/^(gpt|o[134])[-.\d]|^chatgpt|^text-embedding/.test(m)) return "OpenAI";
+  if (/^gemini|^google\//.test(m)) return "Google";
+  if (/^(llama|mixtral|mistral|qwen|deepseek|kimi)/.test(m)) return "Open models";
+  const slash = m.indexOf("/");
+  return slash > 0 ? m.slice(0, slash) : "Other";
+}
+
+export interface UsageBucket { key: string; label?: string; calls: number; input: number; cachedInput: number; output: number; reasoning: number; total: number; ms: number }
+export interface UsageReport {
+  month: string; months: string[]; rows: number;
+  totals: UsageBucket;
+  byProvider: UsageBucket[];
+  byModel: (UsageBucket & { provider: string })[];
+  byDay: { day: string; total: number; input: number; output: number; calls: number }[];
+  bySite: UsageBucket[];
+  busiest: { job: string; site: string; model: string; total: number; steps: number; at: string }[];
+}
+
+const empty = (key: string, label?: string): UsageBucket => ({ key, label, calls: 0, input: 0, cachedInput: 0, output: 0, reasoning: 0, total: 0, ms: 0 });
+const add = (b: UsageBucket, r: UsageRow) => {
+  b.calls++; b.input += r.input || 0; b.cachedInput += r.cachedInput || 0; b.output += r.output || 0;
+  b.reasoning += r.reasoning || 0; b.total += r.total || 0; b.ms += r.ms || 0;
+  return b;
+};
+const into = (map: Map<string, UsageBucket>, key: string, r: UsageRow, label?: string) => {
+  if (!map.has(key)) map.set(key, empty(key, label));
+  add(map.get(key)!, r);
+};
+const biggestFirst = (m: Map<string, UsageBucket>) => [...m.values()].sort((a, b) => b.total - a.total);
+
+/**
+ * One month of model calls, added up the ways worth looking at: who is being paid, which model, which day, which
+ * website, and the jobs that cost the most. Read from the same append-only file the agent writes as it works.
+ */
+export function usageReport(month: string, opts: { site?: string; siteName?: (id: string) => string | undefined } = {}): UsageReport {
+  const rows = readUsage(month, (r) => !opts.site || r.site === opts.site);
+  const totals = empty("all");
+  const providers = new Map<string, UsageBucket>(), models = new Map<string, UsageBucket>(), sites = new Map<string, UsageBucket>();
+  const days = new Map<string, { day: string; total: number; input: number; output: number; calls: number }>();
+  const jobs = new Map<string, { job: string; site: string; model: string; total: number; steps: number; at: string }>();
+
+  for (const r of rows) {
+    add(totals, r);
+    into(providers, providerOf(r.model), r);
+    into(models, r.model, r, providerOf(r.model));
+    if (r.site) into(sites, r.site, r, opts.siteName?.(r.site));
+    const day = String(r.at ?? "").slice(0, 10);
+    if (day) {
+      const d = days.get(day) ?? { day, total: 0, input: 0, output: 0, calls: 0 };
+      d.total += r.total || 0; d.input += r.input || 0; d.output += r.output || 0; d.calls++;
+      days.set(day, d);
+    }
+    if (r.job) {
+      const j = jobs.get(r.job) ?? { job: r.job, site: r.site, model: r.model, total: 0, steps: 0, at: r.at };
+      j.total += r.total || 0; j.steps++; if (r.at < j.at) j.at = r.at;
+      jobs.set(r.job, j);
+    }
+  }
+
+  return {
+    month, months: usageMonths(), rows: rows.length, totals,
+    byProvider: biggestFirst(providers),
+    byModel: biggestFirst(models).map((b) => ({ ...b, provider: b.label ?? providerOf(b.key) })),
+    byDay: [...days.values()].sort((a, b) => a.day.localeCompare(b.day)),
+    bySite: biggestFirst(sites),
+    busiest: [...jobs.values()].sort((a, b) => b.total - a.total).slice(0, 10),
+  };
+}
+
 export type Level = "info" | "warn" | "error";
 type Tail = (row: Record<string, unknown>) => void;
 const tails = new Set<Tail>();

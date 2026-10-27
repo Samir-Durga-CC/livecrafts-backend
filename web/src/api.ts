@@ -86,6 +86,12 @@ export const api = {
   sections: (siteId: string, post?: number) => request<SectionCatalogue>("GET", `/sites/${siteId}/sections${post ? `?post=${post}` : ""}`),
   sectionPreview: (siteId: string, id: string, brand?: { color: string; on: string; radius?: number } | null) => request<{ ok: boolean; html: string }>("GET", `/sites/${siteId}/sections/preview?id=${encodeURIComponent(id)}${brand ? `&brand=${encodeURIComponent(brand.color)}&on=${encodeURIComponent(brand.on)}${brand.radius !== undefined ? `&radius=${brand.radius}` : ""}` : ""}`),
   sectionUsage: (site?: string) => request<SectionUsage>("GET", `/sections/usage${site ? `?site=${encodeURIComponent(site)}` : ""}`),
+  modelUsage: (month?: string, site?: string) => {
+    const q = new URLSearchParams();
+    if (month) q.set("month", month);
+    if (site) q.set("site", site);
+    return request<ModelUsage>("GET", `/models/usage${q.toString() ? `?${q}` : ""}`);
+  },
   sectionSite: (siteId: string, layout: Record<string, unknown>) => request<{ ok: boolean; layout: any; containerSynced: boolean }>("POST", `/sites/${siteId}/sections/site`, { layout }),
   addSection: (siteId: string, body: { id: string; post: number; place?: string; layout?: Record<string, unknown> | null }) => request<{ ok: boolean; name: string; place: string; builder: string; change: any }>("POST", `/sites/${siteId}/sections/add`, body),
   plugins: (siteId: string, refresh = false) => request<PluginList>("GET", `/sites/${siteId}/plugins${refresh ? "?refresh=1" : ""}`),
@@ -289,6 +295,19 @@ export interface SectionCatalogue {
 }
 
 /** The Section Gallery's counter (GET /sections/usage). */
+/** What the models were asked to do this month, and what it cost in tokens. */
+export interface UsageBucket { key: string; label?: string; calls: number; input: number; cachedInput: number; output: number; reasoning: number; total: number; ms: number }
+export interface ModelUsage {
+  month: string; months: string[]; rows: number;
+  site: string | null; sites: Array<{ id: string; name: string; url: string }>;
+  totals: UsageBucket;
+  byProvider: UsageBucket[];
+  byModel: Array<UsageBucket & { provider: string }>;
+  byDay: Array<{ day: string; total: number; input: number; output: number; calls: number }>;
+  bySite: UsageBucket[];
+  busiest: Array<{ job: string; site: string; model: string; total: number; steps: number; at: string }>;
+}
+
 export interface SectionUsage {
   site: string | null; brand: { color: string; on: string; radius?: number } | null;
   totals: { adds: number; websites: number; sectionsUsed: number; sections: number; since: string | null };

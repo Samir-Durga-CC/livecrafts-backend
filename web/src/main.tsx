@@ -4,6 +4,7 @@ import App from "./App";
 import TemplatesPage from "./TemplatesPage";
 import ComponentsPage from "./ComponentsPage";
 import SectionUsagePage from "./SectionUsagePage";
+import UsagePage from "./UsagePage";
 import "./styles.css";
 import "./phase2.css";
 
@@ -18,6 +19,7 @@ createRoot(document.getElementById("root")!).render(
       : /^\/components\/?$/.test(location.pathname) ? <ComponentsPage />
       : /^\/templates\/?$/.test(location.pathname) ? <TemplatesPage />
       : /^\/section-usage\/?$/.test(location.pathname) ? <SectionUsagePage />
+      : /^\/model-usage\/?$/.test(location.pathname) ? <UsagePage />
       : <App />}
   </StrictMode>,
 );

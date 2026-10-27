@@ -48,6 +48,7 @@ export function Sidebar(p: SidebarProps) {
         <div className="nav-label">Library</div>
         <a className="nav-item" href={`/templates${p.site ? `?site=${p.site.id}` : ""}`}><Icon.List size={17} /> Templates</a>
         <a className="nav-item" href="/section-usage"><Icon.Layout size={17} /> Section usage</a>
+        <a className="nav-item" href={`/model-usage${p.site ? `?site=${p.site.id}` : ""}`}><Icon.Gauge size={17} /> Model usage</a>
       </nav>
       <div className="divider" />
 

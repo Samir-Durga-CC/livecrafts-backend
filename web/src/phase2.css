@@ -895,3 +895,51 @@ a.nav-item:visited { color: var(--muted); } a.nav-item:hover { color: var(--text
 .su-used { display: inline-flex; align-items: center; white-space: nowrap; }
 .su-table td { vertical-align: middle; }
 @media (max-width: 640px) { .su-thumb { width: 112px; height: 63px; } .su-thumb iframe { transform: scale(.0875); } }
+
+/* ---- /usage: what the models cost, in tokens -------------------------------------------------- */
+.us-page { max-width: 1100px; margin: 0 auto; padding: 28px 24px 64px; color: var(--text); }
+.us-head { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; justify-content: space-between; margin-bottom: 22px; }
+.us-head h1 { margin: 0 0 4px; font-size: 24px; letter-spacing: -0.01em; }
+.us-head p { margin: 0; font-size: 13.5px; }
+.us-filters { display: flex; gap: 12px; }
+.us-filters label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.us-filters select { padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 13px; }
+
+/* The four figures worth knowing before any table. */
+.us-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 28px; }
+.us-tile { display: grid; gap: 2px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.us-tile-label { font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.us-tile-value { font-size: 26px; font-weight: 650; line-height: 1.15; letter-spacing: -0.02em; }
+.us-tile-foot { font-size: 12px; color: var(--muted); }
+
+.us-block { margin-bottom: 28px; }
+.us-block h2 { margin: 0 0 10px; font-size: 14px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.us-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.us-table th, .us-table td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+.us-table thead th { font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); font-weight: 600; border-bottom-width: 1px; }
+.us-table tbody th { font-weight: 600; }
+.us-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.us-table .dim { color: var(--muted); }
+.us-table tbody tr:hover { background: var(--hover); }
+.us-table code { font: 12px Consolas, monospace; }
+.us-name { display: block; }
+.us-note { display: block; font-size: 11.5px; font-weight: 400; color: var(--muted); }
+
+/* Share of the month, as a bar that is read before the number beside it. */
+.us-bar-cell { width: 34%; display: flex; align-items: center; gap: 10px; }
+.us-bar { flex: 1; height: 7px; min-width: 60px; border-radius: 99px; background: var(--hover); overflow: hidden; }
+.us-bar span { display: block; height: 100%; border-radius: 99px; background: var(--accent, #5b6cff); }
+.us-share { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+
+.us-days { display: flex; align-items: flex-end; gap: 6px; height: 150px; padding: 10px 0 0; border-bottom: 1px solid var(--line); }
+.us-day { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; gap: 6px; min-width: 0; }
+.us-day-bar { width: 100%; max-width: 34px; border-radius: 5px 5px 0 0; background: var(--accent, #5b6cff); opacity: .85; }
+.us-day:hover .us-day-bar { opacity: 1; }
+.us-day small { font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.us-foot { font-size: 12.5px; }
+
+@media (max-width: 720px) {
+  .us-head { align-items: flex-start; }
+  .us-bar-cell { width: 26%; }
+  .us-table th:nth-child(5), .us-table td:nth-child(5) { display: none; }
+}

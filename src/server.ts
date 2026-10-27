@@ -28,7 +28,7 @@ const sectionLooks = new Map<string, { at: number; value: Awaited<ReturnType<typ
 import { claudeCliStatus } from "./claudeCli.js";
 import { diffOf } from "./changes.js";
 import { canUseSite, verifyWidgetToken, type Caller } from "./auth.js";
-import { log } from "./usage.js";
+import { log, usageMonths, usageReport } from "./usage.js";
 import { eyes } from "./eyes.js";
 import { assistantSettings, forgetAssistantSettings } from "./persona.js";
 import { closeBrowser, screenshotPath } from "./browser.js";
@@ -284,6 +284,15 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         const uses = readSectionUses().filter((u) => !only || u.site === only);
         return send(res, 200, { ok: true, site: only || null, brand: only ? sectionLayouts.get(only)?.layout.brand ?? null : null,
           ...sectionUsageReport(uses, sites.list().map((x) => ({ id: x.id, name: x.name, url: x.url }))) });
+      }
+      // ---- what the models cost: every call the agent made, added up (admin only: not a widget route)
+      if (route === "GET /models/usage") {
+        const months = usageMonths();
+        const month = url.searchParams.get("month") || months[0] || new Date().toISOString().slice(0, 7);
+        const site = url.searchParams.get("site") || undefined;
+        const named = new Map(sites.list().map((x) => [x.id, x.name || x.url]));
+        return send(res, 200, { ok: true, site: site ?? null, sites: sites.list().map((x) => ({ id: x.id, name: x.name, url: x.url })),
+          ...usageReport(month, { site, siteName: (id) => named.get(id) }) });
       }
       m = url.pathname.match(/^\/sites\/([\w-]+)\/sections(\/preview|\/add|\/site)?$/);
       if (m) {
