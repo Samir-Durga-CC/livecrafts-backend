@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { Icon } from "../icons";
 import type { Resolved, ResolvedAction } from "../types";
 import type { PickedElement } from "./element";
 import { pickMedia, uploadToMedia, wp } from "./parent";
+import { SectionFields, isGallerySection } from "./SectionFields";
 
 const GROUPS: { id: ResolvedAction["group"]; label: string; icon: ReactElement }[] = [
   { id: "content", label: "Content", icon: <Icon.Text size={15} /> },
@@ -44,12 +45,28 @@ export function ElementPanel({ selected, resolved, resolving, error, picking, di
   onEditOnPage: (selector: string, apply: (text: string) => Promise<void>) => void; onHighlight: (selector: string) => void;
 }) {
   const [view, setView] = useState<Resolved | null>(resolved);
-  const [open, setOpen] = useState<string>("content");
+  // Several groups can be open at once: in the dialog they sit side by side, and changing a font while looking at
+  // the colours is the point.
+  const [open, setOpen] = useState<Set<string>>(() => new Set(["content", "style"]));
+  const toggle = (id: string) => setOpen((o) => { const n = new Set(o); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const [busy, setBusy] = useState("");
   const [problem, setProblem] = useState("");
   const [scope, setScope] = useState<"page" | "site">("page");
   const [question, setQuestion] = useState("");
-  useEffect(() => { setView(resolved); setProblem(""); setScope("page"); }, [resolved]);
+  useEffect(() => { setView(resolved); setProblem(""); setScope("page"); setStaged({}); }, [resolved]);
+
+  /*
+   * Field edits are staged, not applied one by one. Each Apply used to save, then refresh the page - so the colour,
+   * size and spacing still being set in the other fields were thrown away, and only one thing could change per
+   * round. Now every changed field waits here, and one Apply sends them all, followed by one refresh.
+   */
+  const [staged, setStaged] = useState<Record<string, unknown>>({});
+  const [resetKey, setResetKey] = useState(0);
+  const stage = useCallback((id: string, v: unknown) => setStaged((s) => {
+    if (v === undefined) { if (!(id in s)) return s; const { [id]: _gone, ...rest } = s; return rest; }
+    return s[id] === v ? s : { ...s, [id]: v };
+  }), []);
+  const discard = () => { setStaged({}); setResetKey((k) => k + 1); setProblem(""); };
 
   async function apply(a: ResolvedAction, value?: unknown) {
     setBusy(a.id); setProblem("");
@@ -62,6 +79,27 @@ export function ElementPanel({ selected, resolved, resolving, error, picking, di
       else onApplied(r.change?.summary ?? a.label);
     } catch (e) { setProblem((e as Error).message); }
     finally { setBusy(""); }
+  }
+  async function applyAll() {
+    const list = (view?.actions ?? []).filter((a) => a.id in staged);
+    if (!list.length) return;
+    setBusy("all"); setProblem("");
+    const done: string[] = [];
+    try {
+      for (const a of list) {
+        let change = fill(a.change, staged[a.id]);
+        if (scope === "site" && view?.css_scopes && change.value?.selector === view.css_scopes.page) change = { ...change, value: { ...change.value, selector: view.css_scopes.site } };
+        if (a.requires) await wp("POST", "changes", a.requires);
+        const r = await wp<any>("POST", "changes", change);
+        if (!r.unchanged) done.push(r.change?.summary ?? a.label);
+        stage(a.id, undefined); // saved: it is no longer pending, even if a later one fails
+      }
+      if (done.length) onApplied(done.length === 1 ? done[0] : `${done.length} changes to ${view?.source.label ?? "this element"}`);
+      else setProblem("It already is that way - nothing changed.");
+    } catch (e) {
+      setProblem(`${done.length ? `${done.length} saved, then this one failed: ` : ""}${(e as Error).message}`);
+      if (done.length) onApplied(`${done.length} changes`);
+    } finally { setBusy(""); }
   }
   async function parent() {
     if (!view?.parent || !selected) return;
@@ -112,20 +150,36 @@ export function ElementPanel({ selected, resolved, resolving, error, picking, di
       {resolving && !view && <div className="qa-empty"><span className="spin" /></div>}
       {GROUPS.filter((g) => actions.some((a) => a.group === g.id && a.input !== "ask")).map((g) => (
         <section key={g.id} className="qa-sec">
-          <button className="qa-sec-head" aria-expanded={open === g.id} onClick={() => setOpen(open === g.id ? "" : g.id)}>
-            {g.icon}<span className="grow">{g.label}</span><Icon.ChevronDown size={15} className={open === g.id ? "up" : ""} />
+          <button className="qa-sec-head" aria-expanded={open.has(g.id)} onClick={() => toggle(g.id)}>
+            {g.icon}<span className="grow">{g.label}</span>
+            {actions.some((a) => a.group === g.id && a.id in staged) && <i className="sf-dot" title="Has changes waiting to be applied" />}
+            <Icon.ChevronDown size={15} className={open.has(g.id) ? "up" : ""} />
           </button>
-          {open === g.id && (
-            <div className="ep-actions">
-              {actions.filter((a) => a.group === g.id && a.input !== "ask").map((a) => (
-                <ActionRow key={a.id} a={a} busy={busy === a.id} disabled={disabled || (!!busy && busy !== a.id)} onApply={(v) => apply(a, v)}
-                  canUpload={canUpload} onProblem={setProblem}
-                  onEditOnPage={a.input === "text" || a.input === "html" ? () => onEditOnPage(selected.selector, (text) => apply(a, text)) : undefined} />
-              ))}
-            </div>
-          )}
+          {/* Hidden, not unmounted: a collapsed group keeps the edits typed into it. */}
+          <div className="ep-actions" hidden={!open.has(g.id)}>
+            {actions.filter((a) => a.group === g.id && a.input !== "ask").map((a) => (
+              a.input === "html" && isGallerySection(a.value)
+                ? <SectionFields key={`${a.id}:${resetKey}`} html={a.value} focusText={selected.text} disabled={disabled || !!busy} onStage={(h) => stage(a.id, h)} />
+                : <ActionRow key={`${a.id}:${resetKey}`} a={a} busy={busy === a.id} disabled={disabled || (!!busy && busy !== a.id)} onApply={(v) => apply(a, v)}
+                    onStage={(v) => stage(a.id, v)} canUpload={canUpload} onProblem={setProblem}
+                    onEditOnPage={a.input === "text" || a.input === "html" ? () => onEditOnPage(selected.selector, (text) => apply(a, text)) : undefined} />
+            ))}
+          </div>
         </section>
       ))}
+
+      {Object.keys(staged).length > 0 && (() => {
+        const n = Object.keys(staged).length;
+        return (
+          <div className="ep-commit" role="region" aria-label="Changes ready to apply">
+            <span className="grow"><b>{n}</b> {n === 1 ? "change" : "changes"} ready</span>
+            <button className="btn sm" disabled={!!busy} onClick={discard}>Discard</button>
+            <button className="btn accent sm" disabled={!!busy || disabled} onClick={() => void applyAll()}>
+              {busy === "all" ? <span className="spin" /> : n === 1 ? "Apply" : `Apply ${n} changes`}
+            </button>
+          </div>
+        );
+      })()}
 
       <section className="qa-sec ep-ask">
         <div className="qa-label">Ask the assistant about this element</div>
@@ -137,15 +191,27 @@ export function ElementPanel({ selected, resolved, resolving, error, picking, di
   );
 }
 
-function ActionRow({ a, busy, disabled, onApply, onEditOnPage, canUpload, onProblem }: {
-  a: ResolvedAction; busy: boolean; disabled: boolean; onApply: (v?: unknown) => Promise<void>; onEditOnPage?: () => void;
+function ActionRow({ a, busy, disabled, onApply, onStage, onEditOnPage, canUpload, onProblem }: {
+  a: ResolvedAction; busy: boolean; disabled: boolean; onApply: (v?: unknown) => Promise<void>;
+  /** A field's changed value (undefined = unchanged): it goes out with the panel's one Apply. */
+  onStage: (v: unknown) => void;
+  onEditOnPage?: () => void;
   canUpload: boolean; onProblem: (message: string) => void;
 }) {
   const [v, setV] = useState(initial(a));
   const [num, setNum] = useState(() => (initial(a).match(/^-?[\d.]+/) ?? [""])[0]);
   const [unit, setUnit] = useState(() => (initial(a).match(/[a-z%]+$/i) ?? [a.units?.[0] ?? "px"])[0]);
   const go = (value?: unknown) => void onApply(value);
-  const applyBtn = (value: unknown, ok = true) => <button className="btn accent sm" disabled={disabled || busy || !ok} onClick={() => go(value)}>{busy ? <span className="spin" /> : "Apply"}</button>;
+  // Fields hand their value up instead of applying it; buttons, switches and pictures still act at once.
+  const init = initial(a);
+  const candidate: unknown = a.input === "size" ? (num !== "" && `${num}${unit}` !== init ? `${num}${unit}` : undefined)
+    : a.input === "select" ? (v !== init ? v : undefined)
+    : ["html", "text", "url", "color", "spacing"].includes(a.input) ? (v.trim() !== "" && v !== init ? v : undefined)
+    : undefined;
+  const stageRef = useRef(onStage);
+  stageRef.current = onStage;
+  useEffect(() => { stageRef.current(candidate); }, [candidate]);
+  const mark = candidate !== undefined ? <i className="sf-dot" title="Changed - goes out with Apply" /> : null;
 
   switch (a.input) {
     case "confirm":
@@ -161,44 +227,41 @@ function ActionRow({ a, busy, disabled, onApply, onEditOnPage, canUpload, onProb
     case "text":
       return (
         <div className="ep-field">
-          <span className="ep-label">{a.label}</span>
+          <span className="ep-label">{a.label}{mark}</span>
           {a.input === "html" || v.length > 60 ? <textarea rows={3} value={v} onChange={(e) => setV(e.target.value)} /> : <input value={v} onChange={(e) => setV(e.target.value)} />}
-          <div className="qa-row">{onEditOnPage && <button className="btn sm" disabled={disabled || busy} onClick={onEditOnPage}><Icon.Edit size={14} /> Edit on the page</button>}<span className="grow" />{applyBtn(v, v.trim() !== "" && v !== initial(a))}</div>
+          {onEditOnPage && <div className="qa-row"><button className="btn sm" disabled={disabled || busy} onClick={onEditOnPage}><Icon.Edit size={14} /> Edit on the page</button></div>}
         </div>
       );
     case "url":
-      return <div className="ep-field"><span className="ep-label">{a.label}</span><div className="qa-row"><input className="grow" type="url" value={v} placeholder="https://…" onChange={(e) => setV(e.target.value)} />{applyBtn(v, v.trim() !== "" && v !== initial(a))}</div></div>;
+      return <div className="ep-field"><span className="ep-label">{a.label}{mark}</span><input type="url" value={v} placeholder="https://…" onChange={(e) => setV(e.target.value)} /></div>;
     case "color": {
       const hex = /^#[0-9a-f]{6}$/i.test(v) ? v : "#000000";
       return (
         <div className="ep-row">
-          <span className="grow">{a.label}</span>
+          <span className="grow">{a.label}{mark}</span>
           <input type="color" value={hex} onChange={(e) => setV(e.target.value)} aria-label={a.label} />
           <input className="ep-short" value={v} placeholder="#1d4ed8" onChange={(e) => setV(e.target.value)} />
-          {applyBtn(v, v.trim() !== "" && v !== initial(a))}
         </div>
       );
     }
     case "size":
       return (
         <div className="ep-row">
-          <span className="grow">{a.label}</span>
+          <span className="grow">{a.label}{mark}</span>
           <input className="ep-num" type="number" value={num} onChange={(e) => setNum(e.target.value)} aria-label={a.label} />
           <select value={unit} onChange={(e) => setUnit(e.target.value)} aria-label="unit">{(a.units?.length ? a.units : ["px", "rem", "em", "%"]).map((u) => <option key={u}>{u}</option>)}</select>
-          {applyBtn(`${num}${unit}`, num !== "")}
         </div>
       );
     case "spacing":
-      return <div className="ep-row"><span className="grow">{a.label}</span><input className="ep-short" value={v} placeholder="20px or 10px 20px" onChange={(e) => setV(e.target.value)} />{applyBtn(v, v.trim() !== "" && v !== initial(a))}</div>;
+      return <div className="ep-row"><span className="grow">{a.label}{mark}</span><input className="ep-short" value={v} placeholder="20px or 10px 20px" onChange={(e) => setV(e.target.value)} /></div>;
     case "select":
       return (
         <div className="ep-row">
-          <span className="grow">{a.label}</span>
+          <span className="grow">{a.label}{mark}</span>
           <select value={v} onChange={(e) => setV(e.target.value)}>
             {!Object.prototype.hasOwnProperty.call(a.options ?? {}, "") && <option value="">-</option>}
             {Object.entries(a.options ?? {}).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
           </select>
-          {applyBtn(v, v !== initial(a))}
         </div>
       );
   }

@@ -972,3 +972,17 @@ a.nav-item:visited { color: var(--muted); } a.nav-item:hover { color: var(--text
 .us-page.compact .us-table th:nth-child(5), .us-page.compact .us-table td:nth-child(5) { display: none; }
 .us-page.compact .us-bar-cell { width: 30%; }
 .us-page.compact .us-days { height: 110px; }
+
+/* ---- a picked ready-made section: its words as fields, not its code ---- */
+.sf { display: grid; gap: 14px; }
+.sf-group { margin: 0; padding: 12px 12px 4px; border: 1px solid var(--line); border-radius: 10px; display: grid; gap: 10px; }
+.sf-group legend { padding: 0 6px; font-size: 11.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.sf-field { display: grid; gap: 5px; }
+.sf-field input, .sf-field textarea { width: 100%; }
+.sf-field.picked input, .sf-field.picked textarea { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+/* the small dot on anything changed and not yet applied */
+.sf-dot { display: inline-block; width: 7px; height: 7px; margin-left: 7px; border-radius: 50%; background: var(--accent); vertical-align: middle; }
+
+/* ---- one Apply for everything changed: stays in view at the bottom of the panel ---- */
+.ep-commit { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; gap: 8px; margin: 14px 0 4px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 12px; background: var(--surface); box-shadow: 0 -6px 20px rgb(0 0 0 / .18); font-size: 13px; }
+.ep-dialog .ep > .ep-commit { grid-column: 1 / -1; }

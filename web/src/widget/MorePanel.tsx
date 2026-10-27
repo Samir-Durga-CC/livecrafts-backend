@@ -86,7 +86,7 @@ export function BlogPanel({ busy, onBlog, onBlogOptions, onOpenChat, onBack }: {
 
   return (
     <div className="more-panel">
-      <button type="button" className="sp-back" onClick={onBack}><Icon.ChevronRight size={13} /> More</button>
+      <button type="button" className="sp-back" onClick={onBack}><Icon.ChevronRight size={13} /> Back</button>
       {busy && (
         <div className={`more-busy ${busy}`} role="status">
           <span>{busy === "working" ? "The assistant is working on a request in Chat." : "A chat is waiting for your approval. A new blog post starts in its own chat; that one stays in your chat list."}</span>

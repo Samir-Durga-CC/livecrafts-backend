@@ -108,7 +108,7 @@ export function PluginsPanel({ siteId, disabled, onBack, onChanged }: {
 
   return (
     <div className="pl">
-      <button type="button" className="sp-back" onClick={onBack}><Icon.ChevronRight size={13} /> More</button>
+      <button type="button" className="sp-back" onClick={onBack}><Icon.ChevronRight size={13} /> Back</button>
       <div className="pl-head">
         <div><h2>Plugins</h2><span className="muted small">{data ? `WordPress ${data.wp} · ${plugins.length} installed${data.checkedAt ? ` · checked ${shortWhen(data.checkedAt)}` : ""}` : "Loading…"}</span></div>
         <button type="button" className="btn sm" disabled={loading || !!busy} onClick={() => void load(true)}>{loading ? <span className="spin" /> : <Icon.Retry size={13} />} Check for updates</button>

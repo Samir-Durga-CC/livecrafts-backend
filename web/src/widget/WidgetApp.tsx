@@ -1002,13 +1002,13 @@ function Widget({ cfg, site }: { cfg: WidgetConfig; site: Site }) {
         )}
         {tab === "usage" && (
           <div className="w-scroll pad">
-            <button type="button" className="sp-back" onClick={backToMenu}><Icon.ChevronRight size={13} /> More</button>
+            <button type="button" className="sp-back" onClick={backToMenu}><Icon.ChevronRight size={13} /> Back</button>
             <UsagePage siteId={site.id} compact />
           </div>
         )}
         {speedSeen && (
           <div className="w-scroll pad" style={tab === "speed" ? undefined : { display: "none" }}>
-            <button type="button" className="sp-back more-back" onClick={backToMenu}><Icon.ChevronRight size={13} /> More</button>
+            <button type="button" className="sp-back more-back" onClick={backToMenu}><Icon.ChevronRight size={13} /> Back</button>
             <SpeedPanel siteId={site.id} pageUrl={cfg.pageUrl || cfg.siteUrl} siteName={site.name} disabled={working} />
           </div>
         )}
