@@ -788,9 +788,11 @@ html:has(.tpl-page), body:has(.tpl-page) { overflow-y: auto; height: auto; }
 .lay-devices button.on { background: var(--text); color: var(--surface); font-weight: 600; }
 .lay-x { border: 0; background: none; color: var(--muted); font-size: 22px; line-height: 1; padding: 0 6px; cursor: pointer; }
 .lay-x:hover { color: var(--text); }
-.lay-stage { flex: 1; overflow: auto; display: flex; justify-content: center; align-items: flex-start;
-  background: repeating-conic-gradient(#f3f4f6 0% 25%, #fff 0% 50%) 50%/16px 16px; }
-.lay-stage iframe { border: 0; background: #fff; transform-origin: top center; }
+/* A plain mat, not a transparency checkerboard: the preview is a section of a page, and the checks read as breakage. */
+.lay-stage { flex: 1; overflow: auto; display: flex; justify-content: center; align-items: flex-start; padding: 16px; background: var(--page, #eef0f4); }
+/* Sized to the SCALED frame, so there is no dead space around the layout (the iframe inside is full size). */
+.lay-frame { position: relative; overflow: hidden; flex: none; background: #fff; border-radius: 8px; box-shadow: 0 2px 14px rgb(0 0 0 / .14); }
+.lay-stage iframe { position: absolute; top: 0; left: 0; border: 0; background: #fff; transform-origin: top left; pointer-events: none; }
 .lay-count { font-size: 12px; color: var(--muted); }
 @media (max-width: 760px) {
   .lay-modal { padding: 0; }

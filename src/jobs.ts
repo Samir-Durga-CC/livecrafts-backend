@@ -571,7 +571,9 @@ function uiSummary(tool: string | undefined, v: any): Record<string, unknown> | 
       categories: v.categories?.map((t: any) => t.name), tags: v.tags?.map((t: any) => t.name) };
   }
   if (tool === "make_change" || tool === "create_page" || tool === "revert_change" || tool === "place_component") {
-    return { changeId: v.changeId, summary: v.change?.summary, status: v.change?.status, preview: v.preview, checks: v.verification ? { passed: v.verification.passed, summary: v.verification.summary } : undefined };
+    return { changeId: v.changeId, summary: v.change?.summary, status: v.change?.status, preview: v.preview, checks: v.verification ? { passed: v.verification.passed, summary: v.verification.summary } : undefined,
+      // place_component looks at what it placed: show the person the same picture it judged the section on.
+      ...(v.screenshotId ? { screenshotId: v.screenshotId, device: v.device, target: v.component } : {}) };
   }
   if (tool === "edit_file" || tool === "restore_file" || tool === "create_file") return { path: v.path, backupId: v.backupId, verifiedLive: v.verifiedLive, created: v.created };
   if (tool === "create_page" || tool === "create_post" || tool === "edit_post_content" || tool === "set_post_status") return { id: v.id, link: v.link, status: v.status };

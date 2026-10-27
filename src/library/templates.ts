@@ -66,6 +66,30 @@ export interface ShortcodeInput {
 }
 
 /** The ONE shortcode that places a template. Throws TemplateError with a message the model can act on. */
+/**
+ * What a template prints for itself, and what it expects of the content it is given.
+ *
+ * The docblock says this in prose (entry.params, entry.example), which is easy to skim past: a footer that prints "©"
+ * itself, handed "© 2026 Acme", shows two; a columns footer handed every link in one group renders one column and
+ * three empty gaps. Both happened. So the rules are stated as rules - returned by get_component, and checked here,
+ * because a rule nobody checks is a rule that gets broken.
+ */
+const PRINTS = [{ attr: /copyright/i, strip: /^\s*(?:&copy;|©|\(c\))\s*/i, adds: "©" }];
+
+export function templateRules(entry: TemplateEntry): string[] {
+  const rules: string[] = [];
+  for (const p of PRINTS) {
+    for (const attr of entry.attributes.filter((x) => p.attr.test(x))) {
+      rules.push(`"${attr}": the template prints ${p.adds} itself - pass the text without it ("2026 Acme", not "${p.adds} 2026 Acme").`);
+    }
+  }
+  if (entry.list && /\bgroup\b/.test(entry.item_fields ?? "")) {
+    rules.push('Every row takes a "group", and the template lays out ONE COLUMN PER GROUP. Use 2-4 different groups ("Company", "Product", "Legal"); every row in one group renders a single column and leaves the rest of the row empty.');
+  }
+  if (entry.list && entry.item_fields) rules.push(`Row fields: ${entry.item_fields}.`);
+  return rules;
+}
+
 export function buildShortcode(entry: TemplateEntry, input: ShortcodeInput): { code: string; warnings: string[] } {
   const warnings: string[] = [];
   const allowed = new Set(entry.attributes);
@@ -77,10 +101,27 @@ export function buildShortcode(entry: TemplateEntry, input: ShortcodeInput): { c
     a[k] = v;
   }
   for (const [k, v] of Object.entries(input.fit ?? {})) a[k] = v;
+  // The template already prints these: passing them in as well shows them twice.
+  for (const p of PRINTS) {
+    for (const k of Object.keys(a)) {
+      if (!p.attr.test(k) || typeof a[k] !== "string") continue;
+      const cleaned = (a[k] as string).replace(p.strip, "");
+      if (cleaned === a[k]) continue;
+      a[k] = cleaned;
+      warnings.push(`"${k}": the ${entry.id} template prints ${p.adds} itself, so it was taken off the text you passed - it would have shown twice.`);
+    }
+  }
   const rows = input.items ?? [];
   if (rows.length && !entry.list) throw new TemplateError(`The ${entry.id} template has no list rows; remove "items".`);
   if (entry.list && !rows.length) warnings.push(`The ${entry.id} template shows a list: without "items" it renders only its heading.`);
   if (rows.length > 24) throw new TemplateError("A template takes at most 24 list rows.");
+  // One column per group: all the rows in one group is a section with one column and an empty row beside it.
+  if (entry.list && /\bgroup\b/.test(entry.item_fields ?? "") && rows.length >= 3) {
+    const groups = new Set(rows.map((r) => String((r as Record<string, unknown>).group ?? "").trim().toLowerCase()));
+    if (groups.size <= 1) {
+      warnings.push(`All ${rows.length} rows are in ${groups.has("") ? "no group" : "one group"}. This template lays out one column per group, so it will render a single column with the rest of the row empty. Give the rows 2-4 different "group" values, or place fewer rows.`);
+    }
+  }
 
   const open = `[${entry.shortcode}${attrs(a)}]`;
   if (!entry.list) return { code: open, warnings };

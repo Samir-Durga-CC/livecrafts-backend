@@ -69,12 +69,21 @@ html,body{margin:0;padding:0;background:#fff;}
 body>*{max-width:100%}</style>
 </head><body>${r.html}</body></html>`;
 
-/** How tall the section actually is inside the frame, so a tile can show all of it and no more. */
+/**
+ * How tall the SECTION actually is inside the frame, so a preview shows all of it and no more.
+ *
+ * Not the document's height: documentElement.scrollHeight is never less than the frame's own viewport, so a 200px
+ * footer in an 820px frame measured 820 and the preview drew it adrift in a page of white. The section's own boxes
+ * are what we want - and a section that really does ask for 100vh still measures the full 820, correctly.
+ */
 function measure(frame: HTMLIFrameElement): number | null {
   try {
-    const d = frame.contentDocument;
-    const h = Math.max(d?.body?.scrollHeight ?? 0, d?.documentElement?.scrollHeight ?? 0);
-    return h > 20 ? Math.max(120, Math.min(h, MAX_H)) : null;
+    const body = frame.contentDocument?.body;
+    if (!body) return null;
+    let h = 0;
+    for (const el of Array.from(body.children)) h = Math.max(h, el.getBoundingClientRect().bottom);
+    if (h < 20) h = body.scrollHeight; // nothing laid out yet (or a text-only section)
+    return h > 20 ? Math.max(120, Math.min(Math.ceil(h), MAX_H)) : null;
   } catch {
     return null; // cross-origin stylesheet quirks: fall back to the assumed height
   }
@@ -180,7 +189,7 @@ export function LayoutPicker({ siteId, template, intro, only, busy, answered, ch
   useEffect(() => {
     const el = stage.current;
     if (!el) return;
-    const read = () => setStageW(el.clientWidth);
+    const read = () => setStageW(Math.max(0, el.clientWidth - 32)); // less .lay-stage's 16px padding, or it overflows
     read();
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(read);
@@ -322,13 +331,18 @@ export function LayoutPicker({ siteId, template, intro, only, busy, answered, ch
             <div className="lay-stage" ref={stage}>
               {zoomShot?.error ? <p className="lay-failed">This layout could not be drawn here.</p>
                 : zoomShot ? (
-                  <iframe key={`${id}:${zoom}:${device}`} title={`${id} ${zoom} full size`} sandbox="allow-same-origin"
-                    srcDoc={docFor(zoomShot, DEVICE[device])}
-                    style={{ width: DEVICE[device], height: Math.round(zoomH), transform: `scale(${zoomScale})` }}
-                    onLoad={(e) => {
-                      const m = measure(e.currentTarget);
-                      if (m) setHeights((x) => (x[zoomKey] === m ? x : { ...x, [zoomKey]: m }));
-                    }} />
+                  // transform: scale() shrinks what you SEE, never what the element takes up: the frame still claimed
+                  // its full 1280 x 820 and the layout sat small in the middle of all of it. The box around it is the
+                  // scaled size, so the preview is the section and nothing else.
+                  <div className="lay-frame" style={{ width: Math.round(DEVICE[device] * zoomScale), height: Math.round(zoomH * zoomScale) }}>
+                    <iframe key={`${id}:${zoom}:${device}`} title={`${id} ${zoom} full size`} sandbox="allow-same-origin" scrolling="no"
+                      srcDoc={docFor(zoomShot, DEVICE[device])}
+                      style={{ width: DEVICE[device], height: Math.round(zoomH), transform: `scale(${zoomScale})` }}
+                      onLoad={(e) => {
+                        const m = measure(e.currentTarget);
+                        if (m) setHeights((x) => (x[zoomKey] === m ? x : { ...x, [zoomKey]: m }));
+                      }} />
+                  </div>
                 ) : <p className="lay-loading"><span className="spin" /> Drawing it on your site…</p>}
             </div>
 

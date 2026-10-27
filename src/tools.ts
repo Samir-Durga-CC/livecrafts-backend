@@ -685,7 +685,8 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
     }),
   };
 
-  const componentTools = makeComponentTools({ bridge, safe, postIdOf, checked, changeView, parseValue, ref, pageUrl: () => extras.pageUrl?.(), skillsLoaded, design: extras.browser?.design ? (url?: string) => extras.browser!.design!({ url, device: "desktop" }) as Promise<any> : undefined });
+  const componentTools = makeComponentTools({ bridge, safe, postIdOf, checked, changeView, parseValue, ref, pageUrl: () => extras.pageUrl?.(), skillsLoaded, design: extras.browser?.design ? (url?: string) => extras.browser!.design!({ url, device: "desktop" }) as Promise<any> : undefined,
+    screenshot: extras.browser?.screenshot ? (a: { url?: string; selector?: string; device?: Device; view?: "draft" | "live" }) => extras.browser!.screenshot!(a) as Promise<any> : undefined });
 
   return { ...reading, ...writing, ...media, ...browser, ...speedTools, ...pluginTools, ...fileTools, ...apiTools, ...skillTools, ...planTools, ...askTools, ...layoutTools, ...componentTools };
 }

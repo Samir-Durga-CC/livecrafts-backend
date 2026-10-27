@@ -4,7 +4,7 @@ import type { Bridge } from "./bridge.js";
 import { BridgeError } from "./bridge.js";
 import { COMPONENTS, ContentError, LintError, getComponent, imageIds, renderComponent, searchLibrary, type Builder } from "./library/index.js";
 import { acfExport } from "./library/acf.js";
-import { TEMPLATE_WRAP_CSS, TemplateError, buildShortcode, cleanFit, fitFromDesign, placeInTheme, placeShortcode, themePlace, type Fit, type TemplateEntry } from "./library/templates.js";
+import { TEMPLATE_WRAP_CSS, TemplateError, buildShortcode, cleanFit, fitFromDesign, placeInTheme, placeShortcode, templateRules, themePlace, type Fit, type TemplateEntry } from "./library/templates.js";
 import { RECIPES, recipe, recipeList } from "./library/recipes.js";
 import { log } from "./usage.js";
 
@@ -27,6 +27,8 @@ export interface ComponentHelpers {
   skillsLoaded: Set<string>;
   /** Measure the site's design on a page (analyze_design), when a browser is available. */
   design?: (url?: string) => Promise<any>;
+  /** Take one screenshot (the person's own browser through the widget, else headless), when one is available. */
+  screenshot?: (a: { url?: string; selector?: string; device?: "desktop" | "tablet" | "mobile"; view?: "draft" | "live" }) => Promise<any>;
 }
 
 const NEEDED_SKILLS = ["section-design", "mobile-first", "templates", "page-builders"];
@@ -199,7 +201,11 @@ export function makeComponentTools(h: ComponentHelpers) {
             ok: true, source: "template", id: e.id, name: e.title || e.id, attributes: e.attributes, defaults: e.defaults, takesListRows: e.list, rowFields: e.item_fields || undefined,
             docs: e.params, exampleShortcode: e.example, fit: "brand, surface, surface_alt, ink, muted, line (colours); max, py, py_sm, radius (lengths); font. place_component fit \"auto\" measures them from the site.",
             usedOn: (e.usedOn ?? []).map((u) => ({ page: u.title, url: u.url, status: u.status, times: u.count })),
-            rules: "Texts are plain (no HTML). Never invent customer quotes, prices, names or contact details: use what the person gave or what the page already says. Images are full URLs (Media Library) or ids as the template documents. Links are real addresses on the site.",
+            // The general rules, then what THIS template prints for itself and how it lays its rows out.
+            rules: [
+              "Texts are plain (no HTML). Never invent customer quotes, prices, names or contact details: use what the person gave or what the page already says. Images are full URLs (Media Library) or ids as the template documents. Links are real addresses on the site.",
+              ...templateRules(e),
+            ],
           };
         }
         if (source === "site") { const r = await bridge.componentSource(id); const json = JSON.stringify(r.node ?? r.markup ?? r.layout ?? null); return { ...r, node: undefined, markup: undefined, source: json.length > 20_000 ? json.slice(0, 20_000) + "…" : json, bytes: json.length }; }
@@ -455,12 +461,26 @@ export function makeComponentTools(h: ComponentHelpers) {
         const out = await h.checked(pageUrl, () => write(kind, target, value, templateUsed ? `Template: ${a.id}` : undefined, postId), { component: selector, softH1 });
         if (out?.ok === false) return { ...out, note: extra.length ? "The CSS blocks are saved as drafts (harmless); nothing was inserted." : undefined };
         const skills = missingSkills(h.skillsLoaded);
+        // Look at what was just placed. The checks prove the section is THERE and that nothing broke; they cannot say
+        // it looks right - an empty column, a doubled "©" or a heading over an image all pass every one of them. So the
+        // picture comes back with the result, in this turn, while putting it right is still one more change instead of
+        // the person coming back to say it looks wrong.
+        const shot: any = h.screenshot && selector
+          ? await h.screenshot({ url: pageUrl, selector, device: "desktop", view: "draft" }).catch(() => null)
+          : null;
         return {
           ...out, change: h.changeView(out.change), changeId: out.change?.id, extraChanges: extra, component: a.id, builder, placeholders, warnings,
+          ...(shot?.screenshotId
+            // screenshotId as well as imageForModel: the model reads the image, and the chat shows the person the
+            // same picture, so what the assistant judged the section on is never something only it saw.
+            ? { imageForModel: shot.screenshotId, screenshotId: shot.screenshotId, device: "desktop", imageCaption: `The ${a.id} section as it was just placed, on the draft page (desktop)` }
+            : h.screenshot ? { lookedAt: "No screenshot came back: take one with screenshot_page before you answer." } : {}),
           usedTemplate: templateUsed ? { ...templateUsed, proof: out.verification?.checks?.some((c: any) => /component/.test(c.name) && c.ok === false && /not on the draft page/.test(c.detail ?? "")) ? "NOT FOUND on the draft page: the template did not render. Fix or revert." : `The marker <div class="ai-t" data-lc-template="${a.id}"> is on the page; open seeIt to see it outlined.` } : undefined,
           nextSteps: [
             ...(placeholders ? ["Sample text is in the section: ask the person for the real content and replace it (make_change el.setting / block.text). Never invent testimonials or contact details."] : []),
-            "Check `verification`: all component checks must pass on desktop, tablet and mobile; otherwise fix or revert. Take one screenshot_page of the section (mobile) to see it.",
+            "LOOK at the screenshot of the section before you answer, and say what you see. Every column filled? Nothing doubled, empty, cut off or overlapping? Does it sit with the rest of the page? A section can pass every check and still look wrong - the checks only prove it is there and that nothing broke.",
+            "If it looks wrong: fix it (make_change on its text and settings, or place_component again with replaceExisting and better content), or revert_change and build the section for this page instead of using the template. Do not say it is done because the checks passed.",
+            "Check `verification`: all component checks must pass on desktop, tablet and mobile; otherwise fix or revert. Take one screenshot_page on mobile too if the layout is at all tight.",
             ...(skills.length ? [`You did not load ${skills.join(" and ")}: load them and compare the result with their checklists.`] : []),
           ],
         };
