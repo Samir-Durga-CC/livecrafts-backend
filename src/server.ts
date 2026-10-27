@@ -95,7 +95,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     return p;
   };
 
-  const WIDGET_ROUTES = /^(GET \/(health|sites|models|voice)|POST \/sites|POST \/voice\/(transcribe|speak|realtime\/session)|GET \/voice\/stream|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms|pagespeed|templates|templates\/render|sections|sections\/preview)|POST \/sites\/[\w-]+\/sections\/(add|site)|(POST \/sites\/[\w-]+\/pagespeed|GET \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+|PUT \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+\/fix|GET \/sites\/[\w-]+\/plugins(\/(history|versions|jobs\/plj_[a-f0-9]+))?|POST \/sites\/[\w-]+\/plugins\/(update|rollback))|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
+  const WIDGET_ROUTES = /^(GET \/(health|sites|models|models\/usage|voice)|POST \/sites|POST \/voice\/(transcribe|speak|realtime\/session)|GET \/voice\/stream|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms|pagespeed|templates|templates\/render|sections|sections\/preview)|POST \/sites\/[\w-]+\/sections\/(add|site)|(POST \/sites\/[\w-]+\/pagespeed|GET \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+|PUT \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+\/fix|GET \/sites\/[\w-]+\/plugins(\/(history|versions|jobs\/plj_[a-f0-9]+))?|POST \/sites\/[\w-]+\/plugins\/(update|rollback))|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
 
   async function readBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
     const chunks: Buffer[] = []; let size = 0;
@@ -307,9 +307,11 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       if (route === "GET /models/usage") {
         const months = usageMonths();
         const month = url.searchParams.get("month") || months[0] || new Date().toISOString().slice(0, 7);
-        const site = url.searchParams.get("site") || undefined;
-        const named = new Map(sites.list().map((x) => [x.id, x.name || x.url]));
-        return send(res, 200, { ok: true, site: site ?? null, sites: sites.list().map((x) => ({ id: x.id, name: x.name, url: x.url })),
+        // From the widget: that one website and nothing else, whatever was asked for.
+        const site = caller.via === "widget" ? caller.site.id : url.searchParams.get("site") || undefined;
+        const visible = sites.list().filter((x) => canUseSite(caller, x.id));
+        const named = new Map(visible.map((x) => [x.id, x.name || x.url]));
+        return send(res, 200, { ok: true, site: site ?? null, sites: visible.map((x) => ({ id: x.id, name: x.name, url: x.url })),
           ...usageReport(month, { site, siteName: (id) => named.get(id) }) });
       }
       m = url.pathname.match(/^\/sites\/([\w-]+)\/sections(\/preview|\/add|\/site)?$/);
@@ -552,7 +554,8 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
             siteWords,
           }));
         } catch (e) {
-          return send(res, (e as any).status ?? 502, { error: (e as Error).message });
+          const raw = Number((e as any).status);
+          return send(res, raw >= 400 && raw <= 599 ? raw : 502, { error: (e as Error).message });
         }
       }
       if (route === "POST /voice/transcribe") {
@@ -641,7 +644,10 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
 
       return send(res, 404, { error: "Not found" });
     } catch (e) {
-      const status = (e as any).status ?? 400;
+      // An error's status is whatever its thrower put there: a failed fetch to WordPress or OpenAI arrives as 0, and
+      // writeHead(0) throws - inside this very handler - so the person got no answer at all, not even this one.
+      const raw = Number((e as any).status);
+      const status = raw >= 400 && raw <= 599 ? raw : raw === 0 ? 502 : 400;
       if (status >= 500) log("error", "request failed", { route, error: (e as Error).message });
       return send(res, status, { error: (e as Error).message });
     }

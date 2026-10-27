@@ -97,10 +97,14 @@ function Days({ days }: { days: ModelUsage["byDay"] }) {
   );
 }
 
-export default function UsagePage() {
+/**
+ * siteId fixes the report to one website and hides the website picker - that is how the widget shows it, where the
+ * backend answers with that site's numbers only anyway. compact trims the padding for the widget's dialog.
+ */
+export default function UsagePage({ siteId, compact }: { siteId?: string; compact?: boolean } = {}) {
   const params = new URLSearchParams(location.search);
   const [month, setMonth] = useState(params.get("month") ?? "");
-  const [site, setSite] = useState(params.get("site") ?? "");
+  const [site, setSite] = useState(siteId ?? params.get("site") ?? "");
   const [data, setData] = useState<ModelUsage | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -119,11 +123,11 @@ export default function UsagePage() {
   const inAll = t ? t.input + t.cachedInput : 0;
 
   return (
-    <div className="us-page">
+    <div className={`us-page${compact ? " compact" : ""}`}>
       <header className="us-head">
         <div>
           <h1>Model usage</h1>
-          <p className="muted">Every call the assistant made, counted from the backend's own record.</p>
+          <p className="muted">{siteId ? "Every call the assistant made for this website, counted from the backend's own record." : "Every call the assistant made, counted from the backend's own record."}</p>
         </div>
         <div className="us-filters">
           <label>
@@ -132,13 +136,13 @@ export default function UsagePage() {
               {(data?.months ?? []).map((m) => <option key={m} value={m}>{monthName(m)}</option>)}
             </select>
           </label>
-          <label>
+          {!siteId && <label>
             Website
             <select value={site} onChange={(e) => setSite(e.target.value)}>
               <option value="">All websites</option>
               {(data?.sites ?? []).map((s) => <option key={s.id} value={s.id}>{s.name || s.url}</option>)}
             </select>
-          </label>
+          </label>}
         </div>
       </header>
 

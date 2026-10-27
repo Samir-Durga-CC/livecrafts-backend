@@ -943,3 +943,32 @@ a.nav-item:visited { color: var(--muted); } a.nav-item:hover { color: var(--text
   .us-bar-cell { width: 26%; }
   .us-table th:nth-child(5), .us-table td:nth-child(5) { display: none; }
 }
+
+/* ---- the element editor as a dialog: the Section Gallery's shell (.sg), widened by the plugin (lc:wide) ---- */
+.ep-dialog .sg-head { gap: 12px; }
+.ep-dialog-icon { display: grid; place-items: center; width: 32px; height: 32px; flex: none; border-radius: 9px; background: var(--accent-soft); color: var(--accent); }
+.ep-dialog-title { display: grid; min-width: 0; line-height: 1.25; }
+.ep-dialog-title .sg-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ep-dialog-title small { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ep-dialog-body { flex: 1; min-height: 0; overflow: auto; padding: 20px clamp(16px, 3cqi, 32px) 36px; }
+.ep-dialog-inner { max-width: 1000px; margin: 0 auto; }
+/* With room to spare the groups sit side by side, instead of one long column that runs off the bottom. The element
+   card, the page/site switch, notes and the "ask the assistant" box keep the full width. */
+@container (min-width: 760px) {
+  .ep-dialog .ep { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; align-items: start; }
+  .ep-dialog .ep > :not(.qa-sec), .ep-dialog .ep > .ep-ask { grid-column: 1 / -1; }
+}
+
+/* /usage inside the widget: the same report, sized for a side panel. */
+.us-page.compact { padding: 4px 0 24px; }
+.us-page.compact .us-head { margin-bottom: 14px; }
+.us-page.compact .us-head h1 { font-size: 18px; }
+.us-page.compact .us-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 20px; }
+.us-page.compact .us-tile { padding: 10px 12px; }
+.us-page.compact .us-tile-value { font-size: 20px; }
+.us-page.compact .us-table { font-size: 12.5px; }
+.us-page.compact .us-table th, .us-page.compact .us-table td { padding: 7px 6px; }
+.us-page.compact .us-table th:nth-child(4), .us-page.compact .us-table td:nth-child(4),
+.us-page.compact .us-table th:nth-child(5), .us-page.compact .us-table td:nth-child(5) { display: none; }
+.us-page.compact .us-bar-cell { width: 30%; }
+.us-page.compact .us-days { height: 110px; }

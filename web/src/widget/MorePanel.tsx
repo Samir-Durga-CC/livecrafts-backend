@@ -9,13 +9,15 @@ import { updatable, type PluginList } from "../plugins";
  * The widget's "More" tab: a short menu. Picking an item opens that feature on its own screen (blog post, PageSpeed
  * report, plugin updates), so nothing is crowded; each row shows a small status so you know where to look.
  */
-export function MoreMenu({ siteId, pageUrl, onOpen }: { siteId: string; pageUrl: string; onOpen: (view: "blog" | "speed" | "plugins") => void }) {
+export function MoreMenu({ siteId, pageUrl, onOpen }: { siteId: string; pageUrl: string; onOpen: (view: "blog" | "speed" | "plugins" | "usage") => void }) {
   const speed = useSpeedStatus(siteId, pageUrl);
   const plugins = usePluginStatus(siteId);
-  const items: Array<{ id: "blog" | "speed" | "plugins"; icon: React.ReactNode; title: string; text: string; badge?: React.ReactNode }> = [
+  const usage = useUsageStatus(siteId);
+  const items: Array<{ id: "blog" | "speed" | "plugins" | "usage"; icon: React.ReactNode; title: string; text: string; badge?: React.ReactNode }> = [
     { id: "blog", icon: <Icon.Page size={17} />, title: "New blog post", text: "A full post with SEO and image, as a draft" },
     { id: "speed", icon: <Icon.Gauge size={17} />, title: "PageSpeed report", text: speed.text, badge: speed.badge },
     { id: "plugins", icon: <Icon.Plug size={17} />, title: "Plugin updates", text: plugins.text, badge: plugins.badge },
+    { id: "usage", icon: <Icon.Sparkle size={17} />, title: "Model usage", text: usage.text, badge: usage.badge },
   ];
   return (
     <nav className="more-menu" aria-label="More tools">
@@ -106,4 +108,19 @@ export function BlogPanel({ busy, onBlog, onBlogOptions, onOpenChat, onBack }: {
       </form>
     </div>
   );
+}
+
+/** This website's model calls this month, in one line, so the menu says what the assistant has cost before you open it. */
+function useUsageStatus(siteId: string) {
+  const [d, setD] = useState<{ total: number; calls: number } | null | undefined>(undefined);
+  useEffect(() => {
+    let alive = true;
+    api.modelUsage(undefined, siteId).then((r) => { if (alive) setD({ total: r.totals.total, calls: r.totals.calls }); }).catch(() => { if (alive) setD(null); });
+    return () => { alive = false; };
+  }, [siteId]);
+  const short = (v: number) => (v >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `${Math.round(v / 1e3)}k` : String(v));
+  return {
+    text: d === undefined ? "Tokens the assistant used on this site" : d && d.calls ? `${d.calls.toLocaleString()} calls this month, by model and day` : "No model calls on this site this month",
+    badge: d && d.total ? <span className="more-count">{short(d.total)} tokens</span> : undefined,
+  };
 }
