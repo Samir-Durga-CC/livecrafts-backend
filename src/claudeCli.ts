@@ -213,10 +213,38 @@ function render(o: LanguageModelV4CallOptions, max: number) {
 
 const stripFence = (s: string) => s.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim();
 
+/**
+ * Raw line breaks and tabs inside JSON strings, escaped. The commonest malformed call: a long HTML or CSS value (a whole
+ * section) written over many lines as if it were a file, which JSON does not allow.
+ */
+function repairJson(s: string): string {
+  let out = "", inStr = false, esc = false;
+  for (const ch of s) {
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      else if (ch === "\n") { out += "\\n"; continue; }
+      else if (ch === "\r") { out += "\\r"; continue; }
+      else if (ch === "\t") { out += "\\t"; continue; }
+    } else if (ch === '"') inStr = true;
+    out += ch;
+  }
+  return out;
+}
+const parseJson = (s: string) => { try { return JSON.parse(s); } catch { return JSON.parse(repairJson(s)); } };
+
+/** Why a <tool_call> body could not be read - told to the model, so its second try fixes that mistake. */
+function whyBroken(body: string): string {
+  let o: any;
+  try { o = parseJson(stripFence(body)); } catch (e) { return `not valid JSON (${(e as Error).message})`; }
+  return typeof o?.name === "string" || typeof o?.tool === "string" ? "unreadable" : 'no "name" field';
+}
+
 /** One <tool_call> body -> a real call. Tolerates the other names models use for the arguments. */
 function parseCall(body: string): { name: string; input: unknown } | null {
   try {
-    const o = JSON.parse(stripFence(body));
+    const o = parseJson(stripFence(body));
     const name = typeof o?.name === "string" ? o.name : typeof o?.tool === "string" ? o.tool : "";
     if (!name) return null;
     const raw = o.input ?? o.arguments ?? o.args ?? o.parameters ?? o.params ?? {};
@@ -240,14 +268,15 @@ function objectAt(s: string, from: number): string | null {
   return null;
 }
 
-export function parseReply(raw: string): { text: string; calls: { name: string; input: unknown }[]; broken: number } {
+export function parseReply(raw: string): { text: string; calls: { name: string; input: unknown }[]; broken: number; reasons: string[] } {
   const { text } = cutFabricated(raw); // anything the model wrote as if it were a tool result is dropped
   const calls: { name: string; input: unknown }[] = [];
+  const reasons: string[] = [];
   let broken = 0;
 
   let plain = text.replace(CALL_RE, (_m, body: string) => {
     const c = parseCall(body);
-    if (c) calls.push(c); else broken++;
+    if (c) calls.push(c); else { broken++; reasons.push(whyBroken(body)); }
     return "";
   });
 
@@ -256,7 +285,7 @@ export function parseReply(raw: string): { text: string; calls: { name: string; 
   if (open.at !== -1) {
     const body = objectAt(plain, open.at + open.len);
     const c = body ? parseCall(body) : null;
-    if (c) calls.push(c); else broken++;
+    if (c) calls.push(c); else { broken++; reasons.push(body ? whyBroken(body) : "cut off before its JSON object closed"); }
     plain = plain.slice(0, open.at);
   }
 
@@ -264,14 +293,38 @@ export function parseReply(raw: string): { text: string; calls: { name: string; 
   // Some replies are the bare JSON of a single call, with no block around it.
   if (!calls.length && !broken && /^\{[\s\S]*\}$/.test(plain)) {
     const c = parseCall(plain);
-    if (c) return { text: "", calls: [c], broken: 0 };
+    if (c) return { text: "", calls: [c], broken: 0, reasons };
   }
-  return { text: plain, calls, broken };
+  return { text: plain, calls, broken, reasons };
 }
 
 /** A malformed call must never pass as a finished answer: say so, so the step is visibly wrong instead of silently empty. */
 export const brokenNote = (broken: number) =>
-  `(${broken} tool call${broken === 1 ? " was" : "s were"} written in the wrong format and did NOT run - nothing was changed. Let me write ${broken === 1 ? "it" : "them"} again correctly.)`;
+  `(${broken} tool call${broken === 1 ? " was" : "s were"} written in the wrong format and did NOT run - nothing was changed.)`;
+
+/**
+ * Appended to the transcript for the second try. A reply whose only call was unreadable used to end the step - and with
+ * it the job - right after the model had said what it was about to do, leaving the work half done (an old section
+ * removed, its replacement never placed).
+ */
+function retryNote(reasons: string[]): string {
+  return [
+    "",
+    "YOUR LAST TRY AT THIS REPLY FAILED: its tool call could not be read, so NOTHING ran and nothing changed.",
+    ...reasons.map((r) => `- the block was ${r}`),
+    `The person has already seen the text of that try. Write ONLY the corrected ${OPEN} block(s) now, no text.`,
+    `Each block holds ONE JSON object {"name": "...", "input": {...}}: inside strings write a double quote as \\" and a line break as \\n; no comments, no trailing commas.`,
+  ].join("\n");
+}
+/** One retry: a second unreadable call is reported, not retried again. */
+const RETRIES = 1;
+/** Token counts of two tries, added up (the retry is paid for too). */
+const addUsage = (a: any, b: any) => {
+  if (!a || !b) return a ?? b ?? null;
+  const out: any = { ...a };
+  for (const [k, v] of Object.entries(b)) out[k] = typeof v === "number" && typeof a[k] === "number" ? a[k] + v : v;
+  return out;
+};
 
 const usageOf = (u: any, costUsd?: number): LanguageModelV4Usage => {
   const n = (v: any) => (typeof v === "number" ? v : undefined);
@@ -437,11 +490,11 @@ export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}
   const maxTool = settings.maxToolResultChars ?? DEFAULTS.maxToolResultChars;
 
   /** Writes the system prompt where the CLI can read it and builds this step's command line. */
-  const prepare = (o: LanguageModelV4CallOptions, stream: boolean) => {
+  const prepare = (o: LanguageModelV4CallOptions, stream: boolean, retry?: string) => {
     const r = render(o, maxTool);
     const file = path.join(scratch(), `sys-${id("")}.txt`);
     fs.writeFileSync(file, r.system, "utf8");
-    const input = stdinFor(r.transcript, r.images);
+    const input = stdinFor(retry ? `${r.transcript}\n${retry}` : r.transcript, r.images);
     const args = [
       ...baseArgs(modelId, file, settings),
       "--output-format", stream ? "stream-json" : "json",
@@ -470,25 +523,35 @@ export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}
     supportedUrls: {},
 
     async doGenerate(o): Promise<LanguageModelV4GenerateResult> {
-      const p = prepare(o, false);
-      let res: any;
-      try {
-        const out = await run(await bin(), p.args, p.stdin, { timeoutMs, abortSignal: o.abortSignal });
-        res = resultOf(out.stdout, out.stderr, out.code);
-        if (res.is_error || res.subtype === "error_during_execution") throw cliError(String(res.result ?? res.error ?? out.stderr), out.code);
-      } finally { try { fs.unlinkSync(p.file); } catch { /* best effort */ } }
+      let res: any, retry: string | undefined, usage: any = null, cost = 0, said = "";
+      let reply: ReturnType<typeof parseReply>, warnings: ReturnType<typeof prepare>["warnings"] = [];
+      for (let attempt = 0; ; attempt++) {
+        const p = prepare(o, false, retry);
+        warnings = p.warnings;
+        try {
+          const out = await run(await bin(), p.args, p.stdin, { timeoutMs, abortSignal: o.abortSignal });
+          res = resultOf(out.stdout, out.stderr, out.code);
+          if (res.is_error || res.subtype === "error_during_execution") throw cliError(String(res.result ?? res.error ?? out.stderr), out.code);
+        } finally { try { fs.unlinkSync(p.file); } catch { /* best effort */ } }
+        usage = addUsage(usage, res.usage);
+        cost += typeof res.total_cost_usd === "number" ? res.total_cost_usd : 0;
+        reply = parseReply(String(res.result ?? ""));
+        said = [said, reply.text].filter(Boolean).join("\n\n");
+        if (!reply.broken || reply.calls.length || attempt >= RETRIES) break;
+        retry = retryNote(reply.reasons);
+      }
 
-      const { text, calls, broken } = parseReply(String(res.result ?? ""));
+      const { calls, broken } = reply;
       const content: LanguageModelV4Content[] = [];
-      const say = broken && !calls.length ? `${text}\n\n${brokenNote(broken)}`.trim() : text;
+      const say = broken && !calls.length ? `${said}\n\n${brokenNote(broken)}`.trim() : said;
       if (say) content.push({ type: "text", text: say });
       for (const c of calls) content.push({ type: "tool-call", toolCallId: id("call_"), toolName: c.name, input: JSON.stringify(c.input ?? {}) });
 
       return {
         content,
         finishReason: { unified: calls.length ? "tool-calls" : "stop", raw: res.stop_reason ?? undefined },
-        usage: usageOf(res.usage, res.total_cost_usd),
-        warnings: p.warnings,
+        usage: usageOf(usage, cost || undefined),
+        warnings,
         response: { id: res.session_id, modelId, timestamp: new Date() },
       };
     },
@@ -503,14 +566,18 @@ export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}
         start: async (ctrl) => {
           ctrl.enqueue({ type: "stream-start", warnings: p.warnings });
 
-          const calls: { name: string; input: unknown }[] = [];
-          let open = false, held = "", full = "", errored = "", line = "", broken = 0;
+          // Per try (see retryNote): what the model wrote this time. `open` and the totals span both tries.
+          let calls: { name: string; input: unknown }[] = [], reasons: string[] = [];
+          let held = "", full = "", errored = "", line = "", broken = 0;
           let fabricating = false; // the model started writing its own "tool results": everything after is dropped
-          let usage: any = null, cost: number | undefined, stopRaw: string | undefined, sessionId: string | undefined;
+          let usage: any = null, cost: number | undefined;
+          let open = false, sep = "", stopRaw: string | undefined, sessionId: string | undefined;
+          let totalUsage: any = null, totalCost = 0;
 
           const emit = (t: string) => {
             if (!t) return;
             if (!open) { ctrl.enqueue({ type: "text-start", id: textId }); open = true; }
+            if (sep) { t = sep + t; sep = ""; }
             ctrl.enqueue({ type: "text-delta", id: textId, delta: t });
           };
           /**
@@ -540,8 +607,9 @@ export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}
               const e = first(CLOSES, held, s.at + s.len);
               if (e.at === -1) { feed(held.slice(0, s.at)); held = held.slice(s.at); return; } // the block is still arriving
               feed(held.slice(0, s.at));
-              const c = parseCall(held.slice(s.at + s.len, e.at));
-              if (c) calls.push(c); else broken++;
+              const body = held.slice(s.at + s.len, e.at);
+              const c = parseCall(body);
+              if (c) calls.push(c); else { broken++; reasons.push(whyBroken(body)); }
               held = held.slice(e.at + e.len);
             }
             let keep = 0; // whatever could still grow into an opening tag
@@ -577,34 +645,47 @@ export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}
             }
           };
 
+          const files = [p.file];
           try {
-            const out = await run(await bin(), p.args, p.stdin, { timeoutMs, abortSignal: o.abortSignal }, onEvent);
-            if (errored) throw cliError(errored, out.code);
-            if (out.code !== 0 && !full.trim() && !calls.length) throw cliError(out.stderr || "the CLI exited without an answer", out.code);
-            if (held) {
-              // A block that never closed: take the call out of it by counting braces, and never show the tag as text.
-              const o = first(OPENS, held);
-              if (o.at === -1) feed(held);
-              else {
-                feed(held.slice(0, o.at));
-                const body = objectAt(held, o.at + o.len);
-                const c = body ? parseCall(body) : null;
-                if (c) calls.push(c); else broken++;
+            let args = p.args, stdin = p.stdin;
+            for (let attempt = 0; ; attempt++) {
+              calls = []; reasons = []; held = ""; full = ""; errored = ""; line = ""; broken = 0; fabricating = false; usage = null; cost = undefined;
+              const out = await run(await bin(), args, stdin, { timeoutMs, abortSignal: o.abortSignal }, onEvent);
+              totalUsage = addUsage(totalUsage, usage);
+              totalCost += cost ?? 0;
+              if (errored) throw cliError(errored, out.code);
+              if (out.code !== 0 && !full.trim() && !calls.length) throw cliError(out.stderr || "the CLI exited without an answer", out.code);
+              if (held) {
+                // A block that never closed: take the call out of it by counting braces, and never show the tag as text.
+                const at = first(OPENS, held);
+                if (at.at === -1) feed(held);
+                else {
+                  feed(held.slice(0, at.at));
+                  const body = objectAt(held, at.at + at.len);
+                  const c = body ? parseCall(body) : null;
+                  if (c) calls.push(c); else { broken++; reasons.push(body ? whyBroken(body) : "cut off before its JSON object closed"); }
+                }
+                held = "";
               }
-              held = "";
+              flush();
+              if (!broken || calls.length || attempt >= RETRIES) break;
+              // Only the call was wrong: ask again for just the call, instead of ending the step with the work half done.
+              const again = prepare(o, true, retryNote(reasons));
+              files.push(again.file);
+              args = again.args; stdin = again.stdin;
+              if (open) sep = "\n\n";
             }
-            flush();
             if (broken && !calls.length) emit((open ? "\n\n" : "") + brokenNote(broken));
             if (open) ctrl.enqueue({ type: "text-end", id: textId });
             for (const c of calls) ctrl.enqueue({ type: "tool-call", toolCallId: id("call_"), toolName: c.name, input: JSON.stringify(c.input ?? {}) });
             ctrl.enqueue({ type: "response-metadata", id: sessionId, modelId, timestamp: new Date() });
-            ctrl.enqueue({ type: "finish", usage: usageOf(usage, cost), finishReason: { unified: calls.length ? "tool-calls" : "stop", raw: stopRaw } });
+            ctrl.enqueue({ type: "finish", usage: usageOf(totalUsage, totalCost || undefined), finishReason: { unified: calls.length ? "tool-calls" : "stop", raw: stopRaw } });
           } catch (e) {
             if (open) ctrl.enqueue({ type: "text-end", id: textId });
             ctrl.enqueue({ type: "error", error: e });
-            ctrl.enqueue({ type: "finish", usage: usageOf(usage, cost), finishReason: { unified: "error", raw: stopRaw } });
+            ctrl.enqueue({ type: "finish", usage: usageOf(totalUsage, totalCost || undefined), finishReason: { unified: "error", raw: stopRaw } });
           } finally {
-            try { fs.unlinkSync(p.file); } catch { /* best effort */ }
+            for (const f of files) { try { fs.unlinkSync(f); } catch { /* best effort */ } }
             ctrl.close();
           }
         },

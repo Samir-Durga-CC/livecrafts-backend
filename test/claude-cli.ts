@@ -121,11 +121,78 @@ check("a malformed call is reported, never passed off as an answer", () => {
   assert.equal(r.calls.length, 0);
 });
 
+// The commonest malformed call: a section's HTML written over several lines inside a JSON string.
+check("raw line breaks inside a JSON string are repaired, not rejected", () => {
+  const r = parseReply('<tool_call>{"name":"place_component","input":{"html":"<section>\n\t<h2>What Our Clients Say</h2>\n</section>"}}</tool_call>');
+  assert.equal(r.broken, 0);
+  assert.equal(r.calls.length, 1);
+  assert.equal((r.calls[0].input as any).html, "<section>\n\t<h2>What Our Clients Say</h2>\n</section>");
+});
+
+check("a malformed call says why", () => {
+  const r = parseReply('<tool_call>{"name":"t","input":{oops}}</tool_call>');
+  assert.match(r.reasons[0], /not valid JSON/);
+});
+
 check("ordinary text with a '#' heading is left alone", () => {
   const r = parseReply("Here is the plan:\n\n## What I will change\n- the heading\n");
   assert.match(r.text, /What I will change/);
   assert.equal(r.calls.length, 0);
 });
+
+console.log("an unreadable call is asked for again");
+
+// A stand-in CLI: its first answer holds an unreadable call; once the transcript says the last try failed, a good one.
+// The real agent used to stop after the first answer - the job "completed" with an old section removed and its
+// replacement never placed.
+await (async () => {
+  const fs = await import("node:fs"), os = await import("node:os"), path = await import("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lc-fakecli-"));
+  const script = path.join(dir, "fake.mjs");
+  fs.writeFileSync(script, `
+let input = ""; process.stdin.on("data", (d) => input += d); process.stdin.on("end", () => {
+  const retried = input.includes("YOUR LAST TRY AT THIS REPLY FAILED");
+  const text = retried ? '<tool_call>{"name":"place_component","input":{"id":"testimonials-slider"}}</tool_call>'
+    : 'Placing the slider now.\\n<tool_call>{"name":"place_component","input":{oops}}</tool_call>';
+  const usage = { input_tokens: 10, output_tokens: 5 };
+  if (process.argv.includes("stream-json")) console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text }], usage } }));
+  console.log(JSON.stringify({ type: "result", result: text, usage, total_cost_usd: 0.01 }));
+});`);
+  let bin = path.join(dir, "fake");
+  if (process.platform === "win32") { bin += ".cmd"; fs.writeFileSync(bin, `@node "${script}" %*\r\n`); }
+  else { fs.writeFileSync(bin, `#!/bin/sh\nexec node "${script}" "$@"\n`); fs.chmodSync(bin, 0o755); }
+
+  const model: any = claudeCliModel("sonnet", { bin });
+  const prompt = [{ role: "user", content: [{ type: "text", text: "add Nitin to the testimonials" }] }];
+  const tools = [{ type: "function", name: "place_component", description: "place", inputSchema: { type: "object" } }];
+
+  const g = await model.doGenerate({ prompt, tools });
+  const gCalls = g.content.filter((c: any) => c.type === "tool-call");
+  const gText = g.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
+  check("doGenerate: the second try's call comes out, and the step goes on", () => {
+    assert.equal(gCalls.length, 1);
+    assert.equal(JSON.parse(gCalls[0].input).id, "testimonials-slider");
+    assert.equal(g.finishReason.unified, "tool-calls");
+    assert.ok(!/wrong format/.test(gText), "the failure note was shown although the retry worked");
+    assert.equal(g.usage.outputTokens.total, 10, "the retry's tokens were not counted");
+  });
+
+  const { stream } = await model.doStream({ prompt, tools });
+  let streamed = "", calls: any[] = [], finish = "";
+  for await (const part of stream as any) {
+    if (part.type === "text-delta") streamed += part.delta;
+    if (part.type === "tool-call") calls.push(part);
+    if (part.type === "finish") finish = part.finishReason.unified;
+  }
+  check("doStream: the second try's call comes out, and the step goes on", () => {
+    assert.equal(calls.length, 1);
+    assert.equal(JSON.parse(calls[0].input).id, "testimonials-slider");
+    assert.equal(finish, "tool-calls");
+    assert.match(streamed, /Placing the slider now/);
+    assert.ok(!/wrong format|tool_call/.test(streamed), `unexpected text: ${streamed}`);
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+})();
 
 console.log("the provider registry");
 
