@@ -996,3 +996,24 @@ a.nav-item:visited { color: var(--muted); } a.nav-item:hover { color: var(--text
    Close buttons stay on screen. Without min-width:0 it kept its natural width and pushed Close past the edge. */
 .sg-search { min-width: 0; }
 .sg-head > .w-icon { flex: none; }
+
+/* ---------------------------------------------------------------- Integrations → AI connections (Connections.tsx)
+   One card per platform, closed until you pick it: the steps for the platform you are connecting are the only ones
+   on screen. Backend app only - the chat widget never renders this. */
+.conn-grid { display: flex; flex-direction: column; gap: 8px; }
+.conn-card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); overflow: hidden; }
+.conn-card.on { border-color: var(--accent-line); box-shadow: var(--shadow-xs); }
+.conn-top { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 13px; background: none; border: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.conn-top:hover { background: var(--hover); }
+.conn-top b { display: block; font-size: 14px; }
+.conn-top small { display: block; color: var(--muted); font-size: 12px; margin-top: 1px; }
+.conn-card.on .conn-top svg:last-child { transform: rotate(90deg); }
+.conn-top svg:last-child { color: var(--muted); transition: transform .12s ease; flex: none; }
+.conn-pill { flex: none; font-size: 11.5px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.conn-pill.ok { color: var(--ok); border-color: var(--ok-soft); background: var(--ok-soft); }
+.conn-body { padding: 2px 13px 13px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
+.conn-body > p:first-child { margin-top: 10px; }
+.conn-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--text); }
+.conn-steps li::marker { color: var(--muted); font-variant-numeric: tabular-nums; }
+.conn-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.conn-card .prov-models { padding-left: 0; }

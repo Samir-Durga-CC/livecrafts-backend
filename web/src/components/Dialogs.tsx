@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, setToken, getToken } from "../api";
 import { Icon } from "../icons";
-import type { HostingerHealth, ProviderInfo, Site } from "../types";
+import type { HostingerHealth, Site } from "../types";
+import { ConnectionsSection } from "./Connections";
 
 export function SiteDialog({ onClose, onAdded }: { onClose: () => void; onAdded: (s: Site) => void }) {
   const [f, setF] = useState({ name: "", url: "", username: "", appPassword: "" });
@@ -47,11 +48,11 @@ export function IntegrationsDialog({ sites, onClose, onSites, initialTab = "mode
     <div className="overlay" onMouseDown={onClose}>
       <div className="dialog wide" onMouseDown={(e) => e.stopPropagation()}>
         <div className="rtabs dialog-tabs" role="tablist">
-          <button role="tab" className={tab === "models" ? "on" : ""} onClick={() => setTab("models")}><Icon.Sparkle size={15} /> AI models</button>
+          <button role="tab" className={tab === "models" ? "on" : ""} onClick={() => setTab("models")}><Icon.Sparkle size={15} /> AI connections</button>
           <button role="tab" className={tab === "hostinger" ? "on" : ""} onClick={() => setTab("hostinger")}><Icon.Plug size={15} /> Hostinger</button>
           <button role="tab" className={tab === "pagespeed" ? "on" : ""} onClick={() => setTab("pagespeed")}><Icon.Gauge size={15} /> PageSpeed</button>
         </div>
-        {tab === "models" ? <ModelsSection /> : tab === "hostinger" ? <HostingerSection sites={sites} onSites={onSites} /> : <PagespeedSection />}
+        {tab === "models" ? <ConnectionsSection /> : tab === "hostinger" ? <HostingerSection sites={sites} onSites={onSites} /> : <PagespeedSection />}
         <div className="dialog-actions"><button className="btn" onClick={onClose}>Close</button></div>
       </div>
     </div>
@@ -102,130 +103,6 @@ function PagespeedSection() {
       )}
       {err && <div className="banner error">{err}</div>}
       {note && <div className="banner ok">{note}</div>}
-    </>
-  );
-}
-
-/**
- * AI models: one API key per provider (stored on the backend only) + a real test call.
- * The model per site is chosen in WordPress (Settings → Livecrafts Assistant) or per chat; empty = the default.
- */
-function ModelsSection() {
-  const [list, setList] = useState<ProviderInfo[] | null>(null);
-  const [def, setDef] = useState("");
-  const [open, setOpen] = useState<string>("");
-  const [form, setForm] = useState({ apiKey: "", baseUrl: "", model: "" });
-  const [busy, setBusy] = useState("");
-  const [msg, setMsg] = useState<{ id: string; ok: boolean; text: string } | null>(null);
-  const [newModel, setNewModel] = useState<Record<string, string>>({});
-
-  useEffect(() => { api.integrations().then((r) => { setList(r.models); setDef(r.defaultModel); }).catch((e) => setMsg({ id: "", ok: false, text: e.message })); }, []);
-
-  /** Looks at the Claude CLI on the backend machine again, so signing in there needs no restart and no reload. */
-  async function recheck() {
-    setBusy("recheck"); setMsg(null);
-    try {
-      const r = await api.recheckProviders();
-      setList(r.models);
-      const cli = r.models.find((x) => x.id === "claudecli");
-      setMsg({ id: "claudecli", ok: !!cli?.ready, text: cli?.ready ? `The Claude CLI is ready${cli.cli?.version ? ` (${cli.cli.version})` : ""} - no API key needed.` : (cli?.fix ?? cli?.reason ?? "The Claude CLI still cannot answer.") });
-    } catch (e) { setMsg({ id: "claudecli", ok: false, text: (e as Error).message }); }
-    finally { setBusy(""); }
-  }
-
-  /** Adds a model name to a provider after one real request proves the key can use it. */
-  async function addModel(p: ProviderInfo) {
-    const name = (newModel[p.id] ?? "").trim();
-    if (!name) return;
-    setBusy(`add:${p.id}`); setMsg(null);
-    try {
-      const r = await api.addProviderModel(p.id, name);
-      setList(r.models); setNewModel({ ...newModel, [p.id]: "" });
-      setMsg({ id: p.id, ok: true, text: `${name} works. Pick it as ${p.id}:${name}.` });
-    } catch (e) { setMsg({ id: p.id, ok: false, text: (e as Error).message }); }
-    finally { setBusy(""); }
-  }
-  async function dropModel(p: ProviderInfo, model: string) {
-    setBusy(`add:${p.id}`);
-    try { const r = await api.removeProviderModel(p.id, model); setList(r.models); } finally { setBusy(""); }
-  }
-
-  async function save(p: ProviderInfo) {
-    setBusy(p.id); setMsg(null);
-    try {
-      const r = await api.saveProvider(p.id, { apiKey: form.apiKey.trim() || undefined, baseUrl: p.needsBaseUrl ? form.baseUrl.trim() : undefined, testModel: form.model.trim() || p.examples[0] });
-      setList(r.models); setForm({ apiKey: "", baseUrl: "", model: "" }); setOpen("");
-      setMsg({ id: p.id, ok: true, text: `${p.name} works${r.test ? ` (answered in ${(r.test.ms / 1000).toFixed(1)} s)` : ""}. Use it as ${p.id}:${form.model.trim() || p.examples[0]}` });
-    } catch (e) { setMsg({ id: p.id, ok: false, text: (e as Error).message }); }
-    finally { setBusy(""); }
-  }
-  async function remove(p: ProviderInfo) {
-    if (!confirm(`Remove the ${p.name} key from the backend?`)) return;
-    setBusy(p.id);
-    try { const r = await api.removeProvider(p.id); setList(r.models); } finally { setBusy(""); }
-  }
-
-  return (
-    <>
-      <div className="int-head">
-        <span className="int-logo"><Icon.Sparkle size={18} /></span>
-        <div className="grow"><h2>AI models</h2><p className="muted small">Add a key for each AI provider you want to use. Keys stay on your backend and are never shown again.</p></div>
-      </div>
-      <div className="int-facts"><div><span>Default model</span><b><code>{def || "…"}</code> <small className="muted">(LC_MODEL in the backend .env)</small></b></div></div>
-      <div className="prov-list">
-        {!list && <div className="diff-loading"><span className="spin" /> Loading…</div>}
-        {list?.map((p) => (
-          <div key={p.id} className="prov">
-            <div className="prov-top">
-              <span className={`sc-dot ${p.ready ? "ok" : "off"}`} />
-              <div className="grow"><b>{p.name}</b><small>{p.ready
-                ? `${p.keySource === "env" ? "Key from the backend .env" : p.keySource === "cli" ? `Signed in on this machine${p.cli?.authMethod ? ` (${p.cli.authMethod})` : ""} - no API key needed` : p.id === "custom" ? `Address: ${p.baseUrl}` : "Key saved on the backend"} · e.g. `
-                // "Add it in Integrations" is the right thing to say in the model picker, but not here - this IS
-                // Integrations. Providers that sign themselves in keep their own instruction.
-                : `${p.needsNoKey ? p.fix ?? p.reason : `${p.reason ?? "Not set up"} Get one at ${p.keyHelp}.`} · `}<code>{p.id}:{p.models[0] ?? p.examples[0]}</code></small></div>
-              {/* The CLI signs itself in, so it has no key to save or remove - only a state to look at again. */}
-              {p.needsNoKey
-                ? <button className="rbtn" disabled={!!busy} onClick={() => void recheck()}>{busy === "recheck" ? "Checking…" : "Check again"}</button>
-                : <>
-                    {p.ready && p.keySource !== "env" && <button className="rbtn danger" disabled={!!busy} onClick={() => void remove(p)}>Remove</button>}
-                    <button className="rbtn" onClick={() => { setOpen(open === p.id ? "" : p.id); setForm({ apiKey: "", baseUrl: p.baseUrl ?? "", model: p.examples[0] }); setMsg(null); }}>{p.ready ? "Change" : "Set up"}</button>
-                  </>}
-            </div>
-            {/* Which models this provider can be asked for. A key is not limited to the names we shipped, so any
-                name can be added here - it is only kept once one real request proves it answers. */}
-            {p.ready && (
-              <div className="prov-models">
-                {p.models.map((mdl) => (
-                  <span key={mdl} className="chip">
-                    <code>{mdl}</code>
-                    {!p.examples.includes(mdl) && <button className="chip-x" title="Remove this model" disabled={!!busy} onClick={() => void dropModel(p, mdl)}>×</button>}
-                  </span>
-                ))}
-                <form className="chip-add" onSubmit={(e) => { e.preventDefault(); void addModel(p); }}>
-                  <input value={newModel[p.id] ?? ""} onChange={(e) => setNewModel({ ...newModel, [p.id]: e.target.value })} placeholder="add a model name…" aria-label={`Add a model for ${p.name}`} />
-                  <button className="rbtn" disabled={!!busy || !(newModel[p.id] ?? "").trim()}>{busy === `add:${p.id}` ? "Testing…" : "Add"}</button>
-                </form>
-              </div>
-            )}
-            {open === p.id && (
-              <form className="sc-form" onSubmit={(e) => { e.preventDefault(); void save(p); }}>
-                {p.needsBaseUrl && <label>API address <input value={form.baseUrl} onChange={(e) => setForm({ ...form, baseUrl: e.target.value })} placeholder="https://api.example.com/v1" /></label>}
-                {p.keySource !== "env" && <label>API key {p.id === "custom" && <small className="muted">(optional)</small>}<input type="password" value={form.apiKey} onChange={(e) => setForm({ ...form, apiKey: e.target.value })} placeholder={p.ready ? "leave empty to keep the current key" : "paste the key"} autoComplete="off" /></label>}
-                <label>Test with model <input value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} placeholder={p.examples[0]} list={`ex-${p.id}`} />
-                  <datalist id={`ex-${p.id}`}>{p.models.map((x) => <option key={x} value={x} />)}</datalist></label>
-                <p className="muted small">Where to get a key: {p.keyHelp}. Saving makes one tiny real request to check it.</p>
-                <div className="dialog-actions left">
-                  <button className="btn primary sm" disabled={!!busy || (!p.ready && !form.apiKey.trim() && p.id !== "custom") || (p.needsBaseUrl && !form.baseUrl.trim())}>{busy === p.id ? "Testing…" : "Save & test"}</button>
-                  <button type="button" className="btn sm" onClick={() => setOpen("")}>Cancel</button>
-                </div>
-              </form>
-            )}
-            {msg?.id === p.id && <div className={`banner ${msg.ok ? "ok" : "error"}`}>{msg.text}</div>}
-          </div>
-        ))}
-      </div>
-      {msg && !msg.id && <div className="banner error">{msg.text}</div>}
-      <p className="muted small">Pick the model for a site in WordPress → Settings → Livecrafts Assistant (format <code>provider:model</code>), or per chat with the model button.</p>
     </>
   );
 }
