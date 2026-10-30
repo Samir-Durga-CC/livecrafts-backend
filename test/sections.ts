@@ -50,7 +50,8 @@ assert.match(info.places[1].label, /Welcome to Aeromatic/);
 const r = await addSection(el.bridge, { id: "hero-split", postId: 7, place: "root:0" });
 assert.equal(r.builder, "elementor");
 assert.deepEqual(el.writes.map((w) => w.kind), ["css.block", "css.block", "el.insert"]);
-const node = JSON.parse(el.writes[2].value);
+const node = el.writes[2].value; // the node itself, not JSON text (see place.ts)
+assert.equal(typeof node, "object", "el.insert gets the Elementor node, not a string");
 assert.equal(node.elType, "container");
 assert.equal(node.elements[0].widgetType, "text-editor");
 assert.equal(el.writes[2].target, "root:0");
@@ -58,7 +59,7 @@ ok("Elementor: CSS once + a container with a text editor, at the chosen place");
 
 const old = fakeBridge({ map: { builders: { elementor: true }, elementor_outline: [] }, content: "", containers: false });
 await addSection(old.bridge, { id: "cta-band", postId: 7 });
-assert.equal(JSON.parse(old.writes[2].value).elType, "section", "sites without containers get section > column");
+assert.equal(old.writes[2].value.elType, "section", "sites without containers get section > column");
 ok("Elementor without containers: section > column");
 
 const blocks = fakeBridge({ map: { builders: {} }, content: "<!-- wp:heading -->\n<h2>About</h2>\n<!-- /wp:heading -->\n\n<!-- wp:paragraph -->\n<p>Text</p>\n<!-- /wp:paragraph -->" });
