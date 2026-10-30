@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { claudeCliModel, claudeCliStatus, parseReply } from "../src/claudeCli.js";
+import { asBase64, claudeCliModel, claudeCliStatus, parseReply } from "../src/claudeCli.js";
 import { PROVIDER_IDS, parseModelSpec, providerStatus, resolveModel } from "../src/models.js";
 import { secrets } from "../src/secrets.js";
 
@@ -13,6 +13,26 @@ let failed = 0;
 const check = (name: string, fn: () => void) => {
   try { fn(); console.log(`  ok  ${name}`); } catch (e) { failed++; console.error(`  FAIL ${name}: ${(e as Error).message}`); }
 };
+
+console.log("images reaching the CLI");
+
+// vision.ts hands an image over as { type: "data", data: <bytes> }. That shape used to fall through to "a URL the
+// CLI cannot fetch", so every screenshot the agent took was silently dropped and it was told the picture had only
+// arrived as a link.
+check("bytes wrapped by vision.ts are attached", () => {
+  const bytes = new Uint8Array([137, 80, 78, 71]);
+  assert.equal(asBase64({ type: "data", data: bytes }), Buffer.from(bytes).toString("base64"));
+});
+check("raw bytes are attached", () => {
+  const bytes = new Uint8Array([1, 2, 3]);
+  assert.equal(asBase64(bytes), Buffer.from(bytes).toString("base64"));
+});
+check("a data: URL keeps only its payload", () => {
+  assert.equal(asBase64("data:image/png;base64,AAEC"), "AAEC");
+});
+check("a real URL is still reported as not attachable", () => {
+  assert.equal(asBase64(new URL("https://example.com/shot.png")), null);
+});
 
 console.log("parsing the CLI's replies");
 

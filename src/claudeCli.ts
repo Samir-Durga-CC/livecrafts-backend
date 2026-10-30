@@ -116,10 +116,14 @@ function toolSection(tools: LanguageModelV4CallOptions["tools"], choice: Languag
 
 type Img = { mediaType: string; data: string };
 
-const asBase64 = (d: unknown): string | null => {
+export const asBase64 = (d: unknown): string | null => {
   if (typeof d === "string") return d.startsWith("data:") ? d.slice(d.indexOf(",") + 1) : d;
   if (d instanceof Uint8Array) return Buffer.from(d).toString("base64");
   if (d instanceof ArrayBuffer) return Buffer.from(d).toString("base64");
+  // vision.ts hands an image over as { type: "data", data: <bytes> }, which is bytes wrapped one level deeper than
+  // the shapes above. Without this the bytes fell through to "a URL the CLI cannot fetch", so every screenshot the
+  // agent took was dropped and it was told the picture had only arrived as a link - while looking straight at it.
+  if (d && typeof d === "object" && "data" in d) return asBase64((d as { data: unknown }).data);
   return null; // a URL: the CLI cannot fetch it, so it is reported as skipped
 };
 
