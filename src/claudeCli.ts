@@ -127,10 +127,26 @@ export const asBase64 = (d: unknown): string | null => {
   return null; // a URL: the CLI cannot fetch it, so it is reported as skipped
 };
 
-/** The AI SDK prompt becomes: the system prompt (a file), one transcript (stdin) and the recent images. */
+type Block = { type: "text"; text: string } | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+
+/**
+ * The AI SDK prompt becomes: the system prompt (a file) and the transcript (stdin) as one content block per message,
+ * each image right after its message.
+ *
+ * Block by block, and nothing after the last message, because that is what lets Anthropic's prompt cache work across
+ * steps: a step's blocks are the previous step's blocks plus the new ones, so everything already sent is read back
+ * from the cache instead of processed again. Sent as one text block ending in an instruction, every step rewrote the
+ * whole transcript into the cache - measured: a 56k-token step read 0 tokens from the cache, the same step split
+ * read 56k. The instruction that used to close the transcript is at the end of the system prompt instead.
+ */
 function render(o: LanguageModelV4CallOptions, max: number) {
   const system: string[] = [];
-  const lines: string[] = [];
+  const blocks: Block[] = [{ type: "text", text: [
+    "<transcript>",
+    `Everything in this message already happened (oldest first). "ASSISTANT (you)" are your own earlier replies, and`,
+    `every "TOOL RESULT" is real output that was handed to you. You did not write any of it.`,
+  ].join("\n") }];
+  const add = (text: string) => { blocks.push({ type: "text", text }); };
   const images: Img[] = [];
   const warnings: SharedV4Warning[] = [];
   const cut = (s: string) => (s.length > max ? `${s.slice(0, max)}\n...[cut: ${s.length - max} more characters]` : s);
@@ -141,18 +157,20 @@ function render(o: LanguageModelV4CallOptions, max: number) {
 
     if (m.role === "user") {
       const parts: string[] = [];
+      const mine: Img[] = [];
       for (const p of m.content) {
         if (p.type === "text") parts.push(p.text);
         else if (p.type === "file" && p.mediaType?.startsWith("image/")) {
           const data = asBase64(p.data);
-          if (data) { images.push({ mediaType: p.mediaType, data }); parts.push(`[image ${images.length} - attached at the end of this message]`); }
+          if (data) { images.push({ mediaType: p.mediaType, data }); mine.push({ mediaType: p.mediaType, data }); parts.push(`[image ${images.length} - attached right after this text]`); }
           else {
             parts.push("[an image was only given as a link, so it is not attached]");
             warnings.push({ type: "unsupported", feature: "image URLs", details: "The Claude CLI provider can only attach image bytes." });
           }
         } else if (p.type === "file") parts.push(`[file ${p.filename ?? ""} (${p.mediaType}) - not attached]`);
       }
-      lines.push(`## USER\n${parts.join("\n")}`);
+      add(`## USER\n${parts.join("\n")}`);
+      for (const im of mine) blocks.push({ type: "image", source: { type: "base64", media_type: im.mediaType, data: im.data } });
       continue;
     }
 
@@ -163,7 +181,7 @@ function render(o: LanguageModelV4CallOptions, max: number) {
         else if (p.type === "tool-call") parts.push(`${OPEN}{"name":"${p.toolName}","input":${out(p.input)}}${CLOSE}`);
         else if (p.type === "tool-result") parts.push(`TOOL RESULT (${p.toolName}): ${cut(out((p.output as any)?.value ?? p.output))}`);
       }
-      if (parts.length) lines.push(`## ASSISTANT (you)\n${parts.join("\n")}`);
+      if (parts.length) add(`## ASSISTANT (you)\n${parts.join("\n")}`);
       continue;
     }
 
@@ -180,7 +198,7 @@ function render(o: LanguageModelV4CallOptions, max: number) {
         parts.push(`APPROVAL: the person ${p.approved ? "approved" : "refused"} the call${p.reason ? ` (${p.reason})` : ""}`);
       }
     }
-    lines.push(`## TOOL RESULTS\n${parts.join("\n")}`);
+    add(`## TOOL RESULTS\n${parts.join("\n")}`);
   }
 
   const unsupported: [string, unknown][] = [
@@ -192,21 +210,17 @@ function render(o: LanguageModelV4CallOptions, max: number) {
   }
   if (o.responseFormat?.type === "json") warnings.push({ type: "unsupported", feature: "responseFormat json", details: "Ask for JSON in the prompt instead." });
 
-  // The history goes inside <transcript>…</transcript> and the instruction comes after it, so the model can tell what
-  // it is reading (the past, written by us) from what it is writing (its next reply, and nothing more).
-  const transcript = [
-    "<transcript>",
-    `Everything in here already happened (oldest first). "ASSISTANT (you)" are your own earlier replies, and every`,
-    `"TOOL RESULT" is real output that was handed to you. You did not write any of it.`,
+  // The history is the user message, opened by <transcript>; what to write next is said once, in the system prompt,
+  // so the model can tell what it is reading (the past, written by us) from what it is writing (its next reply only).
+  const next = [
     "",
-    lines.join("\n\n"),
-    "</transcript>",
-    "",
+    "YOUR REPLY",
+    `The user message is the transcript of this conversation so far: it ends with the last thing that happened.`,
     `Now write ONLY your next reply: plain text for the person, and/or ${OPEN} blocks for the tools you need now.`,
     `Do not write "</transcript>", a "## …" heading, or any "TOOL RESULT" - you have not seen one yet this turn.`,
   ].join("\n");
 
-  return { system: system.join("\n\n") + toolSection(o.tools, o.toolChoice), transcript, images, warnings };
+  return { system: system.join("\n\n") + toolSection(o.tools, o.toolChoice) + "\n" + next, blocks, images, warnings };
 }
 
 /* ------------------------------------------------------------------ the answer */
@@ -472,12 +486,9 @@ function run(bin: Bin, args: string[], stdin: string, o: RunOpts, onEvent?: (ev:
   });
 }
 
-/** stdin for the CLI: plain text, or one stream-json message when images have to go with it. */
-function stdinFor(transcript: string, images: Img[]): { text: string; streamJson: boolean } {
-  if (!images.length) return { text: transcript, streamJson: false };
-  const content: unknown[] = [{ type: "text", text: transcript }];
-  for (const im of images) content.push({ type: "image", source: { type: "base64", media_type: im.mediaType, data: im.data } });
-  return { text: `${JSON.stringify({ type: "user", message: { role: "user", content } })}\n`, streamJson: true };
+/** stdin for the CLI: one stream-json message, its content the transcript's blocks (see render). */
+function stdinFor(blocks: Block[]): string {
+  return `${JSON.stringify({ type: "user", message: { role: "user", content: blocks } })}\n`;
 }
 
 /* ------------------------------------------------------------------ the provider */
@@ -494,17 +505,19 @@ export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}
     const r = render(o, maxTool);
     const file = path.join(scratch(), `sys-${id("")}.txt`);
     fs.writeFileSync(file, r.system, "utf8");
-    const input = stdinFor(retry ? `${r.transcript}\n${retry}` : r.transcript, r.images);
+    // The retry note is a block of its own at the end, so even the retry reads the transcript from the cache.
+    const stdin = stdinFor(retry ? [...r.blocks, { type: "text", text: retry }] : r.blocks);
+    // stream-json input (the transcript as blocks) needs stream-json output; doGenerate just reads its last line.
     const args = [
       ...baseArgs(modelId, file, settings),
-      "--output-format", stream ? "stream-json" : "json",
-      ...(stream ? ["--include-partial-messages", "--verbose"] : []),
-      ...(input.streamJson ? ["--input-format", "stream-json"] : []),
+      "--input-format", "stream-json",
+      "--output-format", "stream-json", "--verbose",
+      ...(stream ? ["--include-partial-messages"] : []),
     ];
-    return { ...r, file, args, stdin: input.text };
+    return { ...r, file, args, stdin };
   };
 
-  /** --output-format json: one object. Older builds print a few lines with the result last. */
+  /** The result event: the last line of stream-json output (or the one object of the older json output). */
   const resultOf = (stdout: string, stderr: string, code: number | null) => {
     const lines = stdout.split("\n").map((l) => l.trim()).filter(Boolean);
     for (let i = lines.length - 1; i >= 0; i--) {

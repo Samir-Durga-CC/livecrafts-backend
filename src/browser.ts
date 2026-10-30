@@ -111,19 +111,47 @@ async function contextFor(siteUrl: string, device: Device): Promise<BrowserConte
  * images - without that risk. "domcontentloaded" would be faster still and is NOT used: it sees 12 of 48 images,
  * and a broken-image check that runs before the images load is not a check.
  */
+const BOT_CHECK = "BOT_CHECK: the site's bot protection showed a 'checking your browser' page to the server's browser, so it cannot see the page. Fix for the site owner: in the host's security settings (WAF / bot protection) add a rule that allows requests carrying a secret header, then set LC_BROWSER_HEADERS={\"X-Livecrafts-Check\":\"<secret>\"} in the backend .env and restart it. Until then ask the person to open the Livecrafts widget on this page (then you look through their own browser). Nothing was checked: do not claim the page looks right.";
+const CHALLENGE = /just a moment|checking (your|the) browser|verify(ing)? (that )?you are (a )?human|attention required|ddos protection|security check|enable javascript and cookies/i;
+/**
+ * Sites whose bot protection just stopped the server's browser, until when. One change is checked with several page
+ * opens (before, after, desktop, mobile); each used to wait out the full page load before it noticed the challenge
+ * page - measured on a Hostinger site: 17-49s per change spent learning, again and again, that nothing could be seen.
+ */
+const blockedUntil = new Map<string, number>();
+const BLOCK_MEMORY_MS = 2 * 60_000;
+const isChallenge = (page: Page) => page.evaluate(() => ({ title: document.title, text: (document.body?.innerText ?? "").slice(0, 600), size: document.body?.innerText.length ?? 0 }))
+  .then((c) => CHALLENGE.test(c.title + " " + c.text) && c.size < 3000, () => false);
+
 async function openPage(siteUrl: string, url: string | undefined, device: Device, view: View = {}, before?: (page: Page) => void, settle: "load" | "idle" = "load") {
+  const origin = new URL(siteUrl).origin;
+  if ((blockedUntil.get(origin) ?? 0) > Date.now()) throw new Error(BOT_CHECK);
   const ctx = await contextFor(siteUrl, device);
   const page = await ctx.newPage();
   before?.(page);
   const target = sameOrigin(siteUrl, url, view.preview);
   const response = await page.goto(target, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => null);
+  // Hosting/CDN bot protection shows a "checking your browser" page to automated browsers - say so, never pretend.
+  // Looked for as soon as the HTML is in, not after the full load; a challenge that passes itself gets a few seconds.
+  if (await isChallenge(page)) {
+    let cleared = false;
+    for (const until = Date.now() + 6_000; Date.now() < until && !cleared;) {
+      await page.waitForTimeout(500);
+      cleared = !(await isChallenge(page));
+    }
+    if (!cleared) {
+      blockedUntil.set(origin, Date.now() + BLOCK_MEMORY_MS);
+      await page.close().catch(() => {});
+      throw new Error(BOT_CHECK);
+    }
+  }
+  blockedUntil.delete(origin);
   await page.waitForLoadState(settle === "idle" ? "networkidle" : "load", { timeout: settle === "idle" ? 10_000 : 15_000 }).catch(() => { /* a page that never settles is read as it stands */ });
   const status = response ? response.status() : null;
-  // Hosting/CDN bot protection shows a "checking your browser" page to automated browsers - say so, never pretend
-  const check = await page.evaluate(() => ({ title: document.title, text: (document.body?.innerText ?? "").slice(0, 600), size: document.body?.innerText.length ?? 0 })).catch(() => null);
-  if (check && /just a moment|checking (your|the) browser|verify(ing)? (that )?you are (a )?human|attention required|ddos protection|security check|enable javascript and cookies/i.test(check.title + " " + check.text) && check.size < 3000) {
+  if (await isChallenge(page)) { // a challenge that only appeared once the page's scripts ran
+    blockedUntil.set(origin, Date.now() + BLOCK_MEMORY_MS);
     await page.close().catch(() => {});
-    throw new Error("BOT_CHECK: the site's bot protection showed a 'checking your browser' page to the server's browser, so it cannot see the page. Fix for the site owner: in the host's security settings (WAF / bot protection) add a rule that allows requests carrying a secret header, then set LC_BROWSER_HEADERS={\"X-Livecrafts-Check\":\"<secret>\"} in the backend .env and restart it. Until then ask the person to open the Livecrafts widget on this page (then you look through their own browser). Nothing was checked: do not claim the page looks right.");
+    throw new Error(BOT_CHECK);
   }
   return { page, status };
 }

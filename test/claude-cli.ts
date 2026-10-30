@@ -191,6 +191,29 @@ let input = ""; process.stdin.on("data", (d) => input += d); process.stdin.on("e
     assert.match(streamed, /Placing the slider now/);
     assert.ok(!/wrong format|tool_call/.test(streamed), `unexpected text: ${streamed}`);
   });
+  // The prompt cache only helps if a step's message starts with exactly the blocks the step before sent. One text
+  // block ending in an instruction made every step a cache miss: 56k tokens reprocessed per step.
+  const dumpScript = path.join(dir, "dump.mjs");
+  fs.writeFileSync(dumpScript, `
+import fs from "node:fs";
+let input = ""; process.stdin.on("data", (d) => input += d); process.stdin.on("end", () => {
+  fs.appendFileSync(${JSON.stringify(path.join(dir, "seen.jsonl"))}, input);
+  console.log(JSON.stringify({ type: "result", result: "OK", usage: {} }));
+});`);
+  let dump = path.join(dir, "dump");
+  if (process.platform === "win32") { dump += ".cmd"; fs.writeFileSync(dump, `@node "${dumpScript}" %*\r\n`); }
+  else { fs.writeFileSync(dump, `#!/bin/sh\nexec node "${dumpScript}" "$@"\n`); fs.chmodSync(dump, 0o755); }
+  const dm: any = claudeCliModel("sonnet", { bin: dump });
+  const call = { role: "assistant", content: [{ type: "tool-call", toolCallId: "c1", toolName: "place_component", input: { id: "x" } }] };
+  const result = { role: "tool", content: [{ type: "tool-result", toolCallId: "c1", toolName: "place_component", output: { type: "json", value: { ok: true } } }] };
+  await dm.doGenerate({ prompt: [...prompt, call], tools });
+  await dm.doGenerate({ prompt: [...prompt, call, result], tools });
+  const [a, b] = fs.readFileSync(path.join(dir, "seen.jsonl"), "utf8").trim().split("\n").map((l: string) => JSON.parse(l).message.content);
+  check("each step's message starts with the previous step's blocks, unchanged (prompt cache)", () => {
+    assert.ok(a.length >= 3, "the transcript is not split into blocks");
+    assert.deepEqual(b.slice(0, a.length), a);
+    assert.ok(b.length > a.length);
+  });
   fs.rmSync(dir, { recursive: true, force: true });
 })();
 
