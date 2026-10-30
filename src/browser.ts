@@ -269,14 +269,25 @@ export async function analyzeDesign(siteUrl: string, a: { url?: string; device?:
 export async function readPage(siteUrl: string, a: { url?: string; device?: Device }, view: View = {}) {
   const { page } = await openPage(siteUrl, a.url, a.device ?? "desktop", view);
   try {
-    const data = await page.evaluate(() => ({
-      title: document.title,
-      headings: Array.from(document.querySelectorAll("h1,h2,h3")).slice(0, 40).map((h) => ({ tag: h.tagName.toLowerCase(), text: (h.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 160) })),
-      text: (document.body?.innerText ?? "").replace(/\n{3,}/g, "\n\n").slice(0, 15000),
-      images: Array.from(document.images).slice(0, 30).map((i) => ({ src: i.currentSrc || i.src, alt: i.alt, width: i.naturalWidth, height: i.naturalHeight })),
-      links: Array.from(document.querySelectorAll("a[href]")).slice(0, 50).map((l) => ({ text: (l.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 60), href: (l as HTMLAnchorElement).href })),
-    }));
-    return { ok: true, url: cleanUrl(page.url()), ...data };
+    const data = await page.evaluate(() => {
+      // Only what a visitor can see. A section hidden by CSS (an old theme hero replaced by a new one) is still in
+      // the HTML: listing its heading as if it were on the page made an edit to the hidden copy look like it worked.
+      const shown = (el: Element) => (el as any).checkVisibility ? (el as any).checkVisibility({ visibilityProperty: true }) : (el as HTMLElement).offsetParent !== null;
+      const heading = (h: Element) => ({ tag: h.tagName.toLowerCase(), text: (h.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 160) });
+      const all = Array.from(document.querySelectorAll("h1,h2,h3"));
+      return {
+        title: document.title,
+        headings: all.filter(shown).slice(0, 40).map(heading),
+        hiddenHeadings: all.filter((h) => !shown(h)).slice(0, 20).map(heading),
+        text: (document.body?.innerText ?? "").replace(/\n{3,}/g, "\n\n").slice(0, 15000),
+        images: Array.from(document.images).filter(shown).slice(0, 30).map((i) => ({ src: i.currentSrc || i.src, alt: i.alt, width: i.naturalWidth, height: i.naturalHeight })),
+        links: Array.from(document.querySelectorAll("a[href]")).filter(shown).slice(0, 50).map((l) => ({ text: (l.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 60), href: (l as HTMLAnchorElement).href })),
+      };
+    });
+    const note = data.hiddenHeadings.length
+      ? "hiddenHeadings are in the HTML but NOT shown to visitors (display:none, e.g. a section replaced by another). Editing them changes nothing anyone sees: edit the visible element instead."
+      : undefined;
+    return { ok: true, url: cleanUrl(page.url()), ...data, note };
   } finally { await page.close().catch(() => {}); }
 }
 
