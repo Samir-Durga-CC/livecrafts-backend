@@ -688,7 +688,34 @@ export function makeTools(bridge: Bridge, files: FileStore, extras: ToolExtras =
   const componentTools = makeComponentTools({ bridge, safe, postIdOf, checked, changeView, parseValue, ref, pageUrl: () => extras.pageUrl?.(), skillsLoaded, design: extras.browser?.design ? (url?: string) => extras.browser!.design!({ url, device: "desktop" }) as Promise<any> : undefined,
     screenshot: extras.browser?.screenshot ? (a: { url?: string; selector?: string; device?: Device; view?: "draft" | "live" }) => extras.browser!.screenshot!(a) as Promise<any> : undefined });
 
-  return { ...reading, ...writing, ...media, ...browser, ...speedTools, ...pluginTools, ...fileTools, ...apiTools, ...skillTools, ...planTools, ...askTools, ...layoutTools, ...componentTools };
+  return inOrder({ ...reading, ...writing, ...media, ...browser, ...speedTools, ...pluginTools, ...fileTools, ...apiTools, ...skillTools, ...planTools, ...askTools, ...layoutTools, ...componentTools });
+}
+
+/**
+ * The calls of one step run at the same time. For reads that is the point; for changes it is a race. A step that
+ * reverted the old testimonials and placed the new slider ran both at once, the revert landed last and wiped out the
+ * slider; a screenshot sent with a change pictured the page before it. So: changes run one at a time, in the order
+ * they were asked for, and every other call waits for the changes asked for before it. Reads with no change between
+ * them still run together.
+ */
+export function inOrder<T extends Record<string, any>>(tools: T): T {
+  let changes: Promise<unknown> = Promise.resolve(); // settles when every change asked for so far is done
+  const out: Record<string, any> = {};
+  for (const [name, t] of Object.entries(tools)) {
+    if (!t || typeof t.execute !== "function") { out[name] = t; continue; }
+    const execute = t.execute;
+    const writes = WRITE_TOOLS.has(name) || (APPROVAL_REQUIRED as readonly string[]).includes(name);
+    out[name] = {
+      ...t,
+      execute: (...args: any[]) => {
+        const run = () => execute.apply(t, args);
+        const done = changes.then(run, run);
+        if (writes) changes = done.then(() => {}, () => {});
+        return done;
+      },
+    };
+  }
+  return out as T;
 }
 
 /** Tools that must never run without a human saying yes (in "every" mode; one plan approval in "request" mode). */
