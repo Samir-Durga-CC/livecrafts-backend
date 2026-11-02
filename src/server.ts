@@ -772,8 +772,9 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
   return server;
 }
 
-// Start only when run directly (the tests import createApp).
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"))) {
+// Start only when run directly (the tests import createApp), or through server.js on a host.
+const runDirectly = !!process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
+if (runDirectly || process.env.LC_START_SERVER === "1") {
   const sites = new JsonStore<Site>(path.join(config.dataDir, "sites"));
   const jobs = new JsonStore<Job>(path.join(config.dataDir, "jobs"));
   const files = new FileStore();
@@ -801,8 +802,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(im
   process.on("unhandledRejection", (e) => crashLog("unhandled promise rejection (backend keeps running)", e));
   process.on("uncaughtException", (e) => { crashLog("CRASH", e); process.exit(1); });
   process.on("SIGTERM", shutdown);
-  server.listen(config.port, config.host, () => {
-    console.log(`Livecrafts backend on http://${config.host}:${config.port}  (model: ${config.model})`);
+  const onListening = () => {
+    console.log(typeof config.port === "number"
+      ? `Livecrafts backend on http://${config.host}:${config.port}  (model: ${config.model})`
+      : `Livecrafts backend on socket ${config.port}  (model: ${config.model})`);
     if (!config.apiToken) console.log("WARNING: LC_API_TOKEN is not set - fine on localhost, set it before exposing this server.");
     if (config.model.startsWith("claudecli:")) {
       void claudeCliStatus(true).then((c) => console.log(c.ready
@@ -812,5 +815,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(im
     } else if (!process.env.OPENAI_API_KEY && !config.model.includes("/") && !config.model.includes(":")) {
       console.log("WARNING: OPENAI_API_KEY is not set - jobs will fail until it is (or switch the model, e.g. LC_MODEL=claudecli:sonnet).");
     }
-  });
+  };
+  if (typeof config.port === "number") server.listen(config.port, config.host, onListening);
+  else server.listen(config.port, onListening);
 }
