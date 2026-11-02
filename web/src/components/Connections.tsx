@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { Icon } from "../icons";
 import type { ProviderInfo } from "../types";
+import { YourComputer } from "./YourComputer";
 
 /**
  * Settings → Integrations → AI connections (backend only, never the chat widget: a key must not be reachable from a
@@ -18,11 +19,11 @@ import type { ProviderInfo } from "../types";
 /** The steps for one platform. Everything else about a provider comes from the backend (PROVIDERS in models.ts). */
 const GUIDE: Record<string, { blurb: string; steps: string[]; link?: { href: string; label: string } }> = {
   claudecli: {
-    blurb: "Answers on this machine's own Claude subscription. No API key, and nothing leaves the backend except the request itself.",
+    blurb: "Answers on a Claude subscription instead of an API key: on your own computer through “Your computer” below, or on the machine running this backend.",
     steps: [
-      "Install it on the machine running this backend: npm i -g @anthropic-ai/claude-code",
-      "Sign in there once: claude auth login",
-      "Press “Check again” below - no key to paste.",
+      "Backend on a server: connect your computer below - Claude Code runs there, signed in with your subscription.",
+      "Backend on this computer: install Claude Code here (npm i -g @anthropic-ai/claude-code) and sign in once with claude auth login.",
+      "Press “Check again” - no key to paste.",
     ],
   },
   anthropic: {
@@ -167,7 +168,7 @@ export function ConnectionsSection() {
           const g = GUIDE[p.id];
           const isOpen = open === p.id;
           const where = p.keySource === "env" ? "Key from the backend .env"
-            : p.keySource === "cli" ? `Signed in on this machine${p.cli?.authMethod ? ` (${p.cli.authMethod})` : ""}`
+            : p.keySource === "cli" ? (p.cli?.bin?.startsWith("your computer") ? `Answering from ${p.cli.bin}` : `Signed in on this machine${p.cli?.authMethod ? ` (${p.cli.authMethod})` : ""}`)
             : p.id === "custom" ? p.baseUrl ?? "" : "Key saved on the backend";
           return (
             <div key={p.id} className={`conn-card${isOpen ? " on" : ""}${p.ready ? " ready" : ""}`}>
@@ -208,6 +209,8 @@ export function ConnectionsSection() {
                       ))}
                     </div>
                   )}
+
+                  {p.id === "claudecli" && <YourComputer onChange={() => void recheck()} />}
 
                   {p.needsNoKey ? (
                     <div className="dialog-actions left">

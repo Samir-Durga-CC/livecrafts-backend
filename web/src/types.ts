@@ -99,3 +99,15 @@ export interface TemplateRow {
   preview?: string;
 }
 export interface TemplatesReport { ok: boolean; active: boolean; version?: string; components: TemplateRow[]; note?: string; error?: string; howToCheck?: string }
+
+/** "Your computer": the connector that runs the Claude CLI on the person's own machine for this backend. */
+export interface ConnectorInfo {
+  hasToken: boolean;
+  connected: boolean;
+  since?: string;
+  machine?: string;
+  platform?: string;
+  version?: string;
+  claude?: { installed: boolean; loggedIn: boolean; version?: string; authMethod?: string; error?: string; fix?: string };
+  running: number;
+}

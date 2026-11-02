@@ -1017,3 +1017,11 @@ a.nav-item:visited { color: var(--muted); } a.nav-item:hover { color: var(--text
 .conn-steps li::marker { color: var(--muted); font-variant-numeric: tabular-nums; }
 .conn-presets { display: flex; flex-wrap: wrap; gap: 6px; }
 .conn-card .prov-models { padding-left: 0; }
+
+/* Your computer (the connector) inside the Claude CLI card */
+.yc { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.yc-head { display: flex; align-items: center; gap: 8px; }
+.yc .conn-steps { font-size: 12.5px; }
+.yc-cmd { display: flex; flex-direction: column; gap: 3px; }
+.yc-cmd > div { display: flex; align-items: flex-start; gap: 6px; }
+.yc-cmd code { flex: 1; min-width: 0; display: block; padding: 7px 9px; border-radius: 7px; background: var(--panel-2, rgba(127,127,127,.08)); font-size: 12px; overflow-wrap: anywhere; user-select: all; }

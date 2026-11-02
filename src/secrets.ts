@@ -9,7 +9,7 @@ import { config } from "./config.js";
  */
 export type ProviderId = "openai" | "anthropic" | "claudecli" | "openrouter" | "groq" | "custom" | "gateway";
 interface ProviderSecret { apiKey?: string; baseUrl?: string; /** Extra model names the person added for this provider (beyond the built-in examples). */ models?: string[] }
-interface Secrets { hostingerToken?: string; pagespeedKey?: string; providers?: Partial<Record<ProviderId, ProviderSecret>>; sites?: Record<string, { secret?: string }> }
+interface Secrets { hostingerToken?: string; pagespeedKey?: string; connectorTokenHash?: string; providers?: Partial<Record<ProviderId, ProviderSecret>>; sites?: Record<string, { secret?: string }> }
 const file = () => path.join(config.dataDir, "secrets.json");
 
 function read(): Secrets { try { return JSON.parse(fs.readFileSync(file(), "utf8")); } catch { return {}; } }
@@ -32,6 +32,10 @@ export const secrets = {
   pagespeedKey(): string { return process.env.LC_PAGESPEED_API_KEY || read().pagespeedKey || ""; },
   pagespeedSource(): "env" | "saved" | "none" { return process.env.LC_PAGESPEED_API_KEY ? "env" : read().pagespeedKey ? "saved" : "none"; },
   setPagespeedKey(k: string) { const s = read(); if (k) s.pagespeedKey = k; else delete s.pagespeedKey; write(s); },
+
+  /** SHA-256 (hex) of the token the person's computer connects with (connector.ts). The token itself is shown once, never kept. */
+  connectorTokenHash(): string { return read().connectorTokenHash || ""; },
+  setConnectorTokenHash(h: string) { const s = read(); if (h) s.connectorTokenHash = h; else delete s.connectorTokenHash; write(s); },
 
   /** The secret a connected site signs its widget tokens with (POST /livecrafts/v1/connect). */
   siteSecret(siteId: string): string { return read().sites?.[siteId]?.secret || ""; },

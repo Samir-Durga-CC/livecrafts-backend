@@ -16,7 +16,7 @@ import { CLAUDE_CLI_MODELS, claudeCliModel, claudeCliStatus, type CliStatus } fr
 export const PROVIDERS: { id: ProviderId; name: string; needsBaseUrl?: boolean; needsNoKey?: boolean; examples: string[]; keyHelp: string }[] = [
   { id: "openai", name: "OpenAI", examples: ["gpt-5.5", "gpt-5.4-mini"], keyHelp: "platform.openai.com → API keys" },
   { id: "anthropic", name: "Anthropic (Claude)", examples: ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-4-5"], keyHelp: "console.anthropic.com → API keys" },
-  { id: "claudecli", name: "Claude CLI (this machine's subscription)", needsNoKey: true, examples: CLAUDE_CLI_MODELS, keyHelp: 'No API key: the Claude Code CLI on the backend machine answers, signed in with "claude auth login".' },
+  { id: "claudecli", name: "Claude CLI (your Claude subscription)", needsNoKey: true, examples: CLAUDE_CLI_MODELS, keyHelp: 'No API key: Claude Code answers, signed in with "claude auth login" - on your own computer through the connector, or on the backend machine.' },
   { id: "openrouter", name: "OpenRouter", examples: ["anthropic/claude-sonnet-5.5", "openai/gpt-5.5", "google/gemini-3-pro"], keyHelp: "openrouter.ai → Keys" },
   { id: "groq", name: "Groq", examples: ["openai/gpt-oss-120b", "llama-3.3-70b-versatile"], keyHelp: "console.groq.com → API Keys" },
   { id: "gateway", name: "Vercel AI Gateway", examples: ["anthropic/claude-sonnet-5.5", "openai/gpt-5.5"], keyHelp: "vercel.com/dashboard → AI Gateway → API keys" },

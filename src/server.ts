@@ -2,6 +2,7 @@ import http from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import { JsonStore, newId } from "./store.js";
 import { FileStore } from "./files.js";
@@ -31,6 +32,7 @@ const PROVIDER_MODELS_RE = new RegExp(`^/integrations/models/(${PROVIDERS.map((p
 const sectionLooks = new Map<string, { at: number; value: Awaited<ReturnType<typeof siteLook>> }>();
 const sectionLooksBusy = new Map<string, Promise<Awaited<ReturnType<typeof siteLook>>>>();
 import { claudeCliStatus } from "./claudeCli.js";
+import { connector } from "./connector.js";
 import { diffOf } from "./changes.js";
 import { canUseSite, verifyWidgetToken, type Caller } from "./auth.js";
 import { log, usageMonths, usageReport } from "./usage.js";
@@ -133,6 +135,8 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     return p;
   };
 
+  /** Answered without LC_API_TOKEN: the app asks /health whether it needs a token, and the connector program is only code. */
+  const PUBLIC_ROUTES = new Set(["GET /health", "GET /connector.mjs"]);
   const WIDGET_ROUTES = /^(GET \/(health|sites|models|models\/usage|voice)|POST \/sites|POST \/voice\/(transcribe|speak|realtime\/session)|GET \/voice\/stream|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms|pagespeed|templates|templates\/render|sections|sections\/preview)|POST \/sites\/[\w-]+\/sections\/(add|site)|(POST \/sites\/[\w-]+\/pagespeed|GET \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+|PUT \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+\/fix|GET \/sites\/[\w-]+\/plugins(\/(history|versions|jobs\/plj_[a-f0-9]+))?|POST \/sites\/[\w-]+\/plugins\/(update|rollback))|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
 
   async function readBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
@@ -194,7 +198,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     const url = new URL(req.url ?? "/", "http://x");
     const route = `${req.method} ${url.pathname}`;
     try {
-      const isApi = /^\/(health|sites|sections|jobs|files|integrations|screens|models|voice)(\/|$)/.test(url.pathname);
+      const isApi = /^\/(health|sites|sections|jobs|files|integrations|screens|models|voice)(\/|$)/.test(url.pathname) || url.pathname === "/connector.mjs";
       if (!isApi && req.method === "GET" && serveStatic(url.pathname, res)) return; // UI files are public; the API below is protected
       // Who is calling: the chat in the WordPress widget (signed per-person token, only its own site) or the app / admin.
       let caller: Caller = { via: "admin" };
@@ -205,6 +209,9 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         // only gets the chat routes. Access control is the network: keep the backend on localhost or behind a tunnel.
         if (!WIDGET_ROUTES.test(route)) return send(res, 403, { error: "Not available from the widget." });
         const w = verifyWidgetToken(widgetToken, sites.list());
+        // ...except on a backend that is reachable from anywhere: with LC_API_TOKEN set, the network is no longer the
+        // access control, so only a token a connected site signed opens the chat routes.
+        if (!w && config.apiToken) return send(res, 401, { error: "Sign in to WordPress again: your Livecrafts session is not valid for this backend." });
         if (w) {
           if (!w.user.edit) return send(res, 403, { error: "Your WordPress account may not edit with Livecrafts." });
           caller = { via: "widget", site: w.site, user: w.user, token: widgetToken };
@@ -213,11 +220,16 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
           const sm = url.pathname.match(/^\/sites\/([\w-]+)/);
           if (sm && !canUseSite(caller, sm[1])) return send(res, 404, { error: "Unknown site" });
         }
-      } else if (config.apiToken && route !== "GET /health" && req.headers.authorization !== `Bearer ${config.apiToken}`) {
+      } else if (config.apiToken && !PUBLIC_ROUTES.has(route) && req.headers.authorization !== `Bearer ${config.apiToken}`) {
         return send(res, 401, { error: "Unauthorized" });
       }
 
-      if (route === "GET /health") return send(res, 200, { ok: true, model: config.model, authRequired: !!config.apiToken });
+      if (route === "GET /health") return send(res, 200, { ok: true, model: config.model, authRequired: !!config.apiToken, instance: process.pid });
+      // The connector program itself: public, it is only code - what it may do is decided by the token it is started with.
+      if (route === "GET /connector.mjs") {
+        res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "Content-Disposition": 'attachment; filename="livecrafts-connector.mjs"' });
+        return res.end(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "tools", "connector.mjs")));
+      }
 
       // ---- sites
       const pt = url.pathname.match(/^\/sites\/([\w-]+)\/preview-token$/);
@@ -473,6 +485,10 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
 
       // ---- AI providers: keys are stored on the backend only, never sent back
       // "Check again": re-reads the Claude CLI on this machine at once, so logging in does not need a restart.
+      // ---- your computer: the connector that runs the Claude CLI on the person's own machine (connector.ts)
+      if (route === "GET /integrations/connector") return send(res, 200, connector.info());
+      if (route === "POST /integrations/connector/token") return send(res, 200, { token: connector.newToken(), ...connector.info() });
+      if (route === "DELETE /integrations/connector/token") { connector.revoke(); return send(res, 200, connector.info()); }
       if (route === "POST /integrations/models/recheck") { await claudeCliStatus(true); return send(res, 200, { ok: true, models: await providerStatus() }); }
 
       // Add or drop a model name by hand, so a key can be used with models these lists have never heard of.
@@ -702,7 +718,15 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
    * The site is named so the session can be given the site's OWN words - the page map is already read and cached
    * for every voice session, and it is the difference between "AEROMATIC" and "aromatic".
    */
-  const wss = new WebSocketServer({ server, path: "/voice/stream" });
+  // WebSocket upgrades, by path. One router: a WebSocketServer bound to the http server answers 400 to every path that
+  // is not its own, so two of them on one server would refuse each other's connections.
+  const wss = new WebSocketServer({ noServer: true });
+  server.on("upgrade", (req, socket, head) => {
+    const p = new URL(req.url ?? "/", "http://x").pathname;
+    if (p === "/connector") return connector.handleUpgrade(req, socket, head);
+    if (p === "/voice/stream") return wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+    socket.destroy();
+  });
   wss.on("connection", async (client, req) => {
     const q = new URL(req.url ?? "/", "http://x").searchParams;
     const site = sites.get(String(q.get("siteId") ?? ""));

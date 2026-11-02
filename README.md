@@ -101,6 +101,33 @@ in `data/pagespeed/`.
 * Sites Google cannot reach (`localhost`, `*.local`, `*.test`, private addresses) are tested with Lighthouse in this
   computer's Chrome / Edge instead: same scores and fixes, no real-visitor data.
 
+## Hosting it on a server (Hostinger)
+The backend runs as a Hostinger **Node.js website** (Cloud / Business plans). `server.js` is the entry Hostinger
+starts; `npm run build` builds the chat UI.
+
+```bash
+HOSTINGER_API_TOKEN=... HOSTINGER_USERNAME=u123456789 node tools/deploy-hostinger.mjs --domain livecrafts-staging.example.com
+```
+It ships the committed tree (`git archive HEAD`), builds it on Hostinger and waits for `/health`. Settings are the
+website's environment variables in hPanel, not a `.env` - at least `LC_API_TOKEN` (it is public), `HOST=0.0.0.0`,
+`LC_VERIFY_CHANGES=0` (no Chrome there) and `LC_DATA_DIR` outside the app folder (a deploy replaces the app folder).
+
+## Your computer: the Claude CLI for a hosted backend
+A backend on a server has no Claude Code of its own. Instead of paying for API keys, connect your computer: in the
+app, **Integrations → AI connections → Claude CLI → Your computer → Connect your computer**, then run the two commands
+it shows on your computer (Node.js 22+ and Claude Code signed in with `claude auth login`):
+
+```powershell
+irm https://<backend>/connector.mjs -OutFile livecrafts-connector.mjs
+node livecrafts-connector.mjs --server https://<backend> --token lcc_...
+```
+The connector (`tools/connector.mjs`, one file, no install) keeps one outbound WebSocket open to `/connector`; while
+it is connected, every `claudecli:<model>` step runs on your computer. It runs `claude --print` with all tools,
+MCP servers and project settings switched off, in an empty folder: Claude only answers, it cannot touch your files.
+The backend sends the model, the instructions and the conversation - never a command line. The token is shown once,
+only its hash is stored; **New token** or **Disconnect** cuts the computer off at once. Settings are remembered in
+`~/.livecrafts-connector.json`, so next time `node livecrafts-connector.mjs` is enough.
+
 ## How a change happens
 1. The assistant (or the person, in the widget's click panel) makes a change. It is a **draft**: the plugin stores it
    in the real source (Elementor, blocks, ACF, post fields, Additional CSS), and logged-in editors see it on the site.

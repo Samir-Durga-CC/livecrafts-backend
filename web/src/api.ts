@@ -1,6 +1,6 @@
 import type { FixStatus, SpeedRun, SpeedRunSummary } from "./speed";
 import type { PluginActionResult, PluginHistoryEntry, PluginJob, PluginList } from "./plugins";
-import type { TemplatesReport, ApprovalMode, AssistantInfo, ChangeRecord, DiffData, HostingerHealth, ModelsReport, ProviderInfo, SiteStatus, JobEvent, JobSummary, Site, TimelineItem, UploadedFile } from "./types";
+import type { ConnectorInfo, TemplatesReport, ApprovalMode, AssistantInfo, ChangeRecord, DiffData, HostingerHealth, ModelsReport, ProviderInfo, SiteStatus, JobEvent, JobSummary, Site, TimelineItem, UploadedFile } from "./types";
 
 const TOKEN_KEY = "lc_token";
 export const getToken = () => localStorage.getItem(TOKEN_KEY) ?? "";
@@ -65,6 +65,9 @@ export const api = {
   /** A short-lived key for ONE realtime voice call (the API key stays on the backend). */
   realtimeSession: (b: { siteId?: string; botName?: string; pageUrl?: string }) =>
     request<{ value: string; model: string; voice: string; expiresAt?: number; tuning?: Record<string, unknown> }>("POST", "/voice/realtime/session", b),
+  connector: () => request<ConnectorInfo>("GET", "/integrations/connector"),
+  newConnectorToken: () => request<ConnectorInfo & { token: string }>("POST", "/integrations/connector/token"),
+  revokeConnector: () => request<ConnectorInfo>("DELETE", "/integrations/connector/token"),
   testModel: (model: string) => request<{ ok: boolean; reply?: string; error?: string; ms: number }>("POST", "/integrations/models/test", { model }),
   jobs: () => request<JobSummary[]>("GET", "/jobs"),
   job: (id: string) => request<JobSummary>("GET", `/jobs/${id}`),

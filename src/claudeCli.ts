@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import { connector } from "./connector.js";
 import type {
   LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4Content, LanguageModelV4FunctionTool,
   LanguageModelV4GenerateResult, LanguageModelV4Prompt, LanguageModelV4StreamPart, LanguageModelV4Usage,
@@ -381,8 +382,25 @@ const scratch = () => {
   return d;
 };
 
-function baseArgs(model: string, systemFile: string, s: ClaudeCliSettings): string[] {
-  const effort = s.effort ?? DEFAULTS.effort();
+/**
+ * One CLI step as data. Where it runs builds the command line from it - this machine (runLocal) or the person's own
+ * computer through the connector (connector.ts), which builds the SAME flags itself: the backend never sends a
+ * command line to someone's computer, only these fields.
+ */
+export interface CliJob { model: string; system: string; stdin: string; stream: boolean; effort?: string }
+
+/** The command line for a job whose system prompt is in `systemFile`. Keep in step with tools/connector.mjs. */
+export function jobArgs(job: CliJob, systemFile: string): string[] {
+  return [
+    ...baseArgs(job.model, systemFile, job.effort ?? ""),
+    // stream-json input (the transcript as blocks) needs stream-json output; doGenerate just reads its last line.
+    "--input-format", "stream-json",
+    "--output-format", "stream-json", "--verbose",
+    ...(job.stream ? ["--include-partial-messages"] : []),
+  ];
+}
+
+function baseArgs(model: string, systemFile: string, effort: string): string[] {
   return [
     "--print",
     "--model", model,
@@ -398,8 +416,8 @@ function baseArgs(model: string, systemFile: string, s: ClaudeCliSettings): stri
 
 const childEnv = () => ({ ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" });
 
-interface Run { stdout: string; stderr: string; code: number | null }
-interface RunOpts { timeoutMs: number; abortSignal?: AbortSignal }
+export interface Run { stdout: string; stderr: string; code: number | null }
+export interface RunOpts { timeoutMs: number; abortSignal?: AbortSignal }
 
 /**
  * How to start the CLI on THIS machine. The name is not enough: Claude Code installs as a native `claude.exe`
@@ -486,6 +504,14 @@ function run(bin: Bin, args: string[], stdin: string, o: RunOpts, onEvent?: (ev:
   });
 }
 
+/** Runs one step with the CLI on THIS machine: the system prompt goes in a scratch file for the length of the run. */
+async function runLocal(bin: Bin, job: CliJob, o: RunOpts, onEvent?: (ev: any) => void): Promise<Run> {
+  const file = path.join(scratch(), `sys-${id("")}.txt`);
+  fs.writeFileSync(file, job.system, "utf8");
+  try { return await run(bin, jobArgs(job, file), job.stdin, o, onEvent); }
+  finally { try { fs.unlinkSync(file); } catch { /* best effort */ } }
+}
+
 /** stdin for the CLI: one stream-json message, its content the transcript's blocks (see render). */
 function stdinFor(blocks: Block[]): string {
   return `${JSON.stringify({ type: "user", message: { role: "user", content: blocks } })}\n`;
@@ -497,24 +523,19 @@ export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}
   // Found on first use, not here: the model object is built long before a step runs, and an install (or a fixed
   // LC_CLAUDE_BIN) can appear in between.
   const bin = () => (settings.bin ? Promise.resolve(asBin(settings.bin)) : resolveBin());
+  // The person's computer, when it is connected (a hosted backend has no CLI of its own); otherwise this machine.
+  const exec = async (job: CliJob, o: RunOpts, onEvent?: (ev: any) => void) =>
+    !settings.bin && connector.connected() ? connector.run(job, o, onEvent) : runLocal(await bin(), job, o, onEvent);
   const timeoutMs = settings.timeoutMs ?? DEFAULTS.timeoutMs();
   const maxTool = settings.maxToolResultChars ?? DEFAULTS.maxToolResultChars;
 
-  /** Writes the system prompt where the CLI can read it and builds this step's command line. */
+  /** This step as a job: the system prompt and the transcript. */
   const prepare = (o: LanguageModelV4CallOptions, stream: boolean, retry?: string) => {
     const r = render(o, maxTool);
-    const file = path.join(scratch(), `sys-${id("")}.txt`);
-    fs.writeFileSync(file, r.system, "utf8");
     // The retry note is a block of its own at the end, so even the retry reads the transcript from the cache.
     const stdin = stdinFor(retry ? [...r.blocks, { type: "text", text: retry }] : r.blocks);
-    // stream-json input (the transcript as blocks) needs stream-json output; doGenerate just reads its last line.
-    const args = [
-      ...baseArgs(modelId, file, settings),
-      "--input-format", "stream-json",
-      "--output-format", "stream-json", "--verbose",
-      ...(stream ? ["--include-partial-messages"] : []),
-    ];
-    return { ...r, file, args, stdin };
+    const job: CliJob = { model: modelId, system: r.system, stdin, stream, effort: settings.effort ?? DEFAULTS.effort() };
+    return { ...r, job };
   };
 
   /** The result event: the last line of stream-json output (or the one object of the older json output). */
@@ -541,11 +562,9 @@ export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}
       for (let attempt = 0; ; attempt++) {
         const p = prepare(o, false, retry);
         warnings = p.warnings;
-        try {
-          const out = await run(await bin(), p.args, p.stdin, { timeoutMs, abortSignal: o.abortSignal });
-          res = resultOf(out.stdout, out.stderr, out.code);
-          if (res.is_error || res.subtype === "error_during_execution") throw cliError(String(res.result ?? res.error ?? out.stderr), out.code);
-        } finally { try { fs.unlinkSync(p.file); } catch { /* best effort */ } }
+        const out = await exec(p.job, { timeoutMs, abortSignal: o.abortSignal });
+        res = resultOf(out.stdout, out.stderr, out.code);
+        if (res.is_error || res.subtype === "error_during_execution") throw cliError(String(res.result ?? res.error ?? out.stderr), out.code);
         usage = addUsage(usage, res.usage);
         cost += typeof res.total_cost_usd === "number" ? res.total_cost_usd : 0;
         reply = parseReply(String(res.result ?? ""));
@@ -658,12 +677,11 @@ export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}
             }
           };
 
-          const files = [p.file];
           try {
-            let args = p.args, stdin = p.stdin;
+            let job = p.job;
             for (let attempt = 0; ; attempt++) {
               calls = []; reasons = []; held = ""; full = ""; errored = ""; line = ""; broken = 0; fabricating = false; usage = null; cost = undefined;
-              const out = await run(await bin(), args, stdin, { timeoutMs, abortSignal: o.abortSignal }, onEvent);
+              const out = await exec(job, { timeoutMs, abortSignal: o.abortSignal }, onEvent);
               totalUsage = addUsage(totalUsage, usage);
               totalCost += cost ?? 0;
               if (errored) throw cliError(errored, out.code);
@@ -683,9 +701,7 @@ export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}
               flush();
               if (!broken || calls.length || attempt >= RETRIES) break;
               // Only the call was wrong: ask again for just the call, instead of ending the step with the work half done.
-              const again = prepare(o, true, retryNote(reasons));
-              files.push(again.file);
-              args = again.args; stdin = again.stdin;
+              job = prepare(o, true, retryNote(reasons)).job;
               if (open) sep = "\n\n";
             }
             if (broken && !calls.length) emit((open ? "\n\n" : "") + brokenNote(broken));
@@ -698,13 +714,12 @@ export function claudeCliModel(modelId: string, settings: ClaudeCliSettings = {}
             ctrl.enqueue({ type: "error", error: e });
             ctrl.enqueue({ type: "finish", usage: usageOf(totalUsage, totalCost || undefined), finishReason: { unified: "error", raw: stopRaw } });
           } finally {
-            for (const f of files) { try { fs.unlinkSync(f); } catch { /* best effort */ } }
             ctrl.close();
           }
         },
       });
 
-      return { stream, request: { body: { model: modelId, args: p.args } } };
+      return { stream, request: { body: { model: modelId, via: connector.connected() ? "connector" : "local" } } };
     },
   };
 }
@@ -745,6 +760,9 @@ function envAuth(): string | null {
  * "Check again" does after someone has just run `claude auth login`).
  */
 export async function claudeCliStatus(force = false): Promise<CliStatus> {
+  // A connected computer answers instead of this machine (see exec in claudeCliModel), so its CLI is the one that counts.
+  const remote = connector.cliStatus();
+  if (remote) return remote;
   if (!force && cached && Date.now() - cached.at < 30_000) return cached.status;
   const status: CliStatus = { installed: false, loggedIn: false, ready: false };
   try {
@@ -776,7 +794,7 @@ export async function claudeCliStatus(force = false): Promise<CliStatus> {
     status.error = msg;
     status.fix = status.installed
       ? 'Run "claude auth login" on the backend machine, then press Check again.'
-      : "Install Claude Code on the backend machine (claude.com/claude-code), or set LC_CLAUDE_BIN to its full path.";
+      : "Connect your computer (Integrations → AI models → Your computer), or install Claude Code on the backend machine.";
   }
   status.ready = status.installed && status.loggedIn;
   cached = { at: Date.now(), status };
