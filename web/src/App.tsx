@@ -5,6 +5,7 @@ import { SignIn } from "./components/SignIn";
 import { InstructionsDialog, PasswordDialog } from "./components/AccountDialogs";
 import { ProjectDialog } from "./components/ProjectDialog";
 import { JiraDialog } from "./components/JiraDialog";
+import { DocumentsDialog } from "./components/DocumentsDialog";
 import { ChangesPanel, type PanelTab } from "./components/ChangesPanel";
 import { Composer, type Context } from "./components/Composer";
 import { BlogDialog } from "./components/BlogDialog";
@@ -41,6 +42,7 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<string>(params.get("project") ?? localStorage.getItem("lc_project") ?? "");
   const [projectDialog, setProjectDialog] = useState<"" | "new" | string>("");
+  const [docsFor, setDocsFor] = useState("");
   const [mode, setMode] = useState<ApprovalMode>(() => (localStorage.getItem("lc_mode") as ApprovalMode) || "request");
   // Whether the assistant may offer a choice of layouts. "Don't ask me again" writes this, and it is sent with every
   // message, so the backend does not even hand the model the tool. Kept per browser, like the approval mode.
@@ -227,7 +229,7 @@ export default function App() {
             onSelectSite={(id) => { const p = projects.find((x) => x.siteId === id && x.isDefault); if (p) openProject(p.id); else { setSiteId(id); setJobId(""); } }} onAddSite={() => setDialog("site")} onManageSites={() => setDialog("sites")} onToken={() => { setTokenReason(undefined); setDialog("token"); }} hostingerOk={hostingerOk} onIntegrations={() => setDialog("integrations")}
             onSelectJob={openJob} onNewChat={newChat} onTogglePin={(id) => setPinned(prefs.togglePin(id))} onHide={() => setNavOpen(false)}
             projects={projects} projectId={projectId} onSelectProject={(id) => openProject(id, id === projectId)} onNewSession={newSessionIn}
-            onNewProject={() => setProjectDialog("new")} onProjectSettings={(id) => setProjectDialog(id)}
+            onNewProject={() => setProjectDialog("new")} onProjectSettings={(id) => setProjectDialog(id)} onProjectDocuments={setDocsFor}
             me={me} onJira={() => setDialog("jira")} onInstructions={() => setDialog("instructions")} onPassword={() => setDialog("password")} onSignOut={() => void signOut()} />
         )}
 
@@ -285,6 +287,8 @@ export default function App() {
       {dialog === "instructions" && <InstructionsDialog onClose={() => setDialog("")} />}
       {dialog === "password" && <PasswordDialog onClose={() => setDialog("")} />}
       {dialog === "jira" && <JiraDialog onClose={() => setDialog("")} />}
+      {docsFor && projects.find((p) => p.id === docsFor) && <DocumentsDialog project={projects.find((p) => p.id === docsFor)!} onClose={() => setDocsFor("")}
+        onOpenJob={(id) => { refreshJobs(); openProject(docsFor, true); setJobId(id); }} />}
       {projectDialog && <ProjectDialog sites={sites} siteId={siteId} project={projectDialog === "new" ? undefined : projects.find((p) => p.id === projectDialog)}
         onClose={() => setProjectDialog("")}
         onSaved={(p) => {

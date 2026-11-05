@@ -37,6 +37,8 @@ import { connector } from "./connector.js";
 import { accounts, overLimit } from "./accounts.js";
 import { AUTH_PUBLIC_ROUTES, CLIENT_EXTRA_ROUTES, handleAccountRoutes } from "./adminRoutes.js";
 import { handleProjectRoutes } from "./projectRoutes.js";
+import { handleDocumentRoutes } from "./documentRoutes.js";
+import { documents } from "./documents.js";
 import { defaultProjectId, projects } from "./projects.js";
 import { diffOf } from "./changes.js";
 import { canUseSite, verifyWidgetToken, type Caller } from "./auth.js";
@@ -206,7 +208,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     const url = new URL(req.url ?? "/", "http://x");
     const route = `${req.method} ${url.pathname}`;
     try {
-      const isApi = /^\/(health|sites|sections|jobs|files|integrations|screens|models|voice|projects)(\/|$)/.test(url.pathname) || /^\/(auth|admin)\//.test(url.pathname) || url.pathname === "/connector.mjs"; // "/admin" itself is the page
+      const isApi = /^\/(health|sites|sections|jobs|files|integrations|screens|models|voice|projects|documents)(\/|$)/.test(url.pathname) || /^\/(auth|admin)\//.test(url.pathname) || url.pathname === "/connector.mjs"; // "/admin" itself is the page
       if (!isApi && req.method === "GET" && serveStatic(url.pathname, res)) return; // UI files are public; the API below is protected
       // Who is calling: the chat in the WordPress widget (signed per-person token, only its own site) or the app / admin.
       let caller: Caller = { via: "admin" };
@@ -260,9 +262,10 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
 
       // ---- accounts and the admin panel (adminRoutes.ts)
       const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
-      const rc = { req, res, url, route, caller, bearer, sites, runner, send, readJson };
+      const rc = { req, res, url, route, caller, bearer, sites, runner, send, readJson, readBody };
       if (await handleAccountRoutes(rc)) return;
       if (await handleProjectRoutes(rc)) return;
+      if (await handleDocumentRoutes(rc)) return;
 
       // ---- sites
       const pt = url.pathname.match(/^\/sites\/([\w-]+)\/preview-token$/);
@@ -854,6 +857,7 @@ if (runDirectly || process.env.LC_START_SERVER === "1") {
   const files = new FileStore();
   const runner = new JobRunner(jobs, sites, buildAgent(files));
   runner.recover();
+  documents.recover((d) => projects.get(d.projectId)?.model || config.model);
   const server = createApp(runner, sites, files);
   server.on("error", (e: NodeJS.ErrnoException) => {
     if (e.code === "EADDRINUSE") {

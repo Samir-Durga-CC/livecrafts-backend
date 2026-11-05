@@ -40,6 +40,8 @@ export interface RouteContext {
   runner: JobRunner;
   send: (res: http.ServerResponse, status: number, body: unknown) => void;
   readJson: (req: http.IncomingMessage) => Promise<any>;
+  /** The raw request body, refused past `limit` bytes (uploads). */
+  readBody: (req: http.IncomingMessage, limit: number) => Promise<Buffer>;
 }
 
 /** Answered without signing in. */

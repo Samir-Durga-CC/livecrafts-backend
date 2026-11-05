@@ -145,3 +145,18 @@ export interface Project {
 
 /** The signed-in person's own Jira connection (the token is never sent to the browser). */
 export interface JiraStatus { connected: boolean; siteUrl?: string; email?: string; accountName?: string; connectedAt?: string }
+
+/* ---------------------------------------------------------------- documents (an AMC and friends) */
+export interface DocTask {
+  id: string; title: string; detail: string; kind: "site" | "ticket"; frequency: string; priority: "low" | "medium" | "high"; source: string;
+  jiraKey?: string; jiraUrl?: string; jobId?: string; dismissed?: boolean;
+}
+export interface DocBrief {
+  id: string; projectId: string; filename: string; bytes: number; status: "reading" | "analysing" | "ready" | "failed"; error?: string;
+  uploadedBy: string; createdAt: string; updatedAt: string; tasks: number; ticketed: number; sessions: number; summary?: string;
+}
+export interface DocFull extends Omit<DocBrief, "tasks" | "ticketed" | "sessions"> {
+  chars?: number; text: string; tasks?: DocTask[];
+  analysis?: { summary: string; truncated?: boolean; model: string; ms: number;
+    contract: { client?: string; provider?: string; period?: string; services: string[]; responseTimes: string[]; exclusions: string[]; reporting?: string } };
+}

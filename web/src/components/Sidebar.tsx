@@ -13,7 +13,7 @@ export interface SidebarProps {
   onInstructions: () => void; onPassword: () => void; onSignOut: () => void; onJira: () => void;
   /** The projects in the tree, the open one, and what can be done with them. */
   projects: Project[]; projectId: string;
-  onSelectProject: (id: string) => void; onNewSession: (projectId: string) => void; onNewProject: () => void; onProjectSettings: (id: string) => void;
+  onSelectProject: (id: string) => void; onNewSession: (projectId: string) => void; onNewProject: () => void; onProjectSettings: (id: string) => void; onProjectDocuments: (id: string) => void;
 }
 
 /** One session in the tree. */
@@ -116,6 +116,7 @@ export function Sidebar(p: SidebarProps) {
                   {p.sites.length > 1 && !pr.isDefault && site && <small className="pj-site">{site.name}</small>}
                 </button>
                 <button className="ghost-icon sm" title={`New session in ${pr.name}`} onClick={() => p.onNewSession(pr.id)}><Icon.Plus size={14} /></button>
+                {!client && <button className="ghost-icon sm" title="Documents (AMC)" onClick={() => p.onProjectDocuments(pr.id)}><Icon.Page size={14} /></button>}
                 {!client && <button className="ghost-icon sm" title="Project settings" onClick={() => p.onProjectSettings(pr.id)}><Icon.Settings size={14} /></button>}
               </div>
               {isOpen && (

@@ -1,6 +1,6 @@
 import type { FixStatus, SpeedRun, SpeedRunSummary } from "./speed";
 import type { PluginActionResult, PluginHistoryEntry, PluginJob, PluginList } from "./plugins";
-import type { JiraStatus, Project, AccountInfo, AdminJobRow, AdminOverview, InstructionVersion, Limits, LogRow, Role, ConnectorInfo, TemplatesReport, ApprovalMode, AssistantInfo, ChangeRecord, DiffData, HostingerHealth, ModelsReport, ProviderInfo, SiteStatus, JobEvent, JobSummary, Site, TimelineItem, UploadedFile } from "./types";
+import type { DocBrief, DocFull, JiraStatus, Project, AccountInfo, AdminJobRow, AdminOverview, InstructionVersion, Limits, LogRow, Role, ConnectorInfo, TemplatesReport, ApprovalMode, AssistantInfo, ChangeRecord, DiffData, HostingerHealth, ModelsReport, ProviderInfo, SiteStatus, JobEvent, JobSummary, Site, TimelineItem, UploadedFile } from "./types";
 
 const TOKEN_KEY = "lc_token";
 export const getToken = () => localStorage.getItem(TOKEN_KEY) ?? "";
@@ -52,6 +52,21 @@ export const api = {
   myInstructions: () => request<{ text: string; history: InstructionVersion[] }>("GET", "/auth/instructions"),
   saveMyInstructions: (text: string) => request<{ text: string; history: InstructionVersion[] }>("PUT", "/auth/instructions", { text }),
   resetMyInstructions: () => request<{ text: string; history: InstructionVersion[] }>("POST", "/auth/instructions/reset"),
+
+  // ---- a project's documents (read and analysed in the background; nothing happens until a person acts on a task)
+  documents: (projectId: string) => request<{ documents: DocBrief[] }>("GET", `/projects/${projectId}/documents`),
+  document: (id: string) => request<DocFull>("GET", `/documents/${id}`),
+  async uploadDocument(projectId: string, file: File): Promise<DocBrief> {
+    const res = await fetch(`/projects/${projectId}/documents`, { method: "POST", headers: authHeaders({ "X-Filename": encodeURIComponent(file.name), "Content-Type": "application/octet-stream" }), body: file });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new ApiError(res.status, (data as any).error ?? `HTTP ${res.status}`);
+    return data as DocBrief;
+  },
+  reanalyseDocument: (id: string) => request<DocBrief>("POST", `/documents/${id}/analyze`, {}),
+  deleteDocument: (id: string) => request<{ ok: boolean }>("DELETE", `/documents/${id}`),
+  fileTickets: (id: string, taskIds: string[]) => request<{ created: { taskId: string; key: string; url: string }[]; failed: { taskId: string; error: string }[]; document: DocFull }>("POST", `/documents/${id}/tickets`, { taskIds }),
+  startTaskSession: (id: string, taskId: string) => request<{ jobId: string; document: DocFull }>("POST", `/documents/${id}/tasks/${taskId}/session`),
+  dismissTask: (id: string, taskId: string, dismissed: boolean) => request<DocFull>("PATCH", `/documents/${id}/tasks/${taskId}`, { dismissed }),
 
   // ---- my Jira (each account connects its own; the token never comes back)
   jira: () => request<JiraStatus>("GET", "/auth/jira"),
