@@ -1084,3 +1084,26 @@ a.nav-item:visited { color: var(--muted); } a.nav-item:hover { color: var(--text
 .ad-line { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ad-line.error b { color: var(--bad); } .ad-line.warn b { color: var(--warn); }
 @media (max-width: 720px) { .ad-acc thead, .ad-jobs thead { display: none; } .ad-pw { width: 100%; } }
+
+/* Projects in the sidebar: each a folder of sessions */
+.pj-head { display: flex; align-items: center; color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; padding: 8px 2px 2px 8px; }
+.ghost-icon.sm { width: 26px; height: 26px; border-radius: 7px; }
+.group-head.static { cursor: default; }
+.pj { border-radius: 10px; }
+.pj-row { display: flex; align-items: center; gap: 2px; border-radius: 9px; padding-right: 2px; }
+.pj-row:hover { background: var(--hover); }
+.pj-row .ghost-icon.sm { opacity: 0; }
+.pj-row:hover .ghost-icon.sm, .pj.on .pj-row .ghost-icon.sm, .pj-row .ghost-icon.sm:focus-visible { opacity: 1; }
+.pj-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; background: none; border: 0; padding: 7px 6px; text-align: left; color: var(--text-2); font-size: 13.5px; font-weight: 600; }
+.pj.on > .pj-row .pj-main { color: var(--text); }
+.pj-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.pj-site { margin-left: auto; color: var(--faint); font-weight: 400; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
+.pj-sessions { display: flex; flex-direction: column; gap: 1px; padding-left: 14px; margin: 1px 0 6px; border-left: 1px solid var(--line); margin-left: 13px; }
+.pj-sessions .empty-hist { padding: 4px 8px; font-size: 12.5px; }
+.pj-more { background: none; border: 0; color: var(--muted); font-size: 12.5px; text-align: left; padding: 5px 8px; border-radius: 8px; }
+.pj-more:hover { background: var(--hover); color: var(--text); }
+@media (hover: none) { .pj-row .ghost-icon.sm { opacity: 1; } }
+.dialog select { background: var(--surface); border: 1px solid var(--line-strong); border-radius: 10px; padding: 9px 10px; color: var(--text); font: inherit; font-size: 13.5px; }
+.dialog select:focus { outline: none; border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
+.pj-name { flex: 0 1 auto; min-width: 3.5em; }
+.pj-site { flex: 0 20 auto; min-width: 0; }

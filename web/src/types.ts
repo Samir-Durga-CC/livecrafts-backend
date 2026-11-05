@@ -71,7 +71,7 @@ export interface AssistantInfo { botName?: string; welcome?: string; instruction
 export interface DiffData { label: string; language: string; before: string; after: string }
 
 export interface JobSummary {
-  id: string; siteId: string; prompt: string; status: JobStatus; pending: Pending[];
+  id: string; siteId: string; /** Always set: the site's own project when the session named none. */ projectId: string; prompt: string; status: JobStatus; pending: Pending[];
   result?: string; error?: string; createdAt: string; updatedAt: string; lastEventSeq: number; changes?: ChangeRecord[];
   approvalMode?: ApprovalMode; model?: string | null; requestSeq?: number;
   /** false = the layout picker is off for this conversation. */
@@ -134,3 +134,10 @@ export interface AdminJobRow {
   usage?: { input: number; output: number; calls: number }; createdAt: string; updatedAt: string; requests: number; changes: number; waiting: number;
 }
 export interface LogRow { at: string; level: "info" | "warn" | "error"; msg: string; [k: string]: unknown }
+
+/** A workspace on a site with its own sessions (the backend's projects.ts). */
+export interface Project {
+  id: string; name: string; siteId: string; description?: string; instructions?: string; model?: string; approvalMode?: ApprovalMode;
+  isDefault?: boolean; archived?: boolean; createdAt: string; updatedAt: string;
+  sessions: number; running: number; lastActivity: string | null;
+}

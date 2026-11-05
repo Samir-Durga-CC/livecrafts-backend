@@ -10,6 +10,7 @@ import { config } from "./config.js";
 import { connector } from "./connector.js";
 import type { JobRunner } from "./jobs.js";
 import { assistantSettings } from "./persona.js";
+import { projects } from "./projects.js";
 import type { JsonStore } from "./store.js";
 import type { Site } from "./types.js";
 import { followLog, log, readLog, readUsage } from "./usage.js";
@@ -39,7 +40,7 @@ export interface RouteContext {
 /** Answered without signing in. */
 export const AUTH_PUBLIC_ROUTES = ["GET /auth/status", "POST /auth/setup", "POST /auth/login"];
 /** What a client account may call besides the chat routes the widget already has. */
-export const CLIENT_EXTRA_ROUTES = /^(GET \/auth\/me|POST \/auth\/logout|PUT \/auth\/password|(GET|PUT) \/auth\/instructions|POST \/auth\/instructions\/reset|GET \/models\/usage)$/;
+export const CLIENT_EXTRA_ROUTES = /^(GET \/projects|GET \/auth\/me|POST \/auth\/logout|PUT \/auth\/password|(GET|PUT) \/auth\/instructions|POST \/auth\/instructions\/reset|GET \/models\/usage)$/;
 
 const startedAt = new Date();
 const safeEqual = (a: string, b: string) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && crypto.timingSafeEqual(x, y); };
@@ -225,11 +226,14 @@ export async function handleAccountRoutes(c: RouteContext): Promise<boolean> {
     const accId = url.searchParams.get("account") || (caller.via === "account" ? caller.account.id : "");
     const acc = accId ? accounts.get(accId) : undefined;
     const persona = await assistantSettings(site).catch(() => null);
+    const prj = projects.get(url.searchParams.get("project") || "") ?? projects.defaultFor(site);
+    const project = prj.siteId === site.id ? prj : projects.defaultFor(site);
     const text = systemPrompt(site, {
-      files: false, themeWrites: config.allowThemeWrites, browser: true, hostinger: false, skills: "", mode: "request",
+      files: false, themeWrites: config.allowThemeWrites, browser: true, hostinger: false, skills: "", mode: project.approvalMode ?? "request",
       persona, account: acc ? { name: acc.name, instructions: acc.instructions } : undefined,
+      project: { name: project.name, instructions: project.instructions },
     });
-    return send(res, 200, { site: { id: site.id, name: site.name }, account: acc ? { id: acc.id, name: acc.name } : null, persona, text, chars: text.length,
+    return send(res, 200, { site: { id: site.id, name: site.name }, account: acc ? { id: acc.id, name: acc.name } : null, project: { id: project.id, name: project.name }, persona, text, chars: text.length,
       note: "A real run adds what it read from the site at that moment (drafts, notes, the page) after THIS SITE, and lists the theme-file and hosting tools when they are connected." }), true;
   }
 

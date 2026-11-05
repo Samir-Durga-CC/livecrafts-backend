@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../icons";
-import type { AccountInfo, JobSummary, Site } from "../types";
-import { groupJobs, prefs, titleOf } from "../util";
+import type { AccountInfo, JobSummary, Project, Site } from "../types";
+import { prefs, titleOf } from "../util";
 
 export interface SidebarProps {
   sites: Site[]; site?: Site; jobs: JobSummary[]; jobId: string; titles: Record<string, string>; pinned: string[]; model: string;
@@ -11,6 +11,22 @@ export interface SidebarProps {
   /** Who is signed in (null = not known yet / an open local backend). */
   me?: { root: boolean; account: AccountInfo | null } | null;
   onInstructions: () => void; onPassword: () => void; onSignOut: () => void;
+  /** The projects in the tree, the open one, and what can be done with them. */
+  projects: Project[]; projectId: string;
+  onSelectProject: (id: string) => void; onNewSession: (projectId: string) => void; onNewProject: () => void; onProjectSettings: (id: string) => void;
+}
+
+/** One session in the tree. */
+function Session({ j, jobId, titles, pinned, onSelectJob, onTogglePin }: SidebarProps & { j: JobSummary }) {
+  return (
+    <div className={`hist ${j.id === jobId ? "on" : ""}`}>
+      <button className="hist-main" onClick={() => onSelectJob(j.id)} title={titleOf(j, titles)}>
+        <span className={`dot ${j.status}`} />
+        <span className="hist-text">{titleOf(j, titles)}</span>
+      </button>
+      <button className={`pin-btn ${pinned.includes(j.id) ? "on" : ""}`} title={pinned.includes(j.id) ? "Unpin" : "Pin"} onClick={() => onTogglePin(j.id)}><Icon.Pin size={14} /></button>
+    </div>
+  );
 }
 
 export function Sidebar(p: SidebarProps) {
@@ -27,7 +43,15 @@ export function Sidebar(p: SidebarProps) {
     return () => document.removeEventListener("mousedown", close);
   }, [menu]);
 
-  const groups = useMemo(() => groupJobs(p.jobs.filter((j) => !q || titleOf(j, p.titles).toLowerCase().includes(q.toLowerCase())), p.pinned), [p.jobs, p.pinned, p.titles, q]);
+  const [showAll, setShowAll] = useState<Record<string, boolean>>({});
+  const matches = (j: JobSummary) => titleOf(j, p.titles).toLowerCase().includes(q.toLowerCase());
+  // Sessions under their project, newest first; pinned ones also sit on top, across projects.
+  const byProject = useMemo(() => {
+    const m = new Map<string, JobSummary[]>();
+    for (const j of [...p.jobs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) m.set(j.projectId, [...(m.get(j.projectId) ?? []), j]);
+    return m;
+  }, [p.jobs]);
+  const pinnedJobs = p.jobs.filter((j) => p.pinned.includes(j.id) && (!q || matches(j)));
   const acc = p.me?.account ?? null;
   // A client sees the chat on their own sites, nothing that holds keys or other people's work.
   const client = acc?.role === "client";
@@ -38,14 +62,14 @@ export function Sidebar(p: SidebarProps) {
       <div className="sb-top">
         <div className="brand"><span className="logo"><Icon.Sparkle size={16} /></span> Livecrafts</div>
         <div className="sb-icons">
-          <button className="ghost-icon" title="Search chats" onClick={() => { setSearching(!searching); setQ(""); }}><Icon.Search size={17} /></button>
+          <button className="ghost-icon" title="Search sessions" onClick={() => { setSearching(!searching); setQ(""); }}><Icon.Search size={17} /></button>
           <button className="ghost-icon" title="Hide sidebar" onClick={p.onHide}><Icon.Sidebar size={17} /></button>
         </div>
       </div>
 
-      {searching && <input className="sb-search" autoFocus placeholder="Search chats…" value={q} onChange={(e) => setQ(e.target.value)} />}
+      {searching && <input className="sb-search" autoFocus placeholder="Search sessions…" value={q} onChange={(e) => setQ(e.target.value)} />}
 
-      <button className="newchat" disabled={!p.site} onClick={p.onNewChat}><Icon.Plus size={16} /> New Chat</button>
+      <button className="newchat" disabled={!p.projectId} onClick={p.onNewChat} title={p.projects.find((x) => x.id === p.projectId)?.name}><Icon.Plus size={16} /> New session</button>
 
       <nav className="nav">
         <button className="nav-item on"><Icon.Chat size={17} /> Chat</button>
@@ -62,24 +86,45 @@ export function Sidebar(p: SidebarProps) {
       <div className="divider" />
 
       <div className="history">
-        {groups.length === 0 && <div className="empty-hist">{q ? "No chats match." : "No chats yet. Start one!"}</div>}
-        {groups.map((g) => {
-          const isClosed = !!collapsed[g.label];
+        <div className="pj-head">
+          <span>Projects</span>
+          <span className="grow" />
+          {!client && <button className="ghost-icon sm" title="New project" onClick={p.onNewProject}><Icon.Plus size={15} /></button>}
+        </div>
+        {pinnedJobs.length > 0 && (
+          <div className="group">
+            <div className="group-head static"><Icon.Pin size={12} /><span>Pinned</span></div>
+            {pinnedJobs.map((j) => <Session key={j.id} j={j} {...p} />)}
+          </div>
+        )}
+        {p.projects.length === 0 && <div className="empty-hist">{client ? "No project yet. Ask your team to give you a site." : "Connect a site to make your first project."}</div>}
+        {p.projects.map((pr) => {
+          const all = byProject.get(pr.id) ?? [];
+          const shown = q ? all.filter(matches) : all;
+          if (q && !shown.length) return null;
+          const key = "prj:" + pr.id;
+          const isOpen = q ? true : collapsed[key] === undefined ? pr.id === p.projectId : !collapsed[key];
+          const more = !showAll[pr.id] && shown.length > 8;
+          const site = p.sites.find((s) => s.id === pr.siteId);
           return (
-            <div key={g.label} className="group">
-              <button className="group-head" onClick={() => setCollapsed(prefs.setCollapsed(g.label, !isClosed))}>
-                {g.label === "Pinned" && <Icon.Pin size={12} />}<span>{g.label}</span>
-                <span className="grow" />{isClosed ? <Icon.ChevronRight size={14} /> : <Icon.ChevronDown size={14} />}
-              </button>
-              {!isClosed && g.jobs.map((j) => (
-                <div key={j.id} className={`hist ${j.id === p.jobId ? "on" : ""}`}>
-                  <button className="hist-main" onClick={() => p.onSelectJob(j.id)} title={titleOf(j, p.titles)}>
-                    <span className={`dot ${j.status}`} />
-                    <span className="hist-text">{titleOf(j, p.titles)}</span>
-                  </button>
-                  <button className={`pin-btn ${p.pinned.includes(j.id) ? "on" : ""}`} title={p.pinned.includes(j.id) ? "Unpin" : "Pin"} onClick={() => p.onTogglePin(j.id)}><Icon.Pin size={14} /></button>
+            <div key={pr.id} className={`pj${pr.id === p.projectId ? " on" : ""}`}>
+              <div className="pj-row">
+                <button className="pj-main" onClick={() => { setCollapsed(prefs.setCollapsed(key, isOpen)); p.onSelectProject(pr.id); }} title={pr.description || pr.name}>
+                  {isOpen ? <Icon.ChevronDown size={14} /> : <Icon.ChevronRight size={14} />}
+                  <span className="pj-name">{pr.name}</span>
+                  {pr.running > 0 && <span className="dot running" title={`${pr.running} running`} />}
+                  {p.sites.length > 1 && !pr.isDefault && site && <small className="pj-site">{site.name}</small>}
+                </button>
+                <button className="ghost-icon sm" title={`New session in ${pr.name}`} onClick={() => p.onNewSession(pr.id)}><Icon.Plus size={14} /></button>
+                {!client && <button className="ghost-icon sm" title="Project settings" onClick={() => p.onProjectSettings(pr.id)}><Icon.Settings size={14} /></button>}
+              </div>
+              {isOpen && (
+                <div className="pj-sessions">
+                  {shown.length === 0 && <div className="empty-hist">No sessions yet.</div>}
+                  {(more ? shown.slice(0, 8) : shown).map((j) => <Session key={j.id} j={j} {...p} />)}
+                  {more && <button className="pj-more" onClick={() => setShowAll({ ...showAll, [pr.id]: true })}>Show {shown.length - 8} more</button>}
                 </div>
-              ))}
+              )}
             </div>
           );
         })}

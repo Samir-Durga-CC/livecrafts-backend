@@ -3,6 +3,7 @@ import { PausedBar, type PauseKind } from "./components/PausedBar";
 import { ApiError, api, buildTimeline, followJob, getToken, lastStatus, ledgerFrom, setToken } from "./api";
 import { SignIn } from "./components/SignIn";
 import { InstructionsDialog, PasswordDialog } from "./components/AccountDialogs";
+import { ProjectDialog } from "./components/ProjectDialog";
 import { ChangesPanel, type PanelTab } from "./components/ChangesPanel";
 import { Composer, type Context } from "./components/Composer";
 import { BlogDialog } from "./components/BlogDialog";
@@ -13,7 +14,7 @@ import { SitesDialog } from "./components/SitesDialog";
 import { ApprovalModePicker } from "./components/RequestChanges";
 import { ModelPicker, shortLabel } from "./components/ModelPicker";
 import { Icon } from "./icons";
-import type { AccountInfo, ApprovalMode, ChangeRecord, JobEvent, JobSummary, Site } from "./types";
+import type { AccountInfo, Project, ApprovalMode, ChangeRecord, JobEvent, JobSummary, Site } from "./types";
 import { WRITE_TOOLS, groupRequests, prefs, titleOf, writeCount, type RequestGroup } from "./util";
 
 const params = new URLSearchParams(location.search);
@@ -35,6 +36,10 @@ export default function App() {
   // Signed in with an account (or the root key): who, and what they may see. null until known.
   const [me, setMe] = useState<{ root: boolean; account: AccountInfo | null } | null>(null);
   const [signIn, setSignIn] = useState<string | null>(null);
+  // Projects: workspaces on a site, each with its own sessions. The open project decides the site.
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [projectId, setProjectId] = useState<string>(params.get("project") ?? localStorage.getItem("lc_project") ?? "");
+  const [projectDialog, setProjectDialog] = useState<"" | "new" | string>("");
   const [mode, setMode] = useState<ApprovalMode>(() => (localStorage.getItem("lc_mode") as ApprovalMode) || "request");
   // Whether the assistant may offer a choice of layouts. "Don't ask me again" writes this, and it is sent with every
   // message, so the backend does not even hand the model the tool. Kept per browser, like the approval mode.
@@ -68,8 +73,10 @@ export default function App() {
     else setProblem((e as Error).message);
   }, []);
   const refreshJobs = useCallback(() => { api.jobs().then(setJobs).catch(() => {}); }, []);
+  const refreshProjects = useCallback(() => { api.projects().then(setProjects).catch(() => {}); }, []);
   const refreshSites = useCallback(() => {
     api.sites().then(setSites).catch(() => {});
+    refreshProjects();
     api.integrations().then((r) => setHostingerOk(r.hostinger.connected)).catch(() => {});
   }, []);
 
@@ -78,10 +85,20 @@ export default function App() {
     api.me().then(setMe).catch(() => {});
     api.sites().then((s) => { setSites(s); setSiteId((cur) => (s.some((x) => x.id === cur) ? cur : s[0]?.id ?? "")); }).catch(guard);
     refreshJobs();
+    refreshProjects();
     api.integrations().then((r) => setHostingerOk(r.hostinger.connected)).catch(() => {});
-    const t = setInterval(refreshJobs, 5000);
+    const t = setInterval(() => { refreshJobs(); refreshProjects(); }, 5000);
     return () => clearInterval(t);
-  }, [guard, refreshJobs]);
+  }, [guard, refreshJobs, refreshProjects]);
+
+  // The open project: the one remembered, else the site's own project, else the first. Its site is the site.
+  useEffect(() => {
+    if (!projects.length) return;
+    const cur = projects.find((p) => p.id === projectId) ?? projects.find((p) => p.siteId === siteId && p.isDefault) ?? projects[0];
+    if (cur.id !== projectId) setProjectId(cur.id);
+    if (cur.siteId !== siteId) setSiteId(cur.siteId);
+  }, [projects, projectId, siteId]);
+  useEffect(() => { if (projectId) localStorage.setItem("lc_project", projectId); }, [projectId]);
 
   useEffect(() => { if (siteId) localStorage.setItem("lc_site", siteId); }, [siteId]);
   useEffect(() => { try { localStorage.setItem("lc_tab", panelTab); } catch { /* ignore */ } }, [panelTab]);
@@ -110,7 +127,7 @@ export default function App() {
   }, [kebab]);
 
   const site = sites.find((s) => s.id === siteId);
-  const siteJobs = useMemo(() => jobs.filter((j) => j.siteId === siteId), [jobs, siteId]);
+  const project = projects.find((p) => p.id === projectId);
   const job = jobs.find((j) => j.id === jobId);
   const status = jobId ? lastStatus(events) : "idle";
   const timeline = useMemo(() => buildTimeline(events), [events]);
@@ -127,7 +144,7 @@ export default function App() {
   useEffect(() => { if (!working) setStopping(false); if (paused) setPauseKind("note"); }, [working, paused]);
   const stop = () => { setStopping(true); api.stop(jobId).catch((e) => { setStopping(false); guard(e); }); };
   const cont = () => api.resume(jobId).catch(guard);
-  const model = pick ? shortLabel(pick) : health?.model ?? "model";
+  const model = pick ? shortLabel(pick) : project?.model ? shortLabel(project.model) : health?.model ?? "model";
   const choose = (id: string) => { setPick(id); if (id) localStorage.setItem("lc_model", id); else localStorage.removeItem("lc_model"); };
   const title = job ? titleOf(job, titles) : "New chat";
 
@@ -138,7 +155,7 @@ export default function App() {
       const args = { prompt, fileIds, pageUrl: ctx.pageUrl, selectedTarget: ctx.selectedTarget, approvalMode: mode, ...(layoutPickerOn() ? {} : { layoutPicker: false }), ...(pick ? { model: pick } : {}) };
       if (jobId && paused) await api.message(jobId, { ...args, kind: pauseKind });
       else if (jobId && (status === "completed" || status === "failed")) await api.message(jobId, args);
-      else { const j = await api.createJob(siteId, args); setJobId(j.id); }
+      else { const j = await api.createJob(siteId, { ...args, projectId: project?.siteId === siteId ? projectId : undefined }); setJobId(j.id); }
       refreshJobs();
     } catch (e) { guard(e); throw e; }
   }
@@ -146,7 +163,7 @@ export default function App() {
   const [blogOpen, setBlogOpen] = useState(false);
   async function startBlog(prompt: string, fileIds: string[]) {
     setProblem("");
-    try { const j = await api.createJob(siteId, { prompt, fileIds, approvalMode: mode }); setJobId(j.id); refreshJobs(); }
+    try { const j = await api.createJob(siteId, { prompt, fileIds, approvalMode: mode, projectId: project?.siteId === siteId ? projectId : undefined }); setJobId(j.id); refreshJobs(); }
     catch (e) { guard(e); throw e; }
   }
   async function answer(approvalId: string, approved: boolean, reason?: string) {
@@ -166,14 +183,27 @@ export default function App() {
   }
   const openInPreview = (url: string) => { setPanelTab("preview"); setPanelOpen(true); setNavigate({ url, n: Date.now() }); };
   const copy = (t: string) => { navigator.clipboard?.writeText(t).then(() => say("Copied"), () => say("Copy failed")); };
-  const openJob = (id: string) => { setJobId(id); if (!wide()) setNavOpen(false); };
-  const newChat = () => { setJobId(""); if (!wide()) setNavOpen(false); };
+  /** Open a project: its site, its default approval mode, and no session yet (the welcome of that project). */
+  const openProject = (id: string, keepJob = false) => {
+    const p = projects.find((x) => x.id === id);
+    if (!p) return;
+    setProjectId(p.id); setSiteId(p.siteId);
+    if (p.approvalMode && !keepJob) setMode(p.approvalMode);
+    if (!keepJob) setJobId("");
+  };
+  const openJob = (id: string) => {
+    const j = jobs.find((x) => x.id === id);
+    if (j && j.projectId !== projectId) openProject(j.projectId, true);
+    setJobId(id); if (!wide()) setNavOpen(false);
+  };
+  const newChat = () => { setJobId(""); if (project?.approvalMode) setMode(project.approvalMode); if (!wide()) setNavOpen(false); };
+  const newSessionIn = (id: string) => { openProject(id); if (!wide()) setNavOpen(false); };
 
   const welcome = (
     <div className="welcome">
       <div className="orb"><Icon.Sparkle size={30} /></div>
-      <h1>{site ? "What should we change today?" : "Connect a site to get started"}</h1>
-      <p className="muted">{site ? `Describe the change in plain words. I’ll show exactly what will happen on ${site.name} and wait for your approval before anything is written.` : "Add a WordPress site that has the Livecrafts plugin installed."}</p>
+      <h1>{site ? (project && !project.isDefault ? project.name : "What should we change today?") : "Connect a site to get started"}</h1>
+      <p className="muted">{site ? `${project && !project.isDefault && project.description ? project.description + " - " : ""}Describe the change in plain words. I’ll show exactly what will happen on ${site.name} and wait for your approval before anything is written.` : "Add a WordPress site that has the Livecrafts plugin installed."}</p>
       {!site && <button className="btn primary" onClick={() => setDialog("site")}>Connect a site</button>}
       {site && (
         <div className="suggest">
@@ -192,9 +222,11 @@ export default function App() {
       <div className={`app ${navOpen ? "nav-open" : ""} ${panelOpen ? "panel-open" : ""} ${panelOpen && panelTab === "preview" ? "panel-wide" : ""}`}>
         {navOpen && !wide() && <div className="scrim" onClick={() => setNavOpen(false)} />}
         {navOpen && (
-          <Sidebar sites={sites} site={site} jobs={siteJobs} jobId={jobId} titles={titles} pinned={pinned} model={model}
-            onSelectSite={(id) => { setSiteId(id); setJobId(""); }} onAddSite={() => setDialog("site")} onManageSites={() => setDialog("sites")} onToken={() => { setTokenReason(undefined); setDialog("token"); }} hostingerOk={hostingerOk} onIntegrations={() => setDialog("integrations")}
+          <Sidebar sites={sites} site={site} jobs={jobs} jobId={jobId} titles={titles} pinned={pinned} model={model}
+            onSelectSite={(id) => { const p = projects.find((x) => x.siteId === id && x.isDefault); if (p) openProject(p.id); else { setSiteId(id); setJobId(""); } }} onAddSite={() => setDialog("site")} onManageSites={() => setDialog("sites")} onToken={() => { setTokenReason(undefined); setDialog("token"); }} hostingerOk={hostingerOk} onIntegrations={() => setDialog("integrations")}
             onSelectJob={openJob} onNewChat={newChat} onTogglePin={(id) => setPinned(prefs.togglePin(id))} onHide={() => setNavOpen(false)}
+            projects={projects} projectId={projectId} onSelectProject={(id) => openProject(id, id === projectId)} onNewSession={newSessionIn}
+            onNewProject={() => setProjectDialog("new")} onProjectSettings={(id) => setProjectDialog(id)}
             me={me} onInstructions={() => setDialog("instructions")} onPassword={() => setDialog("password")} onSignOut={() => void signOut()} />
         )}
 
@@ -235,7 +267,7 @@ export default function App() {
               placeholder={waiting ? "Waiting for your approval above…" : working ? (stopping ? "Stopping…" : "Working… (press Stop to pause)") : paused ? (pauseKind === "edit" ? "Type your corrected request…" : "Type a note for the assistant…") : site ? "Ask Livecrafts to change anything on your site…" : "Connect a site first"}
               onClearContext={(k) => setCtx((c) => ({ ...c, [k]: undefined }))} onSend={send}
               tools={<button className="mode" title="New blog post: give a title, the assistant writes the draft" onClick={() => setBlogOpen(true)} disabled={!siteId || working || waiting}><Icon.Page size={17} /></button>}
-              extra={<><ApprovalModePicker mode={mode} onChange={(m) => void changeMode(m)} /><ModelPicker value={pick} onChange={choose} fallback={health?.model} /></>} />
+              extra={<><ApprovalModePicker mode={mode} onChange={(m) => void changeMode(m)} /><ModelPicker value={pick} onChange={choose} fallback={project?.model ?? health?.model} /></>} />
           </section>
         </main>
 
@@ -251,6 +283,18 @@ export default function App() {
       {dialog === "token" && <TokenDialog reason={tokenReason} onClose={() => setDialog("")} />}
       {dialog === "instructions" && <InstructionsDialog onClose={() => setDialog("")} />}
       {dialog === "password" && <PasswordDialog onClose={() => setDialog("")} />}
+      {projectDialog && <ProjectDialog sites={sites} siteId={siteId} project={projectDialog === "new" ? undefined : projects.find((p) => p.id === projectDialog)}
+        onClose={() => setProjectDialog("")}
+        onSaved={(p) => {
+          // Into the list at once: the effect that picks the open project would otherwise not find it yet, and fall back.
+          setProjects((cur) => {
+            const old = cur.find((x) => x.id === p.id);
+            const next = { ...p, sessions: old?.sessions ?? 0, running: old?.running ?? 0, lastActivity: old?.lastActivity ?? null };
+            return p.archived ? cur.filter((x) => x.id !== p.id) : old ? cur.map((x) => (x.id === p.id ? next : x)) : [...cur, next];
+          });
+          if (p.archived && p.id === projectId) setProjectId("");
+          refreshProjects();
+          if (projectDialog === "new") { setProjectId(p.id); setSiteId(p.siteId); setJobId(""); say(`Project "${p.name}" made`); } else say(p.archived ? "Project archived" : "Project saved"); }} />}
       {blogOpen && siteId && <BlogDialog siteId={siteId} onClose={() => setBlogOpen(false)} onSubmit={startBlog} />}
     </div>
   );

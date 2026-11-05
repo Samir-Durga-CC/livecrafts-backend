@@ -8,6 +8,7 @@ import { blockingChange, reconcile, recordsFor, revertChange, type ChangeRecord 
 import { imageMarker } from "./vision.js";
 import { assistantSettings } from "./persona.js";
 import { accounts } from "./accounts.js";
+import { defaultProjectId, projects } from "./projects.js";
 import { Bridge } from "./bridge.js";
 import { log, recordUsage, tokensOf } from "./usage.js";
 import type { ApprovalMode, Job, JobEvent, JobStatus, PendingApproval, Site } from "./types.js";
@@ -21,6 +22,8 @@ export interface RequestOptions {
   actor?: { token: string; name: string; login: string };
   /** The signed-in Livecrafts account that sent this request. */
   account?: { id: string; name: string };
+  /** The project a new session is started in (checked against the site by the server). */
+  projectId?: string;
   /** The page the person is on. */
   pageUrl?: string;
   /** The request came from voice (the realtime tool or the voice chat): faster model, context read once per session. */
@@ -76,7 +79,7 @@ export class JobRunner {
       approvalMode: cleanMode(opts.approvalMode) ?? "request", requestSeq: 1, model: opts.model || undefined, pageUrl: opts.pageUrl || undefined, voice: opts.voice || undefined,
       layoutPicker: opts.layoutPicker === false ? false : undefined,
       actorToken: opts.actor?.token, actor: opts.actor ? { name: opts.actor.name, login: opts.actor.login } : undefined,
-      accountId: opts.account?.id, accountName: opts.account?.name };
+      accountId: opts.account?.id, accountName: opts.account?.name, projectId: opts.projectId || undefined };
     this.jobs.put(job);
     this.emit(job, "user", { text: prompt, fileIds, requestId: 1, approvalMode: job.approvalMode });
     this.emit(job, "status", { status: "queued" });
@@ -388,11 +391,14 @@ export class JobRunner {
       const cache: SiteCache | null = voiceSession(job.siteId, job.pageUrl);
       // Read now, not when the chat began: a reset or a new version applies to the very next request.
       const acc = job.accountId ? accounts.get(job.accountId) : undefined;
+      const project = projects.get(job.projectId ?? defaultProjectId(job.siteId));
       const ctx: JobContext = {
         persona,
         account: acc ? { name: acc.name, instructions: acc.instructions } : undefined,
+        project: project ? { name: project.name, instructions: project.instructions } : undefined,
         approval: { mode, planApproved: mode === "request" && job.planApprovedFor === (job.requestSeq ?? 1) },
-        model: job.model,
+        // The session's own pick, else the project's default (the site's and the server's come after, in the agent).
+        model: job.model || project?.model,
         actorToken: job.actorToken,
         pageUrl: job.pageUrl,
         ref: `${job.id}#${job.requestSeq ?? 1}`,

@@ -1,6 +1,6 @@
 import type { FixStatus, SpeedRun, SpeedRunSummary } from "./speed";
 import type { PluginActionResult, PluginHistoryEntry, PluginJob, PluginList } from "./plugins";
-import type { AccountInfo, AdminJobRow, AdminOverview, InstructionVersion, Limits, LogRow, Role, ConnectorInfo, TemplatesReport, ApprovalMode, AssistantInfo, ChangeRecord, DiffData, HostingerHealth, ModelsReport, ProviderInfo, SiteStatus, JobEvent, JobSummary, Site, TimelineItem, UploadedFile } from "./types";
+import type { Project, AccountInfo, AdminJobRow, AdminOverview, InstructionVersion, Limits, LogRow, Role, ConnectorInfo, TemplatesReport, ApprovalMode, AssistantInfo, ChangeRecord, DiffData, HostingerHealth, ModelsReport, ProviderInfo, SiteStatus, JobEvent, JobSummary, Site, TimelineItem, UploadedFile } from "./types";
 
 const TOKEN_KEY = "lc_token";
 export const getToken = () => localStorage.getItem(TOKEN_KEY) ?? "";
@@ -32,10 +32,15 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 export interface TermItem { id: number; name: string; count: number }
 export interface MediaItem { id: number; url: string; full: string; alt: string; title: string }
-export interface SendArgs { prompt: string; fileIds: string[]; pageUrl?: string; selectedTarget?: string; approvalMode?: ApprovalMode; model?: string; extraContext?: string; kind?: "new" | "note" | "edit"; /** The person spoke this request: the backend runs it as a voice job. */ voice?: boolean; /** false = the assistant is not offered the layout picker in this conversation. */ layoutPicker?: boolean }
+export interface SendArgs { prompt: string; fileIds: string[]; /** The project a new session starts in. */ projectId?: string; pageUrl?: string; selectedTarget?: string; approvalMode?: ApprovalMode; model?: string; extraContext?: string; kind?: "new" | "note" | "edit"; /** The person spoke this request: the backend runs it as a voice job. */ voice?: boolean; /** false = the assistant is not offered the layout picker in this conversation. */ layoutPicker?: boolean }
 
 export const api = {
   health: () => request<{ ok: boolean; model: string; authRequired: boolean; accounts?: boolean }>("GET", "/health"),
+
+  // ---- projects (each with its sessions: the jobs carry their projectId)
+  projects: (archived = false) => request<Project[]>("GET", `/projects${archived ? "?archived=1" : ""}`),
+  createProject: (b: { siteId: string; name: string; description?: string; instructions?: string; model?: string; approvalMode?: ApprovalMode }) => request<Project>("POST", "/projects", b),
+  updateProject: (id: string, b: Partial<Pick<Project, "name" | "description" | "instructions" | "model" | "approvalMode" | "archived">>) => request<Project>("PATCH", `/projects/${id}`, b),
 
   // ---- accounts
   authStatus: () => request<{ setupNeeded: boolean; rootTokenRequired: boolean }>("GET", "/auth/status"),

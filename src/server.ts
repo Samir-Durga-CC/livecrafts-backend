@@ -36,6 +36,8 @@ import { claudeCliStatus } from "./claudeCli.js";
 import { connector } from "./connector.js";
 import { accounts, overLimit } from "./accounts.js";
 import { AUTH_PUBLIC_ROUTES, CLIENT_EXTRA_ROUTES, handleAccountRoutes } from "./adminRoutes.js";
+import { handleProjectRoutes } from "./projectRoutes.js";
+import { defaultProjectId, projects } from "./projects.js";
 import { diffOf } from "./changes.js";
 import { canUseSite, verifyWidgetToken, type Caller } from "./auth.js";
 import { log, usageMonths, usageReport } from "./usage.js";
@@ -67,7 +69,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
       return null;
     } catch (e) { return (e as Error).message; }
   };
-  const publicJob = (j: Job) => ({ id: j.id, siteId: j.siteId, prompt: j.prompt, status: j.status, pending: j.pending, result: j.result, error: j.error, createdAt: j.createdAt, updatedAt: j.updatedAt, lastEventSeq: j.events.at(-1)?.seq ?? 0, changes: j.changes ?? [],
+  const publicJob = (j: Job) => ({ id: j.id, siteId: j.siteId, projectId: j.projectId ?? defaultProjectId(j.siteId), prompt: j.prompt, status: j.status, pending: j.pending, result: j.result, error: j.error, createdAt: j.createdAt, updatedAt: j.updatedAt, lastEventSeq: j.events.at(-1)?.seq ?? 0, changes: j.changes ?? [],
     approvalMode: j.approvalMode ?? "every", model: j.model ?? null, layoutPicker: j.layoutPicker !== false, requestSeq: j.requestSeq ?? 1, pageUrl: j.pageUrl ?? null, actor: j.actor ?? null, usage: j.usage ?? null });
   /** Fetch the site secret its widget tokens are signed with (needs an administrator's Application Password). */
   const connectWidget = async (site: Site): Promise<string | null> => {
@@ -82,6 +84,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     voice: b.voice === true,
     actor: caller.via === "widget" ? { token: caller.token, name: caller.user.name, login: caller.user.login } : undefined,
     account: caller.via === "account" ? { id: caller.account.id, name: caller.account.name } : undefined,
+    projectId: typeof b.projectId === "string" ? b.projectId : undefined,
   });
   // What the chat inside the WordPress widget may call (with its signed per-person token).
   /**
@@ -203,7 +206,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     const url = new URL(req.url ?? "/", "http://x");
     const route = `${req.method} ${url.pathname}`;
     try {
-      const isApi = /^\/(health|sites|sections|jobs|files|integrations|screens|models|voice)(\/|$)/.test(url.pathname) || /^\/(auth|admin)\//.test(url.pathname) || url.pathname === "/connector.mjs"; // "/admin" itself is the page
+      const isApi = /^\/(health|sites|sections|jobs|files|integrations|screens|models|voice|projects)(\/|$)/.test(url.pathname) || /^\/(auth|admin)\//.test(url.pathname) || url.pathname === "/connector.mjs"; // "/admin" itself is the page
       if (!isApi && req.method === "GET" && serveStatic(url.pathname, res)) return; // UI files are public; the API below is protected
       // Who is calling: the chat in the WordPress widget (signed per-person token, only its own site) or the app / admin.
       let caller: Caller = { via: "admin" };
@@ -257,7 +260,9 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
 
       // ---- accounts and the admin panel (adminRoutes.ts)
       const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
-      if (await handleAccountRoutes({ req, res, url, route, caller, bearer, sites, runner, send, readJson })) return;
+      const rc = { req, res, url, route, caller, bearer, sites, runner, send, readJson };
+      if (await handleAccountRoutes(rc)) return;
+      if (await handleProjectRoutes(rc)) return;
 
       // ---- sites
       const pt = url.pathname.match(/^\/sites\/([\w-]+)\/preview-token$/);
@@ -679,6 +684,12 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         if (!canUseSite(caller, String(b.siteId))) return send(res, 404, { error: "Unknown site." });
         const limit = caller.via === "account" ? overLimit(caller.account) : null;
         if (limit) return send(res, 429, { error: limit });
+        // A session started in a project: the project must be on the same site, and not archived.
+        if (b.projectId) {
+          const p = projects.get(String(b.projectId));
+          if (!p || p.siteId !== String(b.siteId)) return send(res, 400, { error: "That project is not on this site." });
+          if (p.archived) return send(res, 409, { error: "That project is archived. Restore it to start a session in it." });
+        }
         return send(res, 201, publicJob(runner.create(String(b.siteId), String(b.prompt), contextFor(b), fileIdsOf(b), requestOpts(b, caller))));
       }
       m = url.pathname.match(/^\/jobs\/([\w-]+)\/messages$/);

@@ -44,6 +44,8 @@ export interface JobEvent {
 export interface Job {
   id: string;
   siteId: string;
+  /** The project this session belongs to (projects.ts); unset = the site's default project. */
+  projectId?: string;
   /** The Livecrafts account that sent the latest request (its usage, limits and instructions apply). */
   accountId?: string;
   accountName?: string;
