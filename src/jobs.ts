@@ -7,6 +7,7 @@ import { quickCommand, undoReply } from "./quick.js";
 import { blockingChange, reconcile, recordsFor, revertChange, type ChangeRecord } from "./changes.js";
 import { imageMarker } from "./vision.js";
 import { assistantSettings } from "./persona.js";
+import { accounts } from "./accounts.js";
 import { Bridge } from "./bridge.js";
 import { log, recordUsage, tokensOf } from "./usage.js";
 import type { ApprovalMode, Job, JobEvent, JobStatus, PendingApproval, Site } from "./types.js";
@@ -18,6 +19,8 @@ export interface RequestOptions {
   approvalMode?: ApprovalMode; model?: string; /** "note" / "edit" = said while paused: same request continues */ kind?: "new" | "note" | "edit";
   /** The person in the chat (from their signed widget token): changes are credited to them. */
   actor?: { token: string; name: string; login: string };
+  /** The signed-in Livecrafts account that sent this request. */
+  account?: { id: string; name: string };
   /** The page the person is on. */
   pageUrl?: string;
   /** The request came from voice (the realtime tool or the voice chat): faster model, context read once per session. */
@@ -72,7 +75,8 @@ export class JobRunner {
     const job: Job = { id: newId("job"), siteId, prompt, status: "queued", messages: [userMessage(text, fileIds)], pending: [], events: [], changes: [], createdAt: now, updatedAt: now,
       approvalMode: cleanMode(opts.approvalMode) ?? "request", requestSeq: 1, model: opts.model || undefined, pageUrl: opts.pageUrl || undefined, voice: opts.voice || undefined,
       layoutPicker: opts.layoutPicker === false ? false : undefined,
-      actorToken: opts.actor?.token, actor: opts.actor ? { name: opts.actor.name, login: opts.actor.login } : undefined };
+      actorToken: opts.actor?.token, actor: opts.actor ? { name: opts.actor.name, login: opts.actor.login } : undefined,
+      accountId: opts.account?.id, accountName: opts.account?.name };
     this.jobs.put(job);
     this.emit(job, "user", { text: prompt, fileIds, requestId: 1, approvalMode: job.approvalMode });
     this.emit(job, "status", { status: "queued" });
@@ -83,6 +87,7 @@ export class JobRunner {
   /** Follow-up message in the same conversation (the model keeps the earlier context). Only when the job is idle. */
   continue(jobId: string, prompt: string, context?: string, fileIds: string[] = [], opts: RequestOptions = {}): Job {
     const job = this.mustGet(jobId);
+    if (opts.account) { job.accountId = opts.account.id; job.accountName = opts.account.name; } // this request is theirs
     if (job.status !== "completed" && job.status !== "failed" && job.status !== "paused" && job.status !== "interrupted") throw new Error(`Job is ${job.status}; wait for it to finish (or answer the approval) before sending another message.`);
     const paused = job.status === "paused";
     const quick = !paused && !fileIds.length ? quickCommand(prompt) : null;
@@ -381,8 +386,11 @@ export class JobRunner {
        * site that has been changed since it was read.
        */
       const cache: SiteCache | null = voiceSession(job.siteId, job.pageUrl);
+      // Read now, not when the chat began: a reset or a new version applies to the very next request.
+      const acc = job.accountId ? accounts.get(job.accountId) : undefined;
       const ctx: JobContext = {
         persona,
+        account: acc ? { name: acc.name, instructions: acc.instructions } : undefined,
         approval: { mode, planApproved: mode === "request" && job.planApprovedFor === (job.requestSeq ?? 1) },
         model: job.model,
         actorToken: job.actorToken,
@@ -404,7 +412,7 @@ export class JobRunner {
           stepMessages.push(...((s?.response?.messages ?? []) as ModelMessage[]));
           // every model call, with its tokens (the admin panel's LLM usage view)
           const t = tokensOf(s?.usage);
-          recordUsage({ at: new Date().toISOString(), site: site.id, job: job.id, request: job.requestSeq ?? 1, user: job.actor?.login, model: String(s?.response?.modelId ?? model), step: ++step,
+          recordUsage({ at: new Date().toISOString(), site: site.id, job: job.id, request: job.requestSeq ?? 1, user: job.actor?.login, account: job.accountId, model: String(s?.response?.modelId ?? model), step: ++step,
             ...t, ms: Date.now() - stepStart, finish: typeof s?.finishReason === "string" ? s.finishReason : s?.finishReason?.unified });
           job.usage = { input: (job.usage?.input ?? 0) + t.input, output: (job.usage?.output ?? 0) + t.output, calls: (job.usage?.calls ?? 0) + 1 };
           stepStart = Date.now();

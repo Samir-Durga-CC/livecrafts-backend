@@ -10,7 +10,7 @@ import { config } from "./config.js";
  *   data/logs/2026-10-07.jsonl {at, level, msg, site?, job?, ...}
  */
 export interface UsageRow {
-  at: string; site: string; job: string; request?: number; user?: string; model: string; step: number;
+  at: string; site: string; job: string; request?: number; user?: string; /** The Livecrafts account that sent the request. */ account?: string; model: string; step: number;
   input: number; output: number; cachedInput?: number; reasoning?: number; total: number; ms?: number; finish?: string;
 }
 
@@ -81,6 +81,7 @@ export interface UsageReport {
   byModel: (UsageBucket & { provider: string })[];
   byDay: { day: string; total: number; input: number; output: number; calls: number }[];
   bySite: UsageBucket[];
+  byAccount: UsageBucket[];
   busiest: { job: string; site: string; model: string; total: number; steps: number; at: string }[];
 }
 
@@ -100,10 +101,10 @@ const biggestFirst = (m: Map<string, UsageBucket>) => [...m.values()].sort((a, b
  * One month of model calls, added up the ways worth looking at: who is being paid, which model, which day, which
  * website, and the jobs that cost the most. Read from the same append-only file the agent writes as it works.
  */
-export function usageReport(month: string, opts: { site?: string; siteName?: (id: string) => string | undefined } = {}): UsageReport {
-  const rows = readUsage(month, (r) => !opts.site || r.site === opts.site);
+export function usageReport(month: string, opts: { site?: string; account?: string; siteName?: (id: string) => string | undefined; accountName?: (id: string) => string | undefined } = {}): UsageReport {
+  const rows = readUsage(month, (r) => (!opts.site || r.site === opts.site) && (!opts.account || r.account === opts.account));
   const totals = empty("all");
-  const providers = new Map<string, UsageBucket>(), models = new Map<string, UsageBucket>(), sites = new Map<string, UsageBucket>();
+  const providers = new Map<string, UsageBucket>(), models = new Map<string, UsageBucket>(), sites = new Map<string, UsageBucket>(), accounts = new Map<string, UsageBucket>();
   const days = new Map<string, { day: string; total: number; input: number; output: number; calls: number }>();
   const jobs = new Map<string, { job: string; site: string; model: string; total: number; steps: number; at: string }>();
 
@@ -112,6 +113,8 @@ export function usageReport(month: string, opts: { site?: string; siteName?: (id
     into(providers, providerOf(r.model), r);
     into(models, r.model, r, providerOf(r.model));
     if (r.site) into(sites, r.site, r, opts.siteName?.(r.site));
+    // Calls from before accounts existed (or from the WordPress widget / the root token) have no account.
+    into(accounts, r.account ?? "", r, r.account ? opts.accountName?.(r.account) : "No account (widget or root token)");
     const day = String(r.at ?? "").slice(0, 10);
     if (day) {
       const d = days.get(day) ?? { day, total: 0, input: 0, output: 0, calls: 0 };
@@ -131,6 +134,7 @@ export function usageReport(month: string, opts: { site?: string; siteName?: (id
     byModel: biggestFirst(models).map((b) => ({ ...b, provider: b.label ?? providerOf(b.key) })),
     byDay: [...days.values()].sort((a, b) => a.day.localeCompare(b.day)),
     bySite: biggestFirst(sites),
+    byAccount: biggestFirst(accounts),
     busiest: [...jobs.values()].sort((a, b) => b.total - a.total).slice(0, 10),
   };
 }

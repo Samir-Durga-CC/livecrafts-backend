@@ -30,6 +30,8 @@ export interface JobContext {
   approval?: { mode: ApprovalMode; planApproved: boolean };
   model?: string;
   persona?: Persona | null;
+  /** The signed-in Livecrafts account that sent the request, and its own instructions (added to the rules, never instead). */
+  account?: { name: string; instructions?: string };
   /** The chat person's signed widget token: every change is credited to them in the site history. */
   actorToken?: string;
   /** The page the person is on. */
@@ -56,7 +58,7 @@ export function resolveModel(id: string): LanguageModel {
   return resolveSpec(id);
 }
 
-export interface Capabilities { files: boolean; themeWrites: boolean; browser: boolean; hostinger: boolean; skills: string; mode?: ApprovalMode; persona?: Persona | null; siteContext?: string; pageUrl?: string }
+export interface Capabilities { files: boolean; themeWrites: boolean; browser: boolean; hostinger: boolean; skills: string; mode?: ApprovalMode; persona?: Persona | null; account?: JobContext["account"]; siteContext?: string; pageUrl?: string }
 
 const MODE_TEXT: Record<ApprovalMode, string> = {
   every: "APPROVAL: every change needs the person's approval; each write shows them an approval card - wait for it.",
@@ -203,6 +205,9 @@ ${caps.hostinger ? "HOSTING: account questions, read only - hostinger_search / h
 ${caps.persona?.instructions?.trim() ? `
 FROM THE SITE OWNER (set in WordPress; follow it unless it conflicts with the rules above):
 ${caps.persona.instructions.trim().slice(0, 4000)}` : ""}
+${caps.account?.instructions?.trim() ? `
+FROM ${caps.account.name.toUpperCase()} (their own Livecrafts instructions; follow them unless they conflict with the rules above):
+${caps.account.instructions.trim().slice(0, 4000)}` : ""}
 ${caps.pageUrl ? `\nTHE PERSON IS ON: ${caps.pageUrl}` : ""}
 ${caps.siteContext ? `\n${caps.siteContext}` : ""}`.replace(/\n{3,}/g, "\n\n");
 }
@@ -273,7 +278,7 @@ export function buildAgent(files: FileStore, opts: BuildOptions = {}): AgentFact
       model: opts.model ?? resolveModel(modelId),
       instructions: systemPrompt(site, {
         files: !!siteFiles, themeWrites: config.allowThemeWrites, browser: !!browser, hostinger: !!hg, skills: skills?.catalogue() ?? "", mode,
-        persona: job?.persona, siteContext: job?.siteContext, pageUrl: job?.pageUrl,
+        persona: job?.persona, account: job?.account, siteContext: job?.siteContext, pageUrl: job?.pageUrl,
       }),
       tools: makeTools(bridge, files, {
         siteFiles, allowThemeWrites: config.allowThemeWrites, hostinger: hg, browser, verifier, skills, planTool: mode === "request", layoutPicker: job?.layoutPicker !== false,

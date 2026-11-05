@@ -1,11 +1,14 @@
 import crypto from "node:crypto";
 import { secrets } from "./secrets.js";
+import type { Account } from "./accounts.js";
 import type { Site } from "./types.js";
 
 /**
  * Who is calling the backend.
  *
- *   admin  - the Livecrafts app / admin panel, with LC_API_TOKEN (or anyone on localhost when no token is set)
+ *   admin   - the backend's root key, LC_API_TOKEN (CI, scripts, recovery) - or anyone on localhost while there is
+ *             neither a token nor an account (a developer's own machine)
+ *   account - someone signed in to the Livecrafts app (accounts.ts): an owner, a developer or a client
  *   widget - the chat inside the WordPress widget, with the signed per-person token the Livecrafts plugin issues
  *            (header X-Livecrafts-Widget). It is checked with that site's secret, which the backend received once
  *            when the site was connected. A widget caller only ever sees its own site.
@@ -13,6 +16,7 @@ import type { Site } from "./types.js";
 export interface WidgetUser { id: number; login: string; name: string; edit: boolean; deploy: boolean }
 export type Caller =
   | { via: "admin" }
+  | { via: "account"; account: Account }
   | { via: "widget"; site: Site; user: WidgetUser; token: string };
 
 const b64url = (s: string) => Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64");
@@ -36,5 +40,14 @@ export function verifyWidgetToken(token: string, sites: Site[], now = Date.now()
 
 /** A widget caller may only touch its own site. */
 export function canUseSite(caller: Caller, siteId: string) {
-  return caller.via === "admin" || caller.site.id === siteId;
+  if (caller.via === "admin") return true;
+  if (caller.via === "account") return caller.account.role !== "client" || (caller.account.siteIds ?? []).includes(siteId);
+  return caller.site.id === siteId;
 }
+
+/** Owners, developers and the root key: the whole app, integrations and the admin panel. */
+export const isStaff = (c: Caller) => c.via === "admin" || (c.via === "account" && c.account.role !== "client");
+/** Who may manage accounts: owners and the root key. */
+export const isOwner = (c: Caller) => c.via === "admin" || (c.via === "account" && c.account.role === "owner");
+/** For the history and the logs: who did it. */
+export const callerName = (c: Caller) => c.via === "account" ? c.account.email : c.via === "widget" ? `widget:${c.user.login}` : "root";

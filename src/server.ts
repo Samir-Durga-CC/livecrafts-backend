@@ -1,5 +1,6 @@
 import http from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
+import nodeCrypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +34,8 @@ const sectionLooks = new Map<string, { at: number; value: Awaited<ReturnType<typ
 const sectionLooksBusy = new Map<string, Promise<Awaited<ReturnType<typeof siteLook>>>>();
 import { claudeCliStatus } from "./claudeCli.js";
 import { connector } from "./connector.js";
+import { accounts, overLimit } from "./accounts.js";
+import { AUTH_PUBLIC_ROUTES, CLIENT_EXTRA_ROUTES, handleAccountRoutes } from "./adminRoutes.js";
 import { diffOf } from "./changes.js";
 import { canUseSite, verifyWidgetToken, type Caller } from "./auth.js";
 import { log, usageMonths, usageReport } from "./usage.js";
@@ -78,6 +81,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     pageUrl: typeof b.pageUrl === "string" && /^https?:\/\//.test(b.pageUrl) ? b.pageUrl : undefined,
     voice: b.voice === true,
     actor: caller.via === "widget" ? { token: caller.token, name: caller.user.name, login: caller.user.login } : undefined,
+    account: caller.via === "account" ? { id: caller.account.id, name: caller.account.name } : undefined,
   });
   // What the chat inside the WordPress widget may call (with its signed per-person token).
   /**
@@ -136,7 +140,8 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
   };
 
   /** Answered without LC_API_TOKEN: the app asks /health whether it needs a token, and the connector program is only code. */
-  const PUBLIC_ROUTES = new Set(["GET /health", "GET /connector.mjs"]);
+  const PUBLIC_ROUTES = new Set(["GET /health", "GET /connector.mjs", ...AUTH_PUBLIC_ROUTES]);
+  const rootKeyMatches = (t: string) => { const a = Buffer.from(t), b = Buffer.from(config.apiToken); return !!config.apiToken && a.length === b.length && nodeCrypto.timingSafeEqual(a, b); };
   const WIDGET_ROUTES = /^(GET \/(health|sites|models|models\/usage|voice)|POST \/sites|POST \/voice\/(transcribe|speak|realtime\/session)|GET \/voice\/stream|GET \/sites\/[\w-]+\/(assistant|eyes|media|terms|pagespeed|templates|templates\/render|sections|sections\/preview)|POST \/sites\/[\w-]+\/sections\/(add|site)|(POST \/sites\/[\w-]+\/pagespeed|GET \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+|PUT \/sites\/[\w-]+\/pagespeed\/speed_[a-f0-9]+\/fix|GET \/sites\/[\w-]+\/plugins(\/(history|versions|jobs\/plj_[a-f0-9]+))?|POST \/sites\/[\w-]+\/plugins\/(update|rollback))|POST \/sites\/[\w-]+\/eyes\/eye_[a-f0-9]+|POST \/files|GET \/(files|screens)\/[\w-]+|GET \/jobs|POST \/jobs|(GET|DELETE) \/jobs\/[\w-]+|POST \/jobs\/[\w-]+\/(messages|approvals|stop|resume)|PUT \/jobs\/[\w-]+\/approval-mode|GET \/jobs\/[\w-]+\/(events|changes\/lc_\d+\/diff)|POST \/jobs\/[\w-]+\/(changes\/lc_\d+\/revert|requests\/\d+\/revert))$/;
 
   async function readBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
@@ -198,7 +203,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
     const url = new URL(req.url ?? "/", "http://x");
     const route = `${req.method} ${url.pathname}`;
     try {
-      const isApi = /^\/(health|sites|sections|jobs|files|integrations|screens|models|voice)(\/|$)/.test(url.pathname) || url.pathname === "/connector.mjs";
+      const isApi = /^\/(health|sites|sections|jobs|files|integrations|screens|models|voice)(\/|$)/.test(url.pathname) || /^\/(auth|admin)\//.test(url.pathname) || url.pathname === "/connector.mjs"; // "/admin" itself is the page
       if (!isApi && req.method === "GET" && serveStatic(url.pathname, res)) return; // UI files are public; the API below is protected
       // Who is calling: the chat in the WordPress widget (signed per-person token, only its own site) or the app / admin.
       let caller: Caller = { via: "admin" };
@@ -211,7 +216,7 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         const w = verifyWidgetToken(widgetToken, sites.list());
         // ...except on a backend that is reachable from anywhere: with LC_API_TOKEN set, the network is no longer the
         // access control, so only a token a connected site signed opens the chat routes.
-        if (!w && config.apiToken) return send(res, 401, { error: "Sign in to WordPress again: your Livecrafts session is not valid for this backend." });
+        if (!w && (config.apiToken || !accounts.isEmpty())) return send(res, 401, { error: "Sign in to WordPress again: your Livecrafts session is not valid for this backend." });
         if (w) {
           if (!w.user.edit) return send(res, 403, { error: "Your WordPress account may not edit with Livecrafts." });
           caller = { via: "widget", site: w.site, user: w.user, token: widgetToken };
@@ -220,16 +225,39 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
           const sm = url.pathname.match(/^\/sites\/([\w-]+)/);
           if (sm && !canUseSite(caller, sm[1])) return send(res, 404, { error: "Unknown site" });
         }
-      } else if (config.apiToken && !PUBLIC_ROUTES.has(route) && req.headers.authorization !== `Bearer ${config.apiToken}`) {
-        return send(res, 401, { error: "Unauthorized" });
+      } else {
+        // The app: a signed-in account (accounts.ts), or the root key. Open without either only on a developer's own
+        // machine that has neither a root key nor a single account.
+        const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+        if (bearer.startsWith("lcs_")) {
+          const acc = accounts.fromToken(bearer);
+          if (!acc) return send(res, 401, { error: "Your sign-in has ended. Sign in again.", signIn: true });
+          caller = { via: "account", account: acc };
+          if (acc.role === "client") {
+            // A client gets what the widget gets - the chat on their own sites - plus their own account.
+            if (!WIDGET_ROUTES.test(route) && !CLIENT_EXTRA_ROUTES.test(route)) return send(res, 403, { error: "Not available to client accounts." });
+            const jm = url.pathname.match(/^\/jobs\/([\w-]+)/);
+            if (jm) { const j = runner.get(jm[1]); if (j && !canUseSite(caller, j.siteId)) return send(res, 404, { error: "Unknown job" }); }
+            const sm = url.pathname.match(/^\/sites\/([\w-]+)/);
+            if (sm && !canUseSite(caller, sm[1])) return send(res, 404, { error: "Unknown site" });
+          }
+        } else if (bearer && rootKeyMatches(bearer)) {
+          caller = { via: "admin" };
+        } else if ((config.apiToken || !accounts.isEmpty()) && !PUBLIC_ROUTES.has(route)) {
+          return send(res, 401, { error: "Sign in to continue.", signIn: true });
+        }
       }
 
-      if (route === "GET /health") return send(res, 200, { ok: true, model: config.model, authRequired: !!config.apiToken, instance: process.pid });
+      if (route === "GET /health") return send(res, 200, { ok: true, model: config.model, authRequired: !!config.apiToken || !accounts.isEmpty(), accounts: !accounts.isEmpty(), instance: process.pid });
       // The connector program itself: public, it is only code - what it may do is decided by the token it is started with.
       if (route === "GET /connector.mjs") {
         res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "Content-Disposition": 'attachment; filename="livecrafts-connector.mjs"' });
         return res.end(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "tools", "connector.mjs")));
       }
+
+      // ---- accounts and the admin panel (adminRoutes.ts)
+      const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+      if (await handleAccountRoutes({ req, res, url, route, caller, bearer, sites, runner, send, readJson })) return;
 
       // ---- sites
       const pt = url.pathname.match(/^\/sites\/([\w-]+)\/preview-token$/);
@@ -362,7 +390,14 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         const visible = sites.list().filter((x) => canUseSite(caller, x.id));
         const named = new Map(visible.map((x) => [x.id, x.name || x.url]));
         return send(res, 200, { ok: true, site: site ?? null, sites: visible.map((x) => ({ id: x.id, name: x.name, url: x.url })),
-          ...usageReport(month, { site, siteName: (id) => named.get(id) }) });
+          // A client sees only what they spent themselves; owners and developers see everyone, or one account.
+          ...(() => {
+            const client = caller.via === "account" && caller.account.role === "client";
+            const account = client && caller.via === "account" ? caller.account.id : url.searchParams.get("account") || undefined;
+            const people = new Map(accounts.list().map((a) => [a.id, a.name || a.email]));
+            return { accounts: client ? [] : accounts.list().map((a) => ({ id: a.id, name: a.name, email: a.email })),
+              ...usageReport(month, { site, account, siteName: (id) => named.get(id), accountName: (id) => people.get(id) }) };
+          })() });
       }
       m = url.pathname.match(/^\/sites\/([\w-]+)\/sections(\/preview|\/add|\/site)?$/);
       if (m) {
@@ -642,12 +677,16 @@ export function createApp(runner: JobRunner, sites: JsonStore<Site>, files: File
         const b = await readJson(req);
         if (!b.siteId || !b.prompt) return send(res, 400, { error: "siteId and prompt are required." });
         if (!canUseSite(caller, String(b.siteId))) return send(res, 404, { error: "Unknown site." });
+        const limit = caller.via === "account" ? overLimit(caller.account) : null;
+        if (limit) return send(res, 429, { error: limit });
         return send(res, 201, publicJob(runner.create(String(b.siteId), String(b.prompt), contextFor(b), fileIdsOf(b), requestOpts(b, caller))));
       }
       m = url.pathname.match(/^\/jobs\/([\w-]+)\/messages$/);
       if (m && req.method === "POST") { // follow-up message in the same conversation
         const b = await readJson(req);
         if (!b.prompt) return send(res, 400, { error: "prompt is required." });
+        const limit = caller.via === "account" ? overLimit(caller.account) : null;
+        if (limit) return send(res, 429, { error: limit });
         return send(res, 200, publicJob(runner.continue(m[1], String(b.prompt), contextFor(b), fileIdsOf(b), requestOpts(b, caller))));
       }
       m = url.pathname.match(/^\/jobs\/([\w-]+)$/);

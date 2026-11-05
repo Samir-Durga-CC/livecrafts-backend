@@ -1025,3 +1025,62 @@ a.nav-item:visited { color: var(--muted); } a.nav-item:hover { color: var(--text
 .yc-cmd { display: flex; flex-direction: column; gap: 3px; }
 .yc-cmd > div { display: flex; align-items: flex-start; gap: 6px; }
 .yc-cmd code { flex: 1; min-width: 0; display: block; padding: 7px 9px; border-radius: 7px; background: var(--panel-2, rgba(127,127,127,.08)); font-size: 12px; overflow-wrap: anywhere; user-select: all; }
+
+/* Sign in / first owner */
+.signin { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; background: var(--page); }
+.signin-card { width: min(400px, 100%); display: flex; flex-direction: column; gap: 12px; padding: 26px 24px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow); }
+.signin-card h1 { margin: 4px 0 0; font-size: 20px; letter-spacing: -0.01em; }
+.signin-card p { margin: 0; }
+.signin-card label { display: grid; gap: 5px; font-size: 13px; color: var(--text-2); }
+.signin-card input { padding: 9px 11px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface); color: var(--text); font-size: 14px; }
+.signin-brand { display: flex; align-items: center; gap: 8px; font-weight: 650; }
+
+/* My instructions */
+.dialog.wide { width: min(640px, calc(100vw - 32px)); }
+.instr-text { width: 100%; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); color: var(--text); font: inherit; font-size: 13.5px; resize: vertical; }
+.instr-history { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow: auto; border-top: 1px solid var(--line); padding-top: 10px; }
+.instr-ver { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; }
+.instr-ver-text { grid-column: 1; font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.instr-ver .rbtn { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+
+/* Admin panel */
+.ad-page { max-width: 1240px; }
+.ad-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: -6px 0 22px; }
+.ad-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 12px; margin-bottom: 14px; }
+.ad-bar .grow { flex: 1; min-width: 180px; }
+.ad-bar input, .ad-grid input, .ad-grid select, .ad-pw { padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 13px; }
+.ad-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.ad-facts > div { display: grid; align-content: start; gap: 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); min-width: 0; }
+.ad-facts span { font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.ad-facts b { font-size: 13px; font-weight: 550; overflow-wrap: anywhere; }
+.us-tile.bad .us-tile-value { color: var(--bad); }
+.ad-pre { margin: 6px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; }
+.ad-prompt { max-height: none; }
+.ad-acc td, .ad-jobs td { vertical-align: top; }
+.ad-off { opacity: .55; }
+.ad-edit > td { background: var(--card); padding: 14px !important; }
+.ad-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px 14px; margin-bottom: 10px; }
+.ad-grid label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.ad-sites { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 16px; border: 1px solid var(--line); border-radius: 9px; padding: 8px 12px; margin: 0 0 10px; }
+.ad-sites legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
+.ad-check, .ad-grid .ad-check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); }
+.ad-grid select { min-width: 0; width: 100%; }
+.ad-new { border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 16px; background: var(--surface); }
+.ad-spend { display: inline-grid; gap: 4px; min-width: 110px; justify-items: end; }
+.ad-spend .us-bar { width: 100%; min-width: 0; height: 5px; }
+.us-bar.warn span { background: var(--warn); } .us-bar.full span { background: var(--bad); }
+.ad-pw { width: 170px; }
+.ad-click { cursor: pointer; } .ad-click:hover { background: var(--hover); }
+.ad-bad th .us-name { color: var(--bad); }
+.ad-err { display: block; color: var(--bad); font-size: 12px; margin-top: 3px; overflow-wrap: anywhere; }
+.ad-trace h3 { margin: 16px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.ad-inline { padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 12px; text-transform: none; letter-spacing: 0; }
+.ad-events { display: flex; flex-direction: column; gap: 3px; max-height: 520px; overflow: auto; }
+.ad-ev summary { cursor: pointer; font-size: 12.5px; padding: 4px 6px; border-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ad-ev summary:hover { background: var(--hover); }
+.ad-ev-sum { color: var(--muted); font-family: ui-monospace, monospace; font-size: 11.5px; }
+.ad-ev-error summary b, .ad-ev-tool_error summary b { color: var(--bad); }
+.ad-log { border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: 8px 10px; max-height: 70vh; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.55; }
+.ad-line { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ad-line.error b { color: var(--bad); } .ad-line.warn b { color: var(--warn); }
+@media (max-width: 720px) { .ad-acc thead, .ad-jobs thead { display: none; } .ad-pw { width: 100%; } }

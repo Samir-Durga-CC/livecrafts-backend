@@ -1,6 +1,6 @@
 import type { FixStatus, SpeedRun, SpeedRunSummary } from "./speed";
 import type { PluginActionResult, PluginHistoryEntry, PluginJob, PluginList } from "./plugins";
-import type { ConnectorInfo, TemplatesReport, ApprovalMode, AssistantInfo, ChangeRecord, DiffData, HostingerHealth, ModelsReport, ProviderInfo, SiteStatus, JobEvent, JobSummary, Site, TimelineItem, UploadedFile } from "./types";
+import type { AccountInfo, AdminJobRow, AdminOverview, InstructionVersion, Limits, LogRow, Role, ConnectorInfo, TemplatesReport, ApprovalMode, AssistantInfo, ChangeRecord, DiffData, HostingerHealth, ModelsReport, ProviderInfo, SiteStatus, JobEvent, JobSummary, Site, TimelineItem, UploadedFile } from "./types";
 
 const TOKEN_KEY = "lc_token";
 export const getToken = () => localStorage.getItem(TOKEN_KEY) ?? "";
@@ -35,7 +35,50 @@ export interface MediaItem { id: number; url: string; full: string; alt: string;
 export interface SendArgs { prompt: string; fileIds: string[]; pageUrl?: string; selectedTarget?: string; approvalMode?: ApprovalMode; model?: string; extraContext?: string; kind?: "new" | "note" | "edit"; /** The person spoke this request: the backend runs it as a voice job. */ voice?: boolean; /** false = the assistant is not offered the layout picker in this conversation. */ layoutPicker?: boolean }
 
 export const api = {
-  health: () => request<{ ok: boolean; model: string; authRequired: boolean }>("GET", "/health"),
+  health: () => request<{ ok: boolean; model: string; authRequired: boolean; accounts?: boolean }>("GET", "/health"),
+
+  // ---- accounts
+  authStatus: () => request<{ setupNeeded: boolean; rootTokenRequired: boolean }>("GET", "/auth/status"),
+  setup: (b: { email: string; name: string; password: string; rootToken?: string }) => request<{ token: string; account: AccountInfo }>("POST", "/auth/setup", b),
+  login: (email: string, password: string) => request<{ token: string; account: AccountInfo }>("POST", "/auth/login", { email, password }),
+  logout: () => request<{ ok: boolean }>("POST", "/auth/logout"),
+  me: () => request<{ root: boolean; account: AccountInfo | null }>("GET", "/auth/me"),
+  changePassword: (current: string, next: string) => request<{ ok: boolean; token: string }>("PUT", "/auth/password", { current, next }),
+  myInstructions: () => request<{ text: string; history: InstructionVersion[] }>("GET", "/auth/instructions"),
+  saveMyInstructions: (text: string) => request<{ text: string; history: InstructionVersion[] }>("PUT", "/auth/instructions", { text }),
+  resetMyInstructions: () => request<{ text: string; history: InstructionVersion[] }>("POST", "/auth/instructions/reset"),
+
+  // ---- the admin panel
+  adminOverview: () => request<AdminOverview>("GET", "/admin/overview"),
+  adminAccounts: () => request<{ accounts: AccountInfo[] }>("GET", "/admin/accounts"),
+  createAccount: (b: { email: string; name: string; password: string; role: Role; siteIds?: string[]; limits?: Limits }) => request<AccountInfo>("POST", "/admin/accounts", b),
+  updateAccount: (id: string, b: { name?: string; role?: Role; siteIds?: string[]; limits?: Limits; disabled?: boolean; password?: string }) => request<AccountInfo>("PATCH", `/admin/accounts/${id}`, b),
+  deleteAccount: (id: string) => request<{ ok: boolean }>("DELETE", `/admin/accounts/${id}`),
+  endAccountSessions: (id: string) => request<{ ok: boolean }>("DELETE", `/admin/accounts/${id}/sessions`),
+  resetAccountInstructions: (id: string) => request<AccountInfo>("POST", `/admin/accounts/${id}/instructions/reset`),
+  adminJobs: (q: { status?: string; site?: string; account?: string; q?: string } = {}) => request<{ jobs: AdminJobRow[] }>("GET", "/admin/jobs?" + new URLSearchParams(Object.entries(q).filter(([, v]) => v) as [string, string][])),
+  adminJob: (id: string) => request<{ job: any; events: JobEvent[]; steps: any[] }>("GET", `/admin/jobs/${id}`),
+  adminLogs: (q: { day?: string; level?: string; q?: string } = {}) => request<{ day: string; rows: LogRow[] }>("GET", "/admin/logs?" + new URLSearchParams(Object.entries(q).filter(([, v]) => v) as [string, string][])),
+  adminCrashes: () => request<{ text: string }>("GET", "/admin/crashes"),
+  adminPrompt: (site?: string, account?: string) => request<{ site: { id: string; name: string }; account: { id: string; name: string } | null; text: string; chars: number; note: string }>("GET", "/admin/prompt?" + new URLSearchParams(Object.entries({ site, account }).filter(([, v]) => v) as [string, string][])),
+  /** The live log, as server-sent events. EventSource cannot send headers, so it reads with fetch. */
+  followLogs(onRow: (r: LogRow) => void, signal: AbortSignal) {
+    void (async () => {
+      const res = await fetch("/admin/logs/stream", { headers: authHeaders(), signal });
+      const reader = res.body?.getReader(); if (!reader) return;
+      const dec = new TextDecoder(); let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read(); if (done) return;
+        buf += dec.decode(value, { stream: true });
+        let i: number;
+        while ((i = buf.indexOf("\n\n")) !== -1) {
+          const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
+          const d = chunk.split("\n").find((l) => l.startsWith("data: "));
+          if (d) { try { onRow(JSON.parse(d.slice(6))); } catch { /* a keep-alive */ } }
+        }
+      }
+    })().catch(() => { /* stopped */ });
+  },
   sites: () => request<Site[]>("GET", "/sites"),
   terms: (siteId: string) => request<{ categories: TermItem[]; tags: TermItem[] }>("GET", `/sites/${siteId}/terms`),
   media: (siteId: string, search = "") => request<MediaItem[]>("GET", `/sites/${siteId}/media${search ? `?search=${encodeURIComponent(search)}` : ""}`),

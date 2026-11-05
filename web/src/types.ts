@@ -111,3 +111,26 @@ export interface ConnectorInfo {
   claude?: { installed: boolean; loggedIn: boolean; version?: string; authMethod?: string; error?: string; fix?: string };
   running: number;
 }
+
+/* ---------------------------------------------------------------- accounts and the admin panel */
+export type Role = "owner" | "developer" | "client";
+export interface Limits { monthlyTokens?: number; dailyTokens?: number }
+export interface AccountInfo {
+  id: string; email: string; name: string; role: Role; createdAt: string; updatedAt: string; lastLoginAt?: string; disabled?: boolean;
+  siteIds?: string[]; limits?: Limits; instructions?: string;
+  spend: { month: number; today: number; monthCalls: number }; overLimit: string | null; sessions: number;
+}
+export interface InstructionVersion { text: string; at: string; by: string }
+export interface AdminOverview {
+  process: { pid: number; node: string; platform: string; startedAt: string; uptimeS: number; rssMb: number; heapMb: number; host: string; cwd: string };
+  config: { model: string; voiceModel: string | null; dataDir: string; verifyChanges: boolean; allowThemeWrites: boolean; maxSteps: number; jobTimeoutMs: number; rootToken: boolean };
+  connector: ConnectorInfo;
+  counts: { sites: number; accounts: number; jobs: number; byStatus: Record<string, number> };
+  today: { errors: number; warnings: number; tokens: number };
+  running: { id: string; siteId: string; status: string; prompt: string; updatedAt: string; account?: string }[];
+}
+export interface AdminJobRow {
+  id: string; siteId: string; site?: string; status: string; prompt: string; error?: string; model?: string; account?: string; accountId?: string; actor?: string;
+  usage?: { input: number; output: number; calls: number }; createdAt: string; updatedAt: string; requests: number; changes: number; waiting: number;
+}
+export interface LogRow { at: string; level: "info" | "warn" | "error"; msg: string; [k: string]: unknown }

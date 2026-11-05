@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PausedBar, type PauseKind } from "./components/PausedBar";
-import { ApiError, api, buildTimeline, followJob, lastStatus, ledgerFrom } from "./api";
+import { ApiError, api, buildTimeline, followJob, getToken, lastStatus, ledgerFrom, setToken } from "./api";
+import { SignIn } from "./components/SignIn";
+import { InstructionsDialog, PasswordDialog } from "./components/AccountDialogs";
 import { ChangesPanel, type PanelTab } from "./components/ChangesPanel";
 import { Composer, type Context } from "./components/Composer";
 import { BlogDialog } from "./components/BlogDialog";
@@ -11,7 +13,7 @@ import { SitesDialog } from "./components/SitesDialog";
 import { ApprovalModePicker } from "./components/RequestChanges";
 import { ModelPicker, shortLabel } from "./components/ModelPicker";
 import { Icon } from "./icons";
-import type { ApprovalMode, ChangeRecord, JobEvent, JobSummary, Site } from "./types";
+import type { AccountInfo, ApprovalMode, ChangeRecord, JobEvent, JobSummary, Site } from "./types";
 import { WRITE_TOOLS, groupRequests, prefs, titleOf, writeCount, type RequestGroup } from "./util";
 
 const params = new URLSearchParams(location.search);
@@ -29,7 +31,10 @@ export default function App() {
   const [jobId, setJobId] = useState<string>(params.get("job") ?? "");
   const [events, setEvents] = useState<JobEvent[]>([]);
   const [live, setLive] = useState(true);
-  const [dialog, setDialog] = useState<"" | "site" | "sites" | "token" | "integrations">("");
+  const [dialog, setDialog] = useState<"" | "site" | "sites" | "token" | "integrations" | "instructions" | "password">("");
+  // Signed in with an account (or the root key): who, and what they may see. null until known.
+  const [me, setMe] = useState<{ root: boolean; account: AccountInfo | null } | null>(null);
+  const [signIn, setSignIn] = useState<string | null>(null);
   const [mode, setMode] = useState<ApprovalMode>(() => (localStorage.getItem("lc_mode") as ApprovalMode) || "request");
   // Whether the assistant may offer a choice of layouts. "Don't ask me again" writes this, and it is sent with every
   // message, so the backend does not even hand the model the tool. Kept per browser, like the approval mode.
@@ -59,7 +64,7 @@ export default function App() {
 
   const say = useCallback((t: string) => { setToast(t); setTimeout(() => setToast(""), 1800); }, []);
   const guard = useCallback((e: unknown) => {
-    if (e instanceof ApiError && e.status === 401) { setTokenReason("The backend rejected the token. Enter the correct one."); setDialog("token"); }
+    if (e instanceof ApiError && e.status === 401) { const had = !!getToken(); setToken(""); setSignIn(had ? "Your sign-in has ended. Sign in again." : ""); }
     else setProblem((e as Error).message);
   }, []);
   const refreshJobs = useCallback(() => { api.jobs().then(setJobs).catch(() => {}); }, []);
@@ -69,7 +74,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    api.health().then((h) => { setHealth(h); if (h.authRequired && !localStorage.getItem("lc_token")) { setTokenReason(undefined); setDialog("token"); } }).catch((e) => setProblem("Cannot reach the backend: " + e.message));
+    api.health().then((h) => { setHealth(h); if (h.authRequired && !getToken()) setSignIn(""); }).catch((e) => setProblem("Cannot reach the backend: " + e.message));
+    api.me().then(setMe).catch(() => {});
     api.sites().then((s) => { setSites(s); setSiteId((cur) => (s.some((x) => x.id === cur) ? cur : s[0]?.id ?? "")); }).catch(guard);
     refreshJobs();
     api.integrations().then((r) => setHostingerOk(r.hostinger.connected)).catch(() => {});
@@ -178,6 +184,9 @@ export default function App() {
     </div>
   );
 
+  if (signIn !== null) return <SignIn reason={signIn || undefined} />;
+  const signOut = async () => { await api.logout().catch(() => {}); setToken(""); location.reload(); };
+
   return (
     <div className="shell">
       <div className={`app ${navOpen ? "nav-open" : ""} ${panelOpen ? "panel-open" : ""} ${panelOpen && panelTab === "preview" ? "panel-wide" : ""}`}>
@@ -185,7 +194,8 @@ export default function App() {
         {navOpen && (
           <Sidebar sites={sites} site={site} jobs={siteJobs} jobId={jobId} titles={titles} pinned={pinned} model={model}
             onSelectSite={(id) => { setSiteId(id); setJobId(""); }} onAddSite={() => setDialog("site")} onManageSites={() => setDialog("sites")} onToken={() => { setTokenReason(undefined); setDialog("token"); }} hostingerOk={hostingerOk} onIntegrations={() => setDialog("integrations")}
-            onSelectJob={openJob} onNewChat={newChat} onTogglePin={(id) => setPinned(prefs.togglePin(id))} onHide={() => setNavOpen(false)} />
+            onSelectJob={openJob} onNewChat={newChat} onTogglePin={(id) => setPinned(prefs.togglePin(id))} onHide={() => setNavOpen(false)}
+            me={me} onInstructions={() => setDialog("instructions")} onPassword={() => setDialog("password")} onSignOut={() => void signOut()} />
         )}
 
         <main className="main">
@@ -239,6 +249,8 @@ export default function App() {
         onSelect={(id) => { setSiteId(id); setJobId(""); }} onAdd={() => setDialog("site")} />}
       {dialog === "integrations" && <IntegrationsDialog sites={sites} onClose={() => { setDialog(""); refreshSites(); }} onSites={refreshSites} />}
       {dialog === "token" && <TokenDialog reason={tokenReason} onClose={() => setDialog("")} />}
+      {dialog === "instructions" && <InstructionsDialog onClose={() => setDialog("")} />}
+      {dialog === "password" && <PasswordDialog onClose={() => setDialog("")} />}
       {blogOpen && siteId && <BlogDialog siteId={siteId} onClose={() => setBlogOpen(false)} onSubmit={startBlog} />}
     </div>
   );

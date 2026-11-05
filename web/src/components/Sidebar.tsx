@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../icons";
-import type { JobSummary, Site } from "../types";
+import type { AccountInfo, JobSummary, Site } from "../types";
 import { groupJobs, prefs, titleOf } from "../util";
 
 export interface SidebarProps {
@@ -8,6 +8,9 @@ export interface SidebarProps {
   hostingerOk?: boolean;
   onSelectSite: (id: string) => void; onAddSite: () => void; onManageSites: () => void; onToken: () => void; onIntegrations: () => void;
   onSelectJob: (id: string) => void; onNewChat: () => void; onTogglePin: (id: string) => void; onHide: () => void;
+  /** Who is signed in (null = not known yet / an open local backend). */
+  me?: { root: boolean; account: AccountInfo | null } | null;
+  onInstructions: () => void; onPassword: () => void; onSignOut: () => void;
 }
 
 export function Sidebar(p: SidebarProps) {
@@ -25,7 +28,10 @@ export function Sidebar(p: SidebarProps) {
   }, [menu]);
 
   const groups = useMemo(() => groupJobs(p.jobs.filter((j) => !q || titleOf(j, p.titles).toLowerCase().includes(q.toLowerCase())), p.pinned), [p.jobs, p.pinned, p.titles, q]);
-  const initial = (p.site?.username || "L").slice(0, 1).toUpperCase();
+  const acc = p.me?.account ?? null;
+  // A client sees the chat on their own sites, nothing that holds keys or other people's work.
+  const client = acc?.role === "client";
+  const initial = (acc?.name || p.site?.username || "L").slice(0, 1).toUpperCase();
 
   return (
     <aside className="sidebar">
@@ -43,12 +49,15 @@ export function Sidebar(p: SidebarProps) {
 
       <nav className="nav">
         <button className="nav-item on"><Icon.Chat size={17} /> Chat</button>
-        <button className="nav-item" onClick={p.onManageSites}><Icon.Globe size={17} /> Sites <span className="count">{p.sites.length}</span></button>
-        <button className="nav-item" onClick={p.onIntegrations}><Icon.Plug size={17} /> Integrations <span className={`conn-dot ${p.hostingerOk ? "ok" : ""}`} title={p.hostingerOk ? "Hostinger connected" : "Hostinger not connected"} /></button>
+        {!client && <button className="nav-item" onClick={p.onManageSites}><Icon.Globe size={17} /> Sites <span className="count">{p.sites.length}</span></button>}
+        {!client && <button className="nav-item" onClick={p.onIntegrations}><Icon.Plug size={17} /> Integrations <span className={`conn-dot ${p.hostingerOk ? "ok" : ""}`} title={p.hostingerOk ? "Hostinger connected" : "Hostinger not connected"} /></button>}
+        {!client && <a className="nav-item" href="/admin"><Icon.Gauge size={17} /> Admin panel</a>}
+        {!client && <>
         <div className="nav-label">Library</div>
         <a className="nav-item" href={`/templates${p.site ? `?site=${p.site.id}` : ""}`}><Icon.List size={17} /> Templates</a>
         <a className="nav-item" href="/section-usage"><Icon.Layout size={17} /> Section usage</a>
         <a className="nav-item" href={`/model-usage${p.site ? `?site=${p.site.id}` : ""}`}><Icon.Gauge size={17} /> Model usage</a>
+        </>}
       </nav>
       <div className="divider" />
 
@@ -80,7 +89,7 @@ export function Sidebar(p: SidebarProps) {
         <span className="safe-ico"><Icon.Shield size={14} /></span>
         <strong>Safe mode on</strong>
         <span className="grow" />
-        {p.site && <button className="safe-link" onClick={p.onIntegrations} title={p.site.hosting ? "Theme files are linked (Hostinger)" : "Connect Hostinger so the assistant can edit theme files"}>{p.site.hosting ? <><Icon.Check size={12} /> Theme files</> : <><Icon.Plug size={12} /> Connect files</>}</button>}
+        {p.site && !client && <button className="safe-link" onClick={p.onIntegrations} title={p.site.hosting ? "Theme files are linked (Hostinger)" : "Connect Hostinger so the assistant can edit theme files"}>{p.site.hosting ? <><Icon.Check size={12} /> Theme files</> : <><Icon.Plug size={12} /> Connect files</>}</button>}
       </div>
 
       <div className="user-wrap" ref={menuRef}>
@@ -92,17 +101,27 @@ export function Sidebar(p: SidebarProps) {
                 <span className="site-dot" /> <span className="grow site-two"><span>{s.name}</span><small>{s.username} · {s.url.replace(/^https?:\/\//, "")}</small></span>{s.id === p.site?.id && <Icon.Check size={15} />}
               </button>
             ))}
-            <button className="menu-item" onClick={() => { setMenu(false); p.onManageSites(); }}><Icon.Settings size={15} /> Manage sites</button>
-            <button className="menu-item" onClick={() => { setMenu(false); p.onAddSite(); }}><Icon.Plus size={15} /> Connect a site</button>
+            {!client && <>
+              <button className="menu-item" onClick={() => { setMenu(false); p.onManageSites(); }}><Icon.Settings size={15} /> Manage sites</button>
+              <button className="menu-item" onClick={() => { setMenu(false); p.onAddSite(); }}><Icon.Plus size={15} /> Connect a site</button>
+              <div className="menu-sep" />
+              <button className="menu-item" onClick={() => { setMenu(false); p.onIntegrations(); }}><Icon.Plug size={15} /> Integrations (AI models, Hostinger)</button>
+            </>}
             <div className="menu-sep" />
-            <button className="menu-item" onClick={() => { setMenu(false); p.onIntegrations(); }}><Icon.Plug size={15} /> Integrations (AI models, Hostinger)</button>
-            <button className="menu-item" onClick={() => { setMenu(false); p.onToken(); }}><Icon.Key size={15} /> Access token</button>
+            {acc ? <>
+              <div className="menu-label">{acc.name} · {acc.role}</div>
+              <button className="menu-item" onClick={() => { setMenu(false); p.onInstructions(); }}><Icon.Edit size={15} /> My instructions{acc.instructions ? " (custom)" : ""}</button>
+              <button className="menu-item" onClick={() => { setMenu(false); p.onPassword(); }}><Icon.Key size={15} /> Change password</button>
+              <button className="menu-item" onClick={() => { setMenu(false); p.onSignOut(); }}><Icon.Close size={15} /> Sign out</button>
+            </> : p.me?.root
+              ? <button className="menu-item" onClick={() => { setMenu(false); p.onSignOut(); }}><Icon.Close size={15} /> Forget the root key</button>
+              : <button className="menu-item" onClick={() => { setMenu(false); p.onToken(); }}><Icon.Key size={15} /> Access token</button>}
             <div className="menu-foot">Model: {p.model}</div>
           </div>
         )}
         <button className="user-row" onClick={() => setMenu(!menu)}>
           <span className="avatar-lg">{initial}</span>
-          <span className="user-meta"><strong>{p.site?.username ?? "No site"}</strong><small>{p.site ? p.site.url.replace(/^https?:\/\//, "") : "Connect a site"}</small></span>
+          <span className="user-meta"><strong>{acc?.name ?? p.site?.username ?? "No site"}</strong><small>{p.site ? p.site.url.replace(/^https?:\/\//, "") : "Connect a site"}</small></span>
           <Icon.ChevronDown size={16} />
         </button>
       </div>

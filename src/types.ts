@@ -44,6 +44,9 @@ export interface JobEvent {
 export interface Job {
   id: string;
   siteId: string;
+  /** The Livecrafts account that sent the latest request (its usage, limits and instructions apply). */
+  accountId?: string;
+  accountName?: string;
   prompt: string;
   status: JobStatus;
   /** Full conversation, saved after every run. This is what lets a job pause for approval and resume later (even after a restart). */
