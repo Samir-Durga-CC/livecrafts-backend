@@ -24,6 +24,8 @@ export interface Project {
   /** "provider:model" for sessions that do not pick one. */
   model?: string;
   approvalMode?: ApprovalMode;
+  /** The Jira project this project's sessions work in (jira.ts); each person uses their own Jira connection. */
+  jira?: { projectKey: string; projectName?: string };
   /** The site's own project: holds the chats that name no project. Cannot be archived. */
   isDefault?: boolean;
   archived?: boolean;
@@ -68,11 +70,13 @@ export class Projects {
     });
   }
 
-  update(id: string, patch: { name?: string; description?: string; instructions?: string; model?: string; approvalMode?: string; archived?: boolean }): Project {
+  update(id: string, patch: { name?: string; description?: string; instructions?: string; model?: string; approvalMode?: string; archived?: boolean; jira?: Project["jira"] | null }): Project {
     const p = this.store.get(id);
     if (!p) throw new Error("Unknown project.");
     if (patch.archived && p.isDefault) throw new Error("A site's own project cannot be archived.");
     const next: Project = { ...p, ...this.settings({ ...p, ...patch }), updatedAt: new Date().toISOString() };
+    // Checked against Jira by the route before it gets here; null unlinks.
+    if (patch.jira !== undefined) next.jira = patch.jira?.projectKey ? { projectKey: patch.jira.projectKey, projectName: patch.jira.projectName?.slice(0, 120) } : undefined;
     if (patch.name !== undefined) next.name = clean(patch.name, 80) || p.name;
     if (patch.archived !== undefined) next.archived = !!patch.archived || undefined;
     return this.store.put(next);

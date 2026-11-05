@@ -16,6 +16,7 @@ import { hydrateMessages } from "./vision.js";
 import type { ApprovalMode, Site } from "./types.js";
 import { defaultSpeedRuns, type SpeedRuns } from "./pagespeed.js";
 import type { SiteCache } from "./sessions.js";
+import { JIRA_WRITE_TOOLS, jiraTools, type JiraContext } from "./jira.js";
 
 /** Minimal shape the job runner needs (the SDK agent streams), so tests can plug in a mock. */
 export interface AgentLike {
@@ -34,6 +35,8 @@ export interface JobContext {
   account?: { name: string; instructions?: string };
   /** The project the session belongs to, and its instructions (the same for every session of the project). */
   project?: { name: string; instructions?: string };
+  /** The person's own Jira, held to the project's Jira key (jira.ts). Unset = no Jira tools in this session. */
+  jira?: JiraContext;
   /** The chat person's signed widget token: every change is credited to them in the site history. */
   actorToken?: string;
   /** The page the person is on. */
@@ -60,7 +63,7 @@ export function resolveModel(id: string): LanguageModel {
   return resolveSpec(id);
 }
 
-export interface Capabilities { files: boolean; themeWrites: boolean; browser: boolean; hostinger: boolean; skills: string; mode?: ApprovalMode; persona?: Persona | null; account?: JobContext["account"]; project?: JobContext["project"]; siteContext?: string; pageUrl?: string }
+export interface Capabilities { files: boolean; themeWrites: boolean; browser: boolean; hostinger: boolean; skills: string; mode?: ApprovalMode; persona?: Persona | null; account?: JobContext["account"]; project?: JobContext["project"]; jira?: { projectKey: string; site: string }; siteContext?: string; pageUrl?: string }
 
 const MODE_TEXT: Record<ApprovalMode, string> = {
   every: "APPROVAL: every change needs the person's approval; each write shows them an approval card - wait for it.",
@@ -204,6 +207,7 @@ You are called "${name}". The site is "${site.name}" (${site.url}).
 ${MODE_TEXT[caps.mode ?? "every"]}
 ${caps.files ? (caps.themeWrites ? "THEME FILES: list_files / read_file; edit_file / create_file / restore_file write LIVE AT ONCE (not drafts) - only when nothing else can do it, and say so before approval." : "THEME FILES: list_files / read_file (read only). Text hard-coded in a theme template cannot be drafted: explain that a developer must change it, or use a style rule for its look.") : ""}
 ${caps.hostinger ? "HOSTING: account questions, read only - hostinger_search / hostinger_read." : ""}
+${caps.jira ? `JIRA: this project's tickets are Jira project ${caps.jira.projectKey} (${caps.jira.site}), used as the person. Read freely: jira_search, jira_get_issue, jira_list_moves. jira_create_issue / jira_comment / jira_move_issue act in their team's Jira and need approval: say what you will file before you do, one ticket per piece of work, and put the ticket key in your answer. A ticket exists only once its tool result shows its key - while the approval card waits, say it is waiting for their approval, never that it was created. Only ${caps.jira.projectKey} tickets can be used.` : ""}
 ${caps.persona?.instructions?.trim() ? `
 FROM THE SITE OWNER (set in WordPress; follow it unless it conflicts with the rules above):
 ${caps.persona.instructions.trim().slice(0, 4000)}` : ""}
@@ -274,6 +278,8 @@ export function buildAgent(files: FileStore, opts: BuildOptions = {}): AgentFact
     const writeStatus = mode === "auto" || (mode === "request" && job?.approval?.planApproved) ? "approved" : "user-approval";
     const approval: Record<string, "user-approval" | "approved"> = {};
     for (const name of APPROVAL_REQUIRED) approval[name] = writeStatus;
+    // A ticket is created, commented on or moved AS the person, in their team's Jira: it asks like a site change does.
+    if (job?.jira) for (const name of JIRA_WRITE_TOOLS) approval[name] = writeStatus;
     if (mode === "request") approval.propose_plan = job?.approval?.planApproved ? "approved" : "user-approval";
 
     // Voice: the person is standing in front of their site waiting for an answer, so a spoken request gets the faster
@@ -283,14 +289,15 @@ export function buildAgent(files: FileStore, opts: BuildOptions = {}): AgentFact
       model: opts.model ?? resolveModel(modelId),
       instructions: systemPrompt(site, {
         files: !!siteFiles, themeWrites: config.allowThemeWrites, browser: !!browser, hostinger: !!hg, skills: skills?.catalogue() ?? "", mode,
-        persona: job?.persona, account: job?.account, project: job?.project, siteContext: job?.siteContext, pageUrl: job?.pageUrl,
+        persona: job?.persona, account: job?.account, project: job?.project,
+        jira: job?.jira ? { projectKey: job.jira.projectKey, site: job.jira.connection.siteUrl } : undefined, siteContext: job?.siteContext, pageUrl: job?.pageUrl,
       }),
-      tools: makeTools(bridge, files, {
+      tools: { ...makeTools(bridge, files, {
         siteFiles, allowThemeWrites: config.allowThemeWrites, hostinger: hg, browser, verifier, skills, planTool: mode === "request", layoutPicker: job?.layoutPicker !== false,
         pageUrl: () => job?.pageUrl, ref: () => job?.ref ?? "", fetchImpl: opts.fetchImpl, allowPrivateImageHosts: opts.allowPrivateImageHosts, generateImage: opts.generateImage,
         speed: opts.speed !== undefined ? opts.speed : defaultSpeedRuns(), siteId: site.id, siteUrl: site.url,
         cache: job?.cache ?? null,
-      }),
+      }), ...(job?.jira ? jiraTools(job.jira) : {}) },
       toolApproval: approval,
       // Right before every model call: turn image markers / screenshots into real pictures the model can see.
       prepareStep: ({ messages }: any) => ({ messages: hydrateMessages(messages, files) }),

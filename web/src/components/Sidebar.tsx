@@ -10,7 +10,7 @@ export interface SidebarProps {
   onSelectJob: (id: string) => void; onNewChat: () => void; onTogglePin: (id: string) => void; onHide: () => void;
   /** Who is signed in (null = not known yet / an open local backend). */
   me?: { root: boolean; account: AccountInfo | null } | null;
-  onInstructions: () => void; onPassword: () => void; onSignOut: () => void;
+  onInstructions: () => void; onPassword: () => void; onSignOut: () => void; onJira: () => void;
   /** The projects in the tree, the open one, and what can be done with them. */
   projects: Project[]; projectId: string;
   onSelectProject: (id: string) => void; onNewSession: (projectId: string) => void; onNewProject: () => void; onProjectSettings: (id: string) => void;
@@ -156,10 +156,11 @@ export function Sidebar(p: SidebarProps) {
             {acc ? <>
               <div className="menu-label">{acc.name} · {acc.role}</div>
               <button className="menu-item" onClick={() => { setMenu(false); p.onInstructions(); }}><Icon.Edit size={15} /> My instructions{acc.instructions ? " (custom)" : ""}</button>
+              <button className="menu-item" onClick={() => { setMenu(false); p.onJira(); }}><Icon.Plug size={15} /> Jira</button>
               <button className="menu-item" onClick={() => { setMenu(false); p.onPassword(); }}><Icon.Key size={15} /> Change password</button>
               <button className="menu-item" onClick={() => { setMenu(false); p.onSignOut(); }}><Icon.Close size={15} /> Sign out</button>
             </> : p.me?.root
-              ? <button className="menu-item" onClick={() => { setMenu(false); p.onSignOut(); }}><Icon.Close size={15} /> Forget the root key</button>
+              ? <><button className="menu-item" onClick={() => { setMenu(false); p.onJira(); }}><Icon.Plug size={15} /> Jira</button><button className="menu-item" onClick={() => { setMenu(false); p.onSignOut(); }}><Icon.Close size={15} /> Forget the root key</button></>
               : <button className="menu-item" onClick={() => { setMenu(false); p.onToken(); }}><Icon.Key size={15} /> Access token</button>}
             <div className="menu-foot">Model: {p.model}</div>
           </div>

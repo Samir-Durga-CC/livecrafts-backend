@@ -1,6 +1,6 @@
 import type { FixStatus, SpeedRun, SpeedRunSummary } from "./speed";
 import type { PluginActionResult, PluginHistoryEntry, PluginJob, PluginList } from "./plugins";
-import type { Project, AccountInfo, AdminJobRow, AdminOverview, InstructionVersion, Limits, LogRow, Role, ConnectorInfo, TemplatesReport, ApprovalMode, AssistantInfo, ChangeRecord, DiffData, HostingerHealth, ModelsReport, ProviderInfo, SiteStatus, JobEvent, JobSummary, Site, TimelineItem, UploadedFile } from "./types";
+import type { JiraStatus, Project, AccountInfo, AdminJobRow, AdminOverview, InstructionVersion, Limits, LogRow, Role, ConnectorInfo, TemplatesReport, ApprovalMode, AssistantInfo, ChangeRecord, DiffData, HostingerHealth, ModelsReport, ProviderInfo, SiteStatus, JobEvent, JobSummary, Site, TimelineItem, UploadedFile } from "./types";
 
 const TOKEN_KEY = "lc_token";
 export const getToken = () => localStorage.getItem(TOKEN_KEY) ?? "";
@@ -40,7 +40,7 @@ export const api = {
   // ---- projects (each with its sessions: the jobs carry their projectId)
   projects: (archived = false) => request<Project[]>("GET", `/projects${archived ? "?archived=1" : ""}`),
   createProject: (b: { siteId: string; name: string; description?: string; instructions?: string; model?: string; approvalMode?: ApprovalMode }) => request<Project>("POST", "/projects", b),
-  updateProject: (id: string, b: Partial<Pick<Project, "name" | "description" | "instructions" | "model" | "approvalMode" | "archived">>) => request<Project>("PATCH", `/projects/${id}`, b),
+  updateProject: (id: string, b: Partial<Pick<Project, "name" | "description" | "instructions" | "model" | "approvalMode" | "archived">> & { jira?: { projectKey: string } | null }) => request<Project>("PATCH", `/projects/${id}`, b),
 
   // ---- accounts
   authStatus: () => request<{ setupNeeded: boolean; rootTokenRequired: boolean }>("GET", "/auth/status"),
@@ -52,6 +52,12 @@ export const api = {
   myInstructions: () => request<{ text: string; history: InstructionVersion[] }>("GET", "/auth/instructions"),
   saveMyInstructions: (text: string) => request<{ text: string; history: InstructionVersion[] }>("PUT", "/auth/instructions", { text }),
   resetMyInstructions: () => request<{ text: string; history: InstructionVersion[] }>("POST", "/auth/instructions/reset"),
+
+  // ---- my Jira (each account connects its own; the token never comes back)
+  jira: () => request<JiraStatus>("GET", "/auth/jira"),
+  connectJira: (b: { siteUrl: string; email: string; token?: string }) => request<JiraStatus>("PUT", "/auth/jira", b),
+  disconnectJira: () => request<JiraStatus>("DELETE", "/auth/jira"),
+  jiraProjects: (q = "") => request<{ projects: { key: string; name: string }[] }>("GET", `/auth/jira/projects${q ? `?q=${encodeURIComponent(q)}` : ""}`),
 
   // ---- the admin panel
   adminOverview: () => request<AdminOverview>("GET", "/admin/overview"),

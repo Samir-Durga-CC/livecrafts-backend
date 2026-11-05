@@ -9,7 +9,9 @@ import { config } from "./config.js";
  */
 export type ProviderId = "openai" | "anthropic" | "claudecli" | "openrouter" | "groq" | "custom" | "gateway";
 interface ProviderSecret { apiKey?: string; baseUrl?: string; /** Extra model names the person added for this provider (beyond the built-in examples). */ models?: string[] }
-interface Secrets { hostingerToken?: string; pagespeedKey?: string; connectorTokenHash?: string; providers?: Partial<Record<ProviderId, ProviderSecret>>; sites?: Record<string, { secret?: string }> }
+/** A person's Jira Cloud connection (jira.ts): kept here, on the backend only, never sent back to a browser. */
+interface JiraSecret { siteUrl: string; email: string; token: string; accountName?: string; connectedAt?: string }
+interface Secrets { hostingerToken?: string; pagespeedKey?: string; connectorTokenHash?: string; jira?: Record<string, JiraSecret>; providers?: Partial<Record<ProviderId, ProviderSecret>>; sites?: Record<string, { secret?: string }> }
 const file = () => path.join(config.dataDir, "secrets.json");
 
 function read(): Secrets { try { return JSON.parse(fs.readFileSync(file(), "utf8")); } catch { return {}; } }
@@ -35,6 +37,10 @@ export const secrets = {
 
   /** SHA-256 (hex) of the token the person's computer connects with (connector.ts). The token itself is shown once, never kept. */
   connectorTokenHash(): string { return read().connectorTokenHash || ""; },
+
+  /** Jira per Livecrafts account ("_root" = the root key's own). */
+  jira(who: string): JiraSecret | null { return read().jira?.[who] ?? null; },
+  setJira(who: string, c: JiraSecret | null) { const s = read(); s.jira ??= {}; if (c) s.jira[who] = c; else delete s.jira[who]; write(s); },
   setConnectorTokenHash(h: string) { const s = read(); if (h) s.connectorTokenHash = h; else delete s.connectorTokenHash; write(s); },
 
   /** The secret a connected site signs its widget tokens with (POST /livecrafts/v1/connect). */

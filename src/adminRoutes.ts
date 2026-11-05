@@ -11,6 +11,11 @@ import { connector } from "./connector.js";
 import type { JobRunner } from "./jobs.js";
 import { assistantSettings } from "./persona.js";
 import { projects } from "./projects.js";
+import { JiraClient, JiraError, jiraSite } from "./jira.js";
+import { secrets } from "./secrets.js";
+
+/** Whose Jira connection a caller uses: their account's, or the root key's own. */
+export const jiraOwner = (c: Caller) => (c.via === "account" ? c.account.id : "_root");
 import type { JsonStore } from "./store.js";
 import type { Site } from "./types.js";
 import { followLog, log, readLog, readUsage } from "./usage.js";
@@ -40,7 +45,7 @@ export interface RouteContext {
 /** Answered without signing in. */
 export const AUTH_PUBLIC_ROUTES = ["GET /auth/status", "POST /auth/setup", "POST /auth/login"];
 /** What a client account may call besides the chat routes the widget already has. */
-export const CLIENT_EXTRA_ROUTES = /^(GET \/projects|GET \/auth\/me|POST \/auth\/logout|PUT \/auth\/password|(GET|PUT) \/auth\/instructions|POST \/auth\/instructions\/reset|GET \/models\/usage)$/;
+export const CLIENT_EXTRA_ROUTES = /^(GET \/projects|(GET|PUT|DELETE) \/auth\/jira|GET \/auth\/jira\/projects|GET \/auth\/me|POST \/auth\/logout|PUT \/auth\/password|(GET|PUT) \/auth\/instructions|POST \/auth\/instructions\/reset|GET \/models\/usage)$/;
 
 const startedAt = new Date();
 const safeEqual = (a: string, b: string) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && crypto.timingSafeEqual(x, y); };
@@ -113,6 +118,37 @@ export async function handleAccountRoutes(c: RouteContext): Promise<boolean> {
     const acc = accounts.setInstructions(caller.account.id, text, caller.account.email);
     log("info", text ? "account: instructions changed" : "account: instructions reset to the original", { account: acc.id });
     return send(res, 200, instructionsOf(acc)), true;
+  }
+
+  /* -------------------------------------------------------------- my Jira (jira.ts) */
+  if (url.pathname === "/auth/jira" || url.pathname === "/auth/jira/projects") {
+    if (caller.via === "widget") return send(res, 403, { error: "Jira belongs to a Livecrafts account." }), true;
+    const who = jiraOwner(caller);
+    const conn = secrets.jira(who);
+    const view = () => (conn ? { connected: true, siteUrl: conn.siteUrl, email: conn.email, accountName: conn.accountName, connectedAt: conn.connectedAt } : { connected: false });
+    if (route === "GET /auth/jira") return send(res, 200, view()), true;
+    if (route === "DELETE /auth/jira") { secrets.setJira(who, null); log("info", "jira disconnected", { who }); return send(res, 200, { connected: false }), true; }
+    if (route === "PUT /auth/jira") {
+      const b = await readJson(req);
+      const siteUrl = jiraSite(String(b.siteUrl ?? ""));
+      if (!siteUrl) return send(res, 400, { error: "That is not a Jira Cloud address. It looks like https://your-team.atlassian.net" }), true;
+      const email = String(b.email ?? "").trim();
+      // An empty token keeps the saved one (changing the email or the site alone).
+      const token = String(b.token ?? "").trim() || (conn && conn.siteUrl === siteUrl ? conn.token : "");
+      if (!/^[^@\s]+@[^@\s]+$/.test(email) || !token) return send(res, 400, { error: "Your Atlassian email and an API token are both needed." }), true;
+      try {
+        // Proven with one real request before anything is saved.
+        const me = await new JiraClient({ siteUrl, email, token }).myself();
+        secrets.setJira(who, { siteUrl, email, token, accountName: me.displayName, connectedAt: new Date().toISOString() });
+        log("info", "jira connected", { who, site: siteUrl });
+        return send(res, 200, { connected: true, siteUrl, email, accountName: me.displayName }), true;
+      } catch (e) { return send(res, e instanceof JiraError && e.status === 401 ? 400 : 502, { error: (e as Error).message }), true; }
+    }
+    if (route === "GET /auth/jira/projects") {
+      if (!conn) return send(res, 400, { error: "Connect your Jira first." }), true;
+      try { return send(res, 200, { projects: await new JiraClient(conn).projects(url.searchParams.get("q") || "") }), true; }
+      catch (e) { return send(res, 502, { error: (e as Error).message }), true; }
+    }
   }
 
   /* -------------------------------------------------------------- the admin panel */
@@ -232,6 +268,8 @@ export async function handleAccountRoutes(c: RouteContext): Promise<boolean> {
       files: false, themeWrites: config.allowThemeWrites, browser: true, hostinger: false, skills: "", mode: project.approvalMode ?? "request",
       persona, account: acc ? { name: acc.name, instructions: acc.instructions } : undefined,
       project: { name: project.name, instructions: project.instructions },
+      // As the session would have it: the project's Jira key, when the person looking has Jira connected.
+      jira: project.jira && secrets.jira(acc ? acc.id : jiraOwner(caller)) ? { projectKey: project.jira.projectKey, site: secrets.jira(acc ? acc.id : jiraOwner(caller))!.siteUrl } : undefined,
     });
     return send(res, 200, { site: { id: site.id, name: site.name }, account: acc ? { id: acc.id, name: acc.name } : null, project: { id: project.id, name: project.name }, persona, text, chars: text.length,
       note: "A real run adds what it read from the site at that moment (drafts, notes, the page) after THIS SITE, and lists the theme-file and hosting tools when they are connected." }), true;

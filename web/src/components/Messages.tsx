@@ -178,6 +178,7 @@ function Approval({ item, onAnswer, busy }: { item: Extract<TimelineItem, { kind
     set_post_status: "Change page status", create_menu: "Create a navigation menu", add_menu_item: "Add a menu link",
     upload_media_from_url: "Import an image to the Media Library", revert_change: "Revert a change",
     propose_plan: "Plan for this request", create_blog_post: "Create a new blog post (draft)", generate_image: "Generate an image with AI",
+    jira_create_issue: "Create a Jira ticket (as you)", jira_comment: "Comment on a Jira ticket (as you)", jira_move_issue: "Move a Jira ticket (as you)",
   };
   const title = TITLES[item.tool] ?? item.tool;
   const backup = item.current as { path?: string; editedAt?: string } | null | undefined;
@@ -200,6 +201,22 @@ function Approval({ item, onAnswer, busy }: { item: Extract<TimelineItem, { kind
           <div className="ap-row before"><span className="ap-label">Before</span><span className="ap-val">{empty ? <em>empty</em> : String(item.current)}</span></div>
           <div className="ap-row after"><span className="ap-label">After</span><span className="ap-val">{String(i.value ?? "")}</span></div>
         </div>
+      )}
+      {item.tool === "jira_create_issue" && (
+        <div className="ap-body">
+          <div className="ap-row"><span className="ap-label">Summary</span><span className="ap-val">{String(i.summary ?? "")}</span></div>
+          <div className="ap-row"><span className="ap-label">Type</span><span className="ap-val">{String(i.issueType || "Task")}{i.priority ? ` · ${i.priority}` : ""}{Array.isArray(i.labels) && i.labels.length ? ` · ${i.labels.join(", ")}` : ""}</span></div>
+          {i.description && <Collapsible code={String(i.description)} />}
+        </div>
+      )}
+      {item.tool === "jira_comment" && (
+        <div className="ap-body">
+          <div className="ap-row"><span className="ap-label">Ticket</span><code className="ap-target">{String(i.issue ?? "")}</code></div>
+          <Collapsible code={String(i.text ?? "")} />
+        </div>
+      )}
+      {item.tool === "jira_move_issue" && (
+        <div className="ap-body"><div className="ap-row"><span className="ap-label">Ticket</span><code className="ap-target">{String(i.issue ?? "")}</code></div><div className="ap-row after"><span className="ap-label">To</span><span className="ap-val">{String(i.to ?? "")}</span></div></div>
       )}
       {item.tool === "upload_media_from_chat" && (
         <div className="ap-body ap-upload"><Thumb id={String(i.fileId)} size={84} /><div><div className="ap-val">{i.title || "Image"}</div><code className="ap-target">{i.fileId}</code></div></div>
@@ -292,7 +309,7 @@ function Approval({ item, onAnswer, busy }: { item: Extract<TimelineItem, { kind
         <div className="ap-actions">
           {denying
             ? <input className="ap-note" autoFocus placeholder="Why not? (optional)" value={note} onChange={(e) => setNote(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") onAnswer(false, note || undefined); }} />
-            : <span className="ap-hint">Nothing changes on your site until you approve.</span>}
+            : <span className="ap-hint">{item.tool.startsWith("jira_") ? "Nothing is sent to Jira until you approve." : "Nothing changes on your site until you approve."}</span>}
           <button className="btn ghost" disabled={busy} onClick={() => (denying ? onAnswer(false, note || undefined) : setDenying(true))}>{denying ? "Confirm deny" : "Deny"}</button>
           <button className="btn primary" disabled={busy} onClick={() => onAnswer(true)}><Icon.Check size={15} /> {item.tool === "propose_plan" ? "Approve & run" : "Approve"}</button>
         </div>

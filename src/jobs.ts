@@ -9,6 +9,7 @@ import { imageMarker } from "./vision.js";
 import { assistantSettings } from "./persona.js";
 import { accounts } from "./accounts.js";
 import { defaultProjectId, projects } from "./projects.js";
+import { secrets } from "./secrets.js";
 import { Bridge } from "./bridge.js";
 import { log, recordUsage, tokensOf } from "./usage.js";
 import type { ApprovalMode, Job, JobEvent, JobStatus, PendingApproval, Site } from "./types.js";
@@ -392,7 +393,12 @@ export class JobRunner {
       // Read now, not when the chat began: a reset or a new version applies to the very next request.
       const acc = job.accountId ? accounts.get(job.accountId) : undefined;
       const project = projects.get(job.projectId ?? defaultProjectId(job.siteId));
+      // Jira as the person who sent the request: their account's connection, or the root key's own. Never from the
+      // WordPress widget - a site editor is not a Livecrafts account and must not act in anyone's Jira.
+      const jiraWho = job.accountId ?? (job.actor ? "" : "_root");
+      const jiraConn = project?.jira?.projectKey && jiraWho ? secrets.jira(jiraWho) : null;
       const ctx: JobContext = {
+        jira: jiraConn && project?.jira ? { connection: jiraConn, projectKey: project.jira.projectKey } : undefined,
         persona,
         account: acc ? { name: acc.name, instructions: acc.instructions } : undefined,
         project: project ? { name: project.name, instructions: project.instructions } : undefined,

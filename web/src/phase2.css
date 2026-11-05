@@ -1107,3 +1107,6 @@ a.nav-item:visited { color: var(--muted); } a.nav-item:hover { color: var(--text
 .dialog select:focus { outline: none; border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
 .pj-name { flex: 0 1 auto; min-width: 3.5em; }
 .pj-site { flex: 0 20 auto; min-width: 0; }
+.prj-jira { display: grid; gap: 6px; }
+.prj-jira label { display: grid; gap: 6px; font-size: 13px; color: var(--text-2); width: 100%; }
+.dialog.wide { max-height: calc(100vh - 32px); overflow: auto; }

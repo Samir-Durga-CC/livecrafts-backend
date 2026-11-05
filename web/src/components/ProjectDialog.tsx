@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { ApprovalMode, Project, Site } from "../types";
+import type { ApprovalMode, JiraStatus, Project, Site } from "../types";
 
 const MODES: { id: ApprovalMode | ""; label: string }[] = [
   { id: "", label: "No default (each person's own choice)" },
@@ -21,6 +21,14 @@ export function ProjectDialog({ project, sites, siteId, onClose, onSaved }: {
     instructions: project?.instructions ?? "", model: project?.model ?? "", approvalMode: (project?.approvalMode ?? "") as ApprovalMode | "",
   });
   const [models, setModels] = useState<string[]>([]);
+  // Jira: linked with the editing person's own Jira, which also checks that the key exists.
+  const [jira, setJira] = useState<JiraStatus | null>(null);
+  const [jiraKey, setJiraKey] = useState(project?.jira?.projectKey ?? "");
+  const [jiraList, setJiraList] = useState<{ key: string; name: string }[]>([]);
+  useEffect(() => {
+    if (!project) return;
+    api.jira().then((s) => { setJira(s); if (s.connected) api.jiraProjects().then((r) => setJiraList(r.projects)).catch(() => {}); }).catch(() => {});
+  }, [project?.id]); // the id: the list refreshes every few seconds with new objects, Jira need not be asked again
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   useEffect(() => { api.models().then((r) => setModels(r.choices.map((c) => c.id))).catch(() => {}); }, []);
@@ -28,7 +36,9 @@ export function ProjectDialog({ project, sites, siteId, onClose, onSaved }: {
   async function save(patch?: Partial<Project>) {
     setBusy(true); setErr("");
     try {
-      const body = { name: f.name, description: f.description, instructions: f.instructions, model: f.model, approvalMode: f.approvalMode || undefined, ...patch };
+      const jiraChanged = !!project && jiraKey.trim().toUpperCase() !== (project.jira?.projectKey ?? "");
+      const body = { name: f.name, description: f.description, instructions: f.instructions, model: f.model, approvalMode: f.approvalMode || undefined,
+        ...(jiraChanged ? { jira: jiraKey.trim() ? { projectKey: jiraKey.trim().toUpperCase() } : null } : {}), ...patch };
       const p = project ? await api.updateProject(project.id, body as any) : await api.createProject({ ...body, siteId: f.siteId } as any);
       onSaved(p); onClose();
     } catch (e) { setErr((e as Error).message); }
@@ -65,6 +75,19 @@ export function ProjectDialog({ project, sites, siteId, onClose, onSaved }: {
             <select value={f.approvalMode} onChange={set("approvalMode")}>{MODES.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}</select>
           </label>
         </div>
+        {project ? (
+          <fieldset className="ad-sites prj-jira"><legend>Jira</legend>
+            {jira?.connected ? (
+              <label>Jira project key <small className="muted">(the assistant reads and files tickets here, as each person, with approval for every write)</small>
+                <input value={jiraKey} onChange={(e) => setJiraKey(e.target.value)} list="prj-jira" placeholder="e.g. ACME - empty = no Jira for this project" />
+                <datalist id="prj-jira">{jiraList.map((j) => <option key={j.key} value={j.key}>{j.name}</option>)}</datalist>
+              </label>
+            ) : (
+              <p className="muted small">{project.jira ? <>Linked to <b>{project.jira.projectKey}</b>{project.jira.projectName ? ` (${project.jira.projectName})` : ""}. </> : ""}Connect your own Jira (account menu → Jira) to {project.jira ? "change" : "link"} it.</p>
+            )}
+            {jira?.connected && project.jira && <p className="muted small">Now: <b>{project.jira.projectKey}</b>{project.jira.projectName ? ` - ${project.jira.projectName}` : ""}. Each person's sessions use their own Jira connection; someone without one gets no Jira tools.</p>}
+          </fieldset>
+        ) : <p className="muted small">Jira can be linked in the project's settings once it is made.</p>}
         {err && <div className="banner error">{err}</div>}
         <div className="dialog-actions">
           {project && !project.isDefault && (

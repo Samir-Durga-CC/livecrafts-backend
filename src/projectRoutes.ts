@@ -1,5 +1,7 @@
 import { canUseSite, callerName, isStaff } from "./auth.js";
-import type { RouteContext } from "./adminRoutes.js";
+import { jiraOwner, type RouteContext } from "./adminRoutes.js";
+import { JiraClient } from "./jira.js";
+import { secrets } from "./secrets.js";
 import { defaultProjectId, projects } from "./projects.js";
 import { log } from "./usage.js";
 
@@ -41,7 +43,20 @@ export async function handleProjectRoutes(c: RouteContext): Promise<boolean> {
     const p = projects.get(m[1]);
     if (!p || !canUseSite(caller, p.siteId)) return send(res, 404, { error: "Unknown project." }), true;
     try {
-      const next = projects.update(p.id, await readJson(req));
+      const b = await readJson(req);
+      // Linking a Jira project: checked with the linking person's own Jira, so a key that does not exist (or that
+      // they cannot see) is caught here, not in the middle of someone's session.
+      if (b.jira !== undefined && b.jira !== null) {
+        const key = String(b.jira?.projectKey ?? "").trim().toUpperCase();
+        if (!key) b.jira = null;
+        else {
+          const conn = secrets.jira(jiraOwner(caller));
+          if (!conn) return send(res, 400, { error: "Connect your own Jira first (account menu → Jira), then link the project." }), true;
+          try { const jp = await new JiraClient(conn).project(key); b.jira = { projectKey: jp.key, projectName: jp.name }; }
+          catch (e) { return send(res, 400, { error: (e as Error).message }), true; }
+        }
+      }
+      const next = projects.update(p.id, b);
       log("info", "project changed", { project: p.id, by: callerName(caller) });
       return send(res, 200, next), true;
     } catch (e) { return send(res, 400, { error: (e as Error).message }), true; }

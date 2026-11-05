@@ -139,5 +139,9 @@ export interface LogRow { at: string; level: "info" | "warn" | "error"; msg: str
 export interface Project {
   id: string; name: string; siteId: string; description?: string; instructions?: string; model?: string; approvalMode?: ApprovalMode;
   isDefault?: boolean; archived?: boolean; createdAt: string; updatedAt: string;
+  jira?: { projectKey: string; projectName?: string };
   sessions: number; running: number; lastActivity: string | null;
 }
+
+/** The signed-in person's own Jira connection (the token is never sent to the browser). */
+export interface JiraStatus { connected: boolean; siteUrl?: string; email?: string; accountName?: string; connectedAt?: string }

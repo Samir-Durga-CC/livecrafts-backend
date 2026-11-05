@@ -4,6 +4,7 @@ import { ApiError, api, buildTimeline, followJob, getToken, lastStatus, ledgerFr
 import { SignIn } from "./components/SignIn";
 import { InstructionsDialog, PasswordDialog } from "./components/AccountDialogs";
 import { ProjectDialog } from "./components/ProjectDialog";
+import { JiraDialog } from "./components/JiraDialog";
 import { ChangesPanel, type PanelTab } from "./components/ChangesPanel";
 import { Composer, type Context } from "./components/Composer";
 import { BlogDialog } from "./components/BlogDialog";
@@ -32,7 +33,7 @@ export default function App() {
   const [jobId, setJobId] = useState<string>(params.get("job") ?? "");
   const [events, setEvents] = useState<JobEvent[]>([]);
   const [live, setLive] = useState(true);
-  const [dialog, setDialog] = useState<"" | "site" | "sites" | "token" | "integrations" | "instructions" | "password">("");
+  const [dialog, setDialog] = useState<"" | "site" | "sites" | "token" | "integrations" | "instructions" | "password" | "jira">("");
   // Signed in with an account (or the root key): who, and what they may see. null until known.
   const [me, setMe] = useState<{ root: boolean; account: AccountInfo | null } | null>(null);
   const [signIn, setSignIn] = useState<string | null>(null);
@@ -227,7 +228,7 @@ export default function App() {
             onSelectJob={openJob} onNewChat={newChat} onTogglePin={(id) => setPinned(prefs.togglePin(id))} onHide={() => setNavOpen(false)}
             projects={projects} projectId={projectId} onSelectProject={(id) => openProject(id, id === projectId)} onNewSession={newSessionIn}
             onNewProject={() => setProjectDialog("new")} onProjectSettings={(id) => setProjectDialog(id)}
-            me={me} onInstructions={() => setDialog("instructions")} onPassword={() => setDialog("password")} onSignOut={() => void signOut()} />
+            me={me} onJira={() => setDialog("jira")} onInstructions={() => setDialog("instructions")} onPassword={() => setDialog("password")} onSignOut={() => void signOut()} />
         )}
 
         <main className="main">
@@ -283,6 +284,7 @@ export default function App() {
       {dialog === "token" && <TokenDialog reason={tokenReason} onClose={() => setDialog("")} />}
       {dialog === "instructions" && <InstructionsDialog onClose={() => setDialog("")} />}
       {dialog === "password" && <PasswordDialog onClose={() => setDialog("")} />}
+      {dialog === "jira" && <JiraDialog onClose={() => setDialog("")} />}
       {projectDialog && <ProjectDialog sites={sites} siteId={siteId} project={projectDialog === "new" ? undefined : projects.find((p) => p.id === projectDialog)}
         onClose={() => setProjectDialog("")}
         onSaved={(p) => {
