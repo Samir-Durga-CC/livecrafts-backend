@@ -112,6 +112,25 @@ It ships the committed tree (`git archive HEAD`), builds it on Hostinger and wai
 website's environment variables in hPanel, not a `.env` - at least `LC_API_TOKEN` (it is public), `HOST=0.0.0.0`,
 `LC_VERIFY_CHANGES=0` (no Chrome there) and `LC_DATA_DIR` outside the app folder (a deploy replaces the app folder).
 
+## CI/CD
+| Push to | Runs | Then |
+|---|---|---|
+| any other branch, or a pull request | **Checks** (`.github/workflows/checks.yml`): install, typecheck, build the chat UI, `npm test` | - |
+| `staging` | the same checks | **Deploy** to the `staging` environment (the staging backend), then a smoke test |
+| `main` | the same checks | **Deploy** to the `production` environment |
+
+Nothing is deployed when a check fails. The smoke test after a deploy checks `/health`, the app page, `/auth/status`, and
+that `/sites` refuses a request without a sign-in.
+
+One-time setup in GitHub → Settings → Environments, for `staging` (and later `production`):
+* secret `HOSTINGER_API_TOKEN` - an hPanel API token
+* variables `HOSTINGER_USERNAME` (e.g. `u815763759`) and `LC_DEPLOY_DOMAIN` (e.g. `livecrafts-staging.project-in-progress.com`)
+* `production`: add required reviewers, so a merge to `main` waits for a person. Without `LC_DEPLOY_DOMAIN` an
+  environment deploys nothing (a notice says so).
+
+The running backend's own settings (`LC_API_TOKEN`, keys, `LC_DATA_DIR`) are the website's environment variables in
+hPanel; a deploy never changes them or the data folder.
+
 ## Your computer: the Claude CLI for a hosted backend
 A backend on a server has no Claude Code of its own. Instead of paying for API keys, connect your computer: in the
 app, **Integrations → AI connections → Claude CLI → Your computer → Connect your computer**, then run the two commands

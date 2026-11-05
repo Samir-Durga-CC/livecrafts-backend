@@ -1,0 +1,77 @@
+name: Deploy
+
+# staging -> the staging backend, main -> production. The checks run first; nothing is deployed when one fails.
+#
+# Each target is a GitHub Environment (Settings -> Environments) holding:
+#   secret   HOSTINGER_API_TOKEN   an hPanel API token
+#   variable HOSTINGER_USERNAME    the hosting account, e.g. u815763759
+#   variable LC_DEPLOY_DOMAIN      the Node.js website, e.g. livecrafts-staging.project-in-progress.com
+# An environment without LC_DEPLOY_DOMAIN deploys nothing (production, until it exists). Give "production" required
+# reviewers so a merge to main waits for a person's yes.
+#
+# Settings and secrets of the running backend (LC_API_TOKEN, model keys, LC_DATA_DIR) are the website's environment
+# variables in hPanel; a deploy never touches them, nor the data folder.
+on:
+  push:
+    branches: [staging, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+
+  deploy:
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
+      url: ${{ vars.LC_DEPLOY_DOMAIN && format('https://{0}', vars.LC_DEPLOY_DOMAIN) || '' }}
+    env:
+      HOSTINGER_API_TOKEN: ${{ secrets.HOSTINGER_API_TOKEN }}
+      HOSTINGER_USERNAME: ${{ vars.HOSTINGER_USERNAME }}
+      LC_DEPLOY_DOMAIN: ${{ vars.LC_DEPLOY_DOMAIN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Is there a target?
+        id: target
+        run: |
+          if [ -z "$LC_DEPLOY_DOMAIN" ]; then
+            echo "::notice::The ${{ github.ref_name == 'main' && 'production' || 'staging' }} environment has no LC_DEPLOY_DOMAIN yet - nothing was deployed."
+            echo "go=no" >> "$GITHUB_OUTPUT"
+          elif [ -z "$HOSTINGER_API_TOKEN" ] || [ -z "$HOSTINGER_USERNAME" ]; then
+            echo "::error::HOSTINGER_API_TOKEN (secret) and HOSTINGER_USERNAME (variable) are needed in this environment."
+            exit 1
+          else
+            echo "go=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Uploads the commit (git archive), builds it on Hostinger, waits for the build and for /health.
+      - name: Deploy to Hostinger
+        if: steps.target.outputs.go == 'yes'
+        run: node tools/deploy-hostinger.mjs --domain "$LC_DEPLOY_DOMAIN"
+
+      - name: Smoke test
+        if: steps.target.outputs.go == 'yes'
+        run: |
+          set -e
+          base="https://$LC_DEPLOY_DOMAIN"
+          code() { curl -s -o /dev/null -w '%{http_code}' "$1"; }
+          [ "$(code "$base/health")" = 200 ] || { echo "::error::/health does not answer"; exit 1; }
+          [ "$(code "$base/")" = 200 ] || { echo "::error::the app page does not load"; exit 1; }
+          [ "$(code "$base/auth/status")" = 200 ] || { echo "::error::/auth/status does not answer"; exit 1; }
+          # The API must refuse a stranger: a public backend that answers this without a sign-in is wide open.
+          [ "$(code "$base/sites")" = 401 ] || { echo "::error::/sites answered without a sign-in"; exit 1; }
+          echo "Deployed $(git rev-parse --short HEAD) to $base"

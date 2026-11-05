@@ -1,0 +1,49 @@
+name: Checks
+
+# Every push to a working branch and every pull request: types, the chat UI build, and the whole test suite.
+# staging and main run the same checks from deploy.yml before anything is deployed, so they are not run twice here.
+on:
+  push:
+    branches-ignore: [staging, main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+
+      - name: Install
+        run: |
+          npm ci
+          npm ci --prefix web
+
+      - name: Types (backend and web)
+        run: npm run typecheck
+
+      - name: Build the chat UI
+        run: npm run build --prefix web
+
+      # Fake WordPress sites, fake models, a fake Jira; the browser checks use the runner's Chrome. No secret is needed:
+      # the Claude CLI part skips itself where Claude Code is not installed.
+      - name: Tests
+        run: npm test
+        env:
+          LC_BROWSER_PATH: /usr/bin/google-chrome
