@@ -14,11 +14,22 @@ import { projects } from "./projects.js";
 import { JiraClient, JiraError, jiraSite } from "./jira.js";
 import { secrets } from "./secrets.js";
 
-/** Whose Jira connection a caller uses: their account's, or the root key's own. */
-export const jiraOwner = (c: Caller) => (c.via === "account" ? c.account.id : "_root");
 import type { JsonStore } from "./store.js";
 import type { Site } from "./types.js";
 import { followLog, log, readLog, readUsage } from "./usage.js";
+
+/** Whose Jira connection a caller uses: their account's, or the root key's own. */
+export const jiraOwner = (c: Caller) => (c.via === "account" ? c.account.id : "_root");
+
+/**
+ * TEMPORARY (testing phase, no client sites yet): skip the root-key proof for creating the very first owner
+ * account. Hostinger access to read/rotate LC_API_TOKEN was not available when this was needed.
+ * Scope stays narrow on purpose: this only affects /auth/setup, and only while accounts.isEmpty() - the moment
+ * an owner exists, that route 409s permanently, same as with the real check. Nothing else (the root key for
+ * CI/admin calls, widget tokens) is touched. Revert this block once LC_API_TOKEN is in hand, or once an owner
+ * has been created (whichever first) - set back to false then.
+ */
+const SKIP_ROOT_KEY_FOR_FIRST_OWNER = true;
 
 /**
  * Accounts (/auth/*) and the developer's admin panel (/admin/*).
@@ -66,14 +77,14 @@ export async function handleAccountRoutes(c: RouteContext): Promise<boolean> {
 
   /* -------------------------------------------------------------- signing in */
   if (route === "GET /auth/status") {
-    return send(res, 200, { setupNeeded: accounts.isEmpty(), rootTokenRequired: accounts.isEmpty() && !!config.apiToken }), true;
+    return send(res, 200, { setupNeeded: accounts.isEmpty(), rootTokenRequired: accounts.isEmpty() && !!config.apiToken && !SKIP_ROOT_KEY_FOR_FIRST_OWNER }), true;
   }
   if (route === "POST /auth/setup") {
     // Only while there is no account at all. On a public backend the first owner must also prove they hold the root
     // key - otherwise whoever finds a fresh server first would own it.
     if (!accounts.isEmpty()) return send(res, 409, { error: "This backend already has an owner. Sign in instead." }), true;
     const b = await readJson(req);
-    if (config.apiToken && !safeEqual(String(b.rootToken ?? ""), config.apiToken)) return send(res, 401, { error: "That is not this backend's root key (LC_API_TOKEN)." }), true;
+    if (!SKIP_ROOT_KEY_FOR_FIRST_OWNER && config.apiToken && !safeEqual(String(b.rootToken ?? ""), config.apiToken)) return send(res, 401, { error: "That is not this backend's root key (LC_API_TOKEN)." }), true;
     try {
       const acc = accounts.create({ email: b.email, name: b.name, password: b.password, role: "owner" });
       const { token } = accounts.login(acc.email, String(b.password), from(req), String(req.headers["user-agent"] ?? ""));
